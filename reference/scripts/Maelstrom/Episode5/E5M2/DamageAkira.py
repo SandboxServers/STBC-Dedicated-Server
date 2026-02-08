@@ -1,0 +1,26 @@
+import App
+
+# This script adds visual damage to an object
+def AddDamage(pThingToDamage):
+	pThingToDamage.AddObjectDamageVolume(0.182225, 1.550110, 0.199424, 0.400000, 300.000000)
+	pThingToDamage.AddObjectDamageVolume(-0.787194, 1.865754, 0.020437, 0.400000, 300.000000)
+	pThingToDamage.AddObjectDamageVolume(-1.004149, 1.597196, 0.010608, 0.400000, 300.000000)
+	pThingToDamage.AddObjectDamageVolume(-0.949695, 1.128710, 0.013604, 0.400000, 300.000000)
+	pThingToDamage.AddObjectDamageVolume(-0.902676, 0.777553, -0.021203, 0.400000, 300.000000)
+	pThingToDamage.AddObjectDamageVolume(0.884251, 0.971688, 0.004847, 0.400000, 300.000000)
+	pThingToDamage.AddObjectDamageVolume(0.929050, 1.367987, 0.027492, 0.400000, 300.000000)
+	pThingToDamage.AddObjectDamageVolume(0.936891, 1.663794, 0.014459, 0.400000, 300.000000)
+	pThingToDamage.AddObjectDamageVolume(0.581371, 2.111253, 0.024046, 0.400000, 300.000000)
+	pThingToDamage.AddObjectDamageVolume(-0.189032, 2.220423, 0.037753, 0.400000, 300.000000)
+	pThingToDamage.AddObjectDamageVolume(-0.061666, 0.604050, 0.000999, 0.400000, 300.000000)
+	pThingToDamage.AddObjectDamageVolume(-1.031626, -1.000227, 0.095438, 0.400000, 300.000000)
+	pThingToDamage.AddObjectDamageVolume(-1.088831, -1.362313, 0.078356, 0.400000, 300.000000)
+	pThingToDamage.AddObjectDamageVolume(0.712649, -0.811064, 0.250249, 0.400000, 300.000000)
+	pThingToDamage.AddObjectDamageVolume(0.429910, 0.154051, 0.253320, 0.400000, 300.000000)
+	pThingToDamage.AddObjectDamageVolume(-0.563439, -0.120701, 0.280524, 0.400000, 300.000000)
+	pThingToDamage.AddObjectDamageVolume(1.449680, -0.122289, -0.164092, 0.400000, 300.000000)
+	pThingToDamage.AddObjectDamageVolume(1.466392, -1.295128, -0.191917, 0.400000, 300.000000)
+	pThingToDamage.AddObjectDamageVolume(1.459128, -1.804025, -0.133267, 0.400000, 300.000000)
+	pThingToDamage.AddObjectDamageVolume(-1.548453, -1.491838, -0.269044, 0.400000, 300.000000)
+	pThingToDamage.AddObjectDamageVolume(-1.358730, -0.142180, -0.043301, 0.400000, 300.000000)
+	pThingToDamage.AddObjectDamageVolume(-0.027667, -0.712022, 0.444943, 0.400000, 300.000000)
