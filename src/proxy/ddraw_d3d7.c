@@ -23,7 +23,8 @@ static HRESULT WINAPI D3D7_QueryInterface(ProxyD3D7* This, const GUID* riid, voi
 }
 
 static ULONG WINAPI D3D7_AddRef(ProxyD3D7* This) {
-    ProxyLog("D3D7::AddRef (this=%p, refCount=%lu->%lu)", This, This->refCount, This->refCount+1);
+    DWORD retAddr = (DWORD)__builtin_return_address(0);
+    ProxyLog("D3D7::AddRef (this=%p, refCount=%lu->%lu, caller=0x%08X)", This, This->refCount, This->refCount+1, retAddr);
     return ++This->refCount;
 }
 
@@ -105,7 +106,7 @@ static HRESULT WINAPI D3D7_CreateDevice(ProxyD3D7* This, const GUID* devGuid,
                                          ProxySurface7* renderTarget, void** ppDevice) {
     ProxyLog("D3D7::CreateDevice");
     if (!ppDevice) return DDERR_INVALIDPARAMS;
-    *ppDevice = CreateProxyDevice7(renderTarget);
+    *ppDevice = CreateProxyDevice7(renderTarget, This);
     return *ppDevice ? D3D_OK : DDERR_GENERIC;
 }
 
@@ -171,7 +172,8 @@ static HRESULT WINAPI Dev_QueryInterface(ProxyDevice7* This, const GUID* riid, v
     return S_OK;
 }
 static ULONG WINAPI Dev_AddRef(ProxyDevice7* This) {
-    ProxyLog("Device7::AddRef (this=%p, refCount=%lu->%lu)", This, This->refCount, This->refCount+1);
+    DWORD retAddr = (DWORD)__builtin_return_address(0);
+    ProxyLog("Device7::AddRef (this=%p, refCount=%lu->%lu, caller=0x%08X)", This, This->refCount, This->refCount+1, retAddr);
     return ++This->refCount;
 }
 static ULONG WINAPI Dev_Release(ProxyDevice7* This) {
@@ -269,7 +271,14 @@ static HRESULT WINAPI Dev_EndScene(ProxyDevice7* This) {
 
 /* 7: GetDirect3D */
 static HRESULT WINAPI Dev_GetDirect3D(ProxyDevice7* This, void** ppD3D) {
-    if (ppD3D) *ppD3D = NULL;
+    ProxyLog("Device7::GetDirect3D (this=%p, parent=%p)", This, This ? This->parent : NULL);
+    if (!ppD3D) return DDERR_INVALIDPARAMS;
+    if (This->parent) {
+        *ppD3D = This->parent;
+        This->parent->refCount++;
+        return D3D_OK;
+    }
+    *ppD3D = NULL;
     return DDERR_GENERIC;
 }
 

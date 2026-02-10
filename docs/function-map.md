@@ -129,10 +129,10 @@ initialization, main loop, multiplayer setup, and Python embedding entry points.
 ```
 
 Key addresses:
-- 0x0043B1D2: PatchInitAbort target (NOP abort jump)
-- 0x0043B1D7: PatchInitSkipPython target (JMP over Python in Init)
-- 0x00438AE6: PatchInitTraversal target (NOP linked list)
-- 0x004433EA: PatchRenderTick target (JNZ->JMP skip render)
+- 0x0043B1D2: PatchInitAbort target (NOP abort jump) - ACTIVE
+- 0x0043B1D7: (was PatchInitSkipPython target - REMOVED)
+- 0x00438AE6: (was PatchInitTraversal target - REMOVED)
+- 0x004433EA: PatchRenderTick target (JNZ->JMP skip render) - ACTIVE
 
 ---
 
@@ -488,7 +488,7 @@ Key addresses:
 - WSN+0x10F: join-in-progress flag
 - WSN+0x194: UDP socket handle (shared with GameSpy)
 - WSN+0x338: port number
-- 0x6B467C: PatchHostDequeueLoop target
+- 0x6B467C: (was PatchHostDequeueLoop target - REMOVED)
 
 ---
 
@@ -749,8 +749,8 @@ Sub-ranges (estimated):
 - 0x0083-0x0084: Particles, effects, misc NI utilities
 
 Key address:
-- 0x7CB322: PatchNullSurface target (JMP to code cave for NULL->dummy surface)
-- 0x0055c860: Crash site patched with RET (PatchHeadlessCrashSites)
+- 0x7CB322: (was PatchNullSurface target - REMOVED with VEH)
+- 0x0055c860: Crash site patched with RET (PatchHeadlessCrashSites) - ACTIVE
 
 ---
 
@@ -906,9 +906,9 @@ Consolidated from decompiled-functions.md, multiplayer-flow.md, dedicated-server
 ADDRESS     IDENTIFIER                          CATEGORY
 ----------- ----------------------------------- --------
 0x0043b4f0  UtopiaApp_MainTick                  App
-0x00438AE6  [PatchInitTraversal target]          App
+0x00438AE6  [was PatchInitTraversal - REMOVED]    App
 0x0043B1D2  [PatchInitAbort target]              App
-0x0043B1D7  [PatchInitSkipPython target]         App
+0x0043B1D7  [was PatchInitSkipPython - REMOVED]  App
 0x004433EA  [PatchRenderTick target]             App
 0x00445d90  UtopiaModule::InitMultiplayer        App
 0x00451ac0  SimulationPipelineTick               App

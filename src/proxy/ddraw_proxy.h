@@ -455,6 +455,9 @@ typedef struct ProxyDevice7 {
     LONG   refCount;
     ProxySurface7* renderTarget;
     BOOL   inScene;
+    struct ProxyD3D7* parent;  /* back-ref for GetDirect3D */
+    BYTE   _niPadding[236];   /* NI reads 59 DWORDs (236 bytes) from Device7 ptr directly,
+                                  bypassing COM. Zeros are safe (NULL ptrs, disabled caps). */
 } ProxyDevice7;
 
 typedef struct ProxyClipper {
@@ -563,7 +566,7 @@ extern char g_szDeviceName[512];        /* GPU name parsed from Options.cfg */
 ProxyDDraw7*   CreateProxyDDraw7(void);
 ProxySurface7* CreateProxySurface7(DWORD width, DWORD height, DWORD bpp, DWORD caps);
 ProxyD3D7*     CreateProxyD3D7(ProxyDDraw7* parent);
-ProxyDevice7*  CreateProxyDevice7(ProxySurface7* renderTarget);
+ProxyDevice7*  CreateProxyDevice7(ProxySurface7* renderTarget, ProxyD3D7* parent);
 ProxyClipper*  CreateProxyClipper(void);
 ProxyVB7*      CreateProxyVB7(DWORD fvf, DWORD numVertices);
 

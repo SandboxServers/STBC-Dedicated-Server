@@ -37,7 +37,8 @@ try:
 
     def _ds_log(msg):
         try:
-            f = open("dedicated_init.log", "a")
+            _bp = getattr(sys, '_ds_base_path', '')
+            f = open(_bp + "dedicated_init.log", "a")
             f.write(msg + "\n")
             f.close()
         except:
@@ -174,7 +175,8 @@ except:
 ###############################################################################
 def _log(msg):
     try:
-        f = open("dedicated_init.log", "a")
+        _bp = getattr(sys, '_ds_base_path', '')
+        f = open(_bp + "dedicated_init.log", "a")
         f.write(msg + "\n")
         f.close()
     except:
@@ -294,6 +296,10 @@ SERVER_TIME_LIMIT = -1      # -1 = no limit, or minutes (5,10,15...)
 SERVER_FRAG_LIMIT = -1      # -1 = no limit, or kill count
 SERVER_PLAYER_LIMIT = 8     # max 8
 SERVER_GAME_MODE = "Multiplayer.Episode.Mission1.Mission1"
+SERVER_COLLISIONS = 1       # 1=collision damage on, 0=off
+SERVER_DIFFICULTY = 1       # 0=Easy, 1=Normal, 2=Hard
+SERVER_CONNECTION_TIMEOUT = 45.0  # seconds before dropping unresponsive player
+SERVER_FRIENDLY_FIRE_POINTS = 100 # FF warning threshold (0=disabled)
 
 ###############################################################################
 #   State
@@ -492,9 +498,9 @@ def TopWindowInitialized(pTopWindow):
 
     # --- Set captain name for host ---
     try:
-        captainName = App.new_TGString("Server")
+        captainName = App.new_TGString("Dedicated Server")
         App.UtopiaModule_SetCaptainName(um, captainName)
-        _log("  SetCaptainName OK: Server")
+        _log("  SetCaptainName OK: Dedicated Server")
     except Exception, e:
         _log("  SetCaptainName FAILED: " + str(e))
 
@@ -504,6 +510,40 @@ def TopWindowInitialized(pTopWindow):
         _log("  SetProcessingPackets(1) OK")
     except Exception, e:
         _log("  SetProcessingPackets FAILED: " + str(e))
+
+    # --- Enable collision damage (off by default, normally set by main menu) ---
+    try:
+        App.ProximityManager_SetPlayerCollisionsEnabled(SERVER_COLLISIONS)
+        App.ProximityManager_SetMultiplayerPlayerCollisionsEnabled(SERVER_COLLISIONS)
+        _log("  Collisions = %d" % SERVER_COLLISIONS)
+    except Exception, e:
+        _log("  SetCollisions FAILED: " + str(e))
+
+    # --- Set difficulty level (normally set by main menu from Options.cfg) ---
+    try:
+        App.Game_SetDifficulty(SERVER_DIFFICULTY)
+        _log("  Difficulty = %d" % SERVER_DIFFICULTY)
+    except Exception, e:
+        _log("  SetDifficulty FAILED: " + str(e))
+
+    # --- Set connection timeout (normally set by HandleStartGame) ---
+    try:
+        pNetwork = App.UtopiaModule_GetNetwork(um)
+        if pNetwork:
+            import Appc
+            Appc.TGNetwork_SetConnectionTimeout(pNetwork, SERVER_CONNECTION_TIMEOUT)
+            _log("  ConnectionTimeout = %.1f sec" % SERVER_CONNECTION_TIMEOUT)
+        else:
+            _log("  ConnectionTimeout: no network yet (will set later)")
+    except Exception, e:
+        _log("  SetConnectionTimeout FAILED: " + str(e))
+
+    # --- Set friendly fire warning threshold ---
+    try:
+        App.UtopiaModule_SetFriendlyFireWarningPoints(um, SERVER_FRIENDLY_FIRE_POINTS)
+        _log("  FriendlyFireWarningPoints = %d" % SERVER_FRIENDLY_FIRE_POINTS)
+    except Exception, e:
+        _log("  SetFriendlyFireWarningPoints FAILED: " + str(e))
 
     # --- Verify game name was set ---
     try:
@@ -905,6 +945,44 @@ def TopWindowInitialized(pTopWindow):
             ei = sys.exc_info()
             _log("  Mission1.Initialize FAILED: %s: %s" % (str(ei[0]), str(ei[1])))
 
+        # --- Create the star system Set on the server ---
+        # In the normal game, StartMission() calls CreateSystemFromSpecies()
+        # which calls Multi1.Initialize(). That function uses shadow class
+        # methods (pSet.SetRegionModule()) which fail in headless mode because
+        # Appc.SetClass_Create() returns a raw SWIG pointer string, not a
+        # shadow class instance. We use Appc functional API directly.
+        # The server only needs the Set container + ProximityManager active.
+        # Visual elements (asteroids, lights, backdrops) are created
+        # independently by each client using the same deterministic seed.
+        try:
+            import Appc
+            _sysName = sts.GetScriptFromSpecies(SERVER_SYSTEM)
+            if _sysName:
+                _regionModule = 'Systems.' + _sysName + '.' + _sysName
+
+                # Create Set via raw Appc (returns raw SWIG pointer string)
+                _pSetRaw = Appc.SetClass_Create()
+                _log("  CreateSystem: raw Set = %s" % str(_pSetRaw))
+
+                # Configure using functional API
+                Appc.SetClass_SetRegionModule(_pSetRaw, _regionModule)
+
+                # Register with SetManager (SWIG extracts .this from shadow)
+                Appc.SetManager_AddSet(App.g_kSetManager, _pSetRaw, _sysName)
+
+                # Activate ProximityManager for collision detection
+                Appc.SetClass_SetProximityManagerActive(_pSetRaw, 1)
+
+                # Store as shadow class for MissionShared
+                ms.g_pStartingSet = App.SetClassPtr(_pSetRaw)
+                _log("  CreateSystem: %s -> Set=%s (ProximityManager active)" %
+                     (_sysName, str(ms.g_pStartingSet)))
+            else:
+                _log("  CreateSystem: no script for species %d" % SERVER_SYSTEM)
+        except:
+            ei = sys.exc_info()
+            _log("  CreateSystem FAILED: %s: %s" % (str(ei[0]), str(ei[1])))
+
         # Fire ET_START to transition game state (replicates host Start button)
         # TGEvent_Create returns a raw SWIG pointer string, so use functional API
         try:
@@ -948,6 +1026,13 @@ def TopWindowInitialized(pTopWindow):
 
         ms.g_bGameStarted = 1
         ms.g_bGameOver = 0
+        # Also set on MissionMenusShared (game reads it from there too)
+        try:
+            _mms_ref = sys.modules.get('Multiplayer.MissionMenusShared', None)
+            if _mms_ref:
+                _mms_ref.g_bGameStarted = 1
+        except:
+            pass
         _log("  g_bGameStarted = %d, g_bGameOver = %d" %
              (ms.g_bGameStarted, ms.g_bGameOver))
         _log("  Scoring dicts: kills=%s deaths=%s" %
@@ -957,39 +1042,126 @@ def TopWindowInitialized(pTopWindow):
         ei = sys.exc_info()
         _log("  Game start FAILED: " + str(ei[0]) + ": " + str(ei[1]))
 
-    # --- Wrap InitNetwork with diagnostic logging ---
-    # The C++ NewPlayerHandler (FUN_006a1e70) calls Mission1.InitNetwork(playerID)
-    # when a new player joins.  This sends MISSION_INIT_MESSAGE to the client,
-    # which triggers BuildMission1Menus on the client side (ship selection UI).
-    # Wrapping it lets us confirm it's actually called and succeeds.
+    # --- Replace InitNetwork with functional-API version ---
+    # The original Mission1.InitNetwork uses shadow class methods like
+    # pMessage.SetGuaranteed(1) which fail when App.TGMessage_Create()
+    # returns a raw SWIG pointer string instead of a shadow class instance.
+    # This replacement uses Appc functional API directly to avoid the issue.
     try:
+        import Appc
         __import__('Multiplayer.Episode.Mission1.Mission1')
         _m1 = sys.modules['Multiplayer.Episode.Mission1.Mission1']
-        if hasattr(_m1, 'InitNetwork'):
-            import new
-            _orig_initnet = new.function(_m1.InitNetwork.func_code,
-                                         _m1.InitNetwork.func_globals,
-                                         'InitNetwork_orig')
-            if _m1.InitNetwork.func_defaults:
-                _orig_initnet.func_defaults = _m1.InitNetwork.func_defaults
-            def _logged_initnet(iToID, _orig=_orig_initnet, _logfn=_log):
-                _logfn(">>> InitNetwork called: iToID=%s" % str(iToID))
-                try:
-                    result = _orig(iToID)
-                    _logfn(">>> InitNetwork returned: %s" % str(result))
-                    return result
-                except:
-                    ei = sys.exc_info()
-                    _logfn(">>> InitNetwork EXCEPTION: %s: %s" %
-                           (str(ei[0]), str(ei[1])))
-                    return -1
-            _m1.InitNetwork = _logged_initnet
-            _log("  Wrapped InitNetwork with logging")
-        else:
-            _log("  WARNING: InitNetwork not found on Mission1")
+        __import__('Multiplayer.MissionShared')
+        __import__('Multiplayer.MissionMenusShared')
+        _ms = sys.modules['Multiplayer.MissionShared']
+        _mms = sys.modules['Multiplayer.MissionMenusShared']
+
+        def _ds_InitNetwork(iToID, _logfn=_log, _App=App, _Appc=Appc,
+                            _ms=_ms, _mms=_mms, _m1=_m1):
+            _logfn(">>> InitNetwork called: iToID=%s" % str(iToID))
+            try:
+                # Get network via functional API
+                pNetwork = _App.UtopiaModule_GetNetwork(_App.g_kUtopiaModule)
+                if not pNetwork:
+                    _logfn(">>> InitNetwork: no network, bailing")
+                    return
+                _logfn(">>> InitNetwork: network=%s" % str(pNetwork))
+
+                # Create message via raw Appc (avoids shadow class issue)
+                pMessage = _Appc.TGMessage_Create()
+                _logfn(">>> InitNetwork: msg=%s type=%s" %
+                       (str(pMessage), str(type(pMessage))))
+                _Appc.TGMessage_SetGuaranteed(pMessage, 1)
+
+                # Create buffer stream via raw Appc
+                kStream = _Appc.new_TGBufferStream()
+                _Appc.TGBufferStream_OpenBuffer(kStream, 256)
+
+                # Write MISSION_INIT_MESSAGE header
+                _Appc.TGBufferStream_WriteChar(kStream,
+                    chr(_ms.MISSION_INIT_MESSAGE))
+                _Appc.TGBufferStream_WriteChar(kStream,
+                    chr(_mms.g_iPlayerLimit))
+                _Appc.TGBufferStream_WriteChar(kStream,
+                    chr(_mms.g_iSystem))
+
+                # Time limit
+                if _mms.g_iTimeLimit == -1:
+                    _Appc.TGBufferStream_WriteChar(kStream, chr(255))
+                else:
+                    _Appc.TGBufferStream_WriteChar(kStream,
+                        chr(_mms.g_iTimeLimit))
+                    gameTime = _App.UtopiaModule_GetGameTime(
+                        _App.g_kUtopiaModule)
+                    _Appc.TGBufferStream_WriteInt(kStream,
+                        _ms.g_iTimeLeft + int(gameTime))
+
+                # Frag limit
+                if _mms.g_iFragLimit == -1:
+                    _Appc.TGBufferStream_WriteChar(kStream, chr(255))
+                else:
+                    _Appc.TGBufferStream_WriteChar(kStream,
+                        chr(_mms.g_iFragLimit))
+
+                # Attach data to message and send
+                _Appc.TGMessage_SetDataFromStream(pMessage, kStream)
+                _Appc.TGNetwork_SendTGMessage(pNetwork, iToID, pMessage)
+                _Appc.TGBufferStream_CloseBuffer(kStream)
+
+                _logfn(">>> InitNetwork: MISSION_INIT_MESSAGE sent OK")
+
+                # Send current scores to joining player (SCORE_MESSAGE)
+                # Builds merged key set from kills/deaths/scores dicts,
+                # sends one message per player with their current stats.
+                _kKills = _m1.g_kKillsDictionary
+                _kDeaths = _m1.g_kDeathsDictionary
+                _kScores = _m1.g_kScoresDictionary
+                _pDict = {}
+                for _ik in _kKills.keys():
+                    _pDict[_ik] = 1
+                for _ik in _kDeaths.keys():
+                    _pDict[_ik] = 1
+                for _ik in _kScores.keys():
+                    _pDict[_ik] = 1
+                _scoreCount = 0
+                for _ik in _pDict.keys():
+                    _iKills = 0
+                    _iDeaths = 0
+                    _iScore = 0
+                    if _kKills.has_key(_ik):
+                        _iKills = _kKills[_ik]
+                    if _kDeaths.has_key(_ik):
+                        _iDeaths = _kDeaths[_ik]
+                    if _kScores.has_key(_ik):
+                        _iScore = _kScores[_ik]
+                    _sMsg = _Appc.TGMessage_Create()
+                    _Appc.TGMessage_SetGuaranteed(_sMsg, 1)
+                    _sStream = _Appc.new_TGBufferStream()
+                    _Appc.TGBufferStream_OpenBuffer(_sStream, 256)
+                    _Appc.TGBufferStream_WriteChar(_sStream,
+                        chr(_ms.SCORE_MESSAGE))
+                    _Appc.TGBufferStream_WriteLong(_sStream, _ik)
+                    _Appc.TGBufferStream_WriteLong(_sStream, _iKills)
+                    _Appc.TGBufferStream_WriteLong(_sStream, _iDeaths)
+                    _Appc.TGBufferStream_WriteLong(_sStream, _iScore)
+                    _Appc.TGMessage_SetDataFromStream(_sMsg, _sStream)
+                    _Appc.TGNetwork_SendTGMessage(pNetwork, iToID, _sMsg)
+                    _Appc.TGBufferStream_CloseBuffer(_sStream)
+                    _scoreCount = _scoreCount + 1
+                if _scoreCount > 0:
+                    _logfn(">>> InitNetwork: sent %d SCORE_MESSAGEs" %
+                           _scoreCount)
+
+            except:
+                ei = sys.exc_info()
+                _logfn(">>> InitNetwork EXCEPTION: %s: %s" %
+                       (str(ei[0]), str(ei[1])))
+
+        _m1.InitNetwork = _ds_InitNetwork
+        _log("  Replaced InitNetwork with functional-API version")
     except:
         ei = sys.exc_info()
-        _log("  InitNetwork wrap FAILED: %s: %s" % (str(ei[0]), str(ei[1])))
+        _log("  InitNetwork replace FAILED: %s: %s" % (str(ei[0]), str(ei[1])))
 
     # --- Also wrap ProcessMessageHandler for server-side diagnostics ---
     try:
@@ -1009,6 +1181,93 @@ def TopWindowInitialized(pTopWindow):
     except:
         ei = sys.exc_info()
         _log("  ProcessMessageHandler wrap FAILED: %s: %s" %
+             (str(ei[0]), str(ei[1])))
+
+    # ---------------------------------------------------------------
+    # Monkey-patch SpeciesToShip.InitObject to trace ship creation.
+    # The C engine calls InitObject(self, iType) when a ship object
+    # arrives over the network. We need to know if it's called at all
+    # and where it fails on the headless server.
+    # ---------------------------------------------------------------
+    try:
+        _sts_temp = __import__("Multiplayer.SpeciesToShip")
+        _sts_mod = sys.modules["Multiplayer.SpeciesToShip"]
+        _orig_InitObject = _sts_mod.InitObject
+        _orig_CreateShip = _sts_mod.CreateShip
+        _orig_GetShipFromSpecies = _sts_mod.GetShipFromSpecies
+
+        def _wrapped_InitObject(self, iType):
+            _log(">>> SpeciesToShip.InitObject(self=%s, iType=%d)" % (str(self), iType))
+            try:
+                kStats = _orig_GetShipFromSpecies(iType)
+                _log("  GetShipFromSpecies -> %s" % str(kStats))
+            except:
+                ei = sys.exc_info()
+                _log("  GetShipFromSpecies FAILED: %s: %s" % (str(ei[0]), str(ei[1])))
+
+            try:
+                _log("  Calling SetupModel...")
+                self.SetupModel(kStats['Name'])
+                _log("  SetupModel OK")
+            except:
+                ei = sys.exc_info()
+                _log("  SetupModel FAILED: %s: %s" % (str(ei[0]), str(ei[1])))
+
+            try:
+                pPropertySet = self.GetPropertySet()
+                _log("  GetPropertySet -> %s" % str(pPropertySet))
+            except:
+                ei = sys.exc_info()
+                _log("  GetPropertySet FAILED: %s: %s" % (str(ei[0]), str(ei[1])))
+                pPropertySet = None
+
+            try:
+                import App
+                hpfile = kStats['HardpointFile']
+                _log("  Importing ships.Hardpoints.%s..." % hpfile)
+                hpmod = __import__("ships.Hardpoints." + hpfile)
+                hpmod = sys.modules["ships.Hardpoints." + hpfile]
+                App.g_kModelPropertyManager.ClearLocalTemplates()
+                reload(hpmod)
+                _log("  Hardpoint module loaded OK")
+            except:
+                ei = sys.exc_info()
+                _log("  Hardpoint load FAILED: %s: %s" % (str(ei[0]), str(ei[1])))
+                hpmod = None
+
+            if pPropertySet and hpmod:
+                try:
+                    hpmod.LoadPropertySet(pPropertySet)
+                    _log("  LoadPropertySet OK")
+                except:
+                    ei = sys.exc_info()
+                    _log("  LoadPropertySet FAILED: %s: %s" % (str(ei[0]), str(ei[1])))
+
+                try:
+                    self.SetupProperties()
+                    _log("  SetupProperties OK")
+                except:
+                    ei = sys.exc_info()
+                    _log("  SetupProperties FAILED: %s: %s" % (str(ei[0]), str(ei[1])))
+
+                try:
+                    self.UpdateNodeOnly()
+                    _log("  UpdateNodeOnly OK")
+                except:
+                    ei = sys.exc_info()
+                    _log("  UpdateNodeOnly FAILED: %s: %s" % (str(ei[0]), str(ei[1])))
+            else:
+                _log("  SKIPPED LoadPropertySet (pPropertySet=%s hpmod=%s)" %
+                     (str(pPropertySet), str(hpmod)))
+
+            _log("<<< InitObject done")
+            return 1
+
+        _sts_mod.InitObject = _wrapped_InitObject
+        _log("  Monkey-patched SpeciesToShip.InitObject with tracing")
+    except:
+        ei = sys.exc_info()
+        _log("  SpeciesToShip monkey-patch FAILED: %s: %s" %
              (str(ei[0]), str(ei[1])))
 
     _log("DedicatedServer: Setup complete - server should be listening")

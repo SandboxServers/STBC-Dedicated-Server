@@ -12,22 +12,1233 @@
 #include "ddraw_proxy.h"
 #include <stdio.h>
 #include <stdlib.h>
-#include <setjmp.h>
 
 /* Forward declarations */
 static void ResolveAddr(DWORD addr, char* out, int outLen);
-static ProxySurface7* g_pPatchDummy; /* defined in PatchNullSurface */
-static BYTE* g_pNullDummy;           /* zeroed 64KB buffer for NULL this fixup */
-static void PatchNullGlobals(void);  /* forward decl */
-static void PatchSkipRendererSetup(void); /* forward decl */
 
-/* Software breakpoint hooks for function tracing */
-static BYTE g_bpOrig[4] = {0};      /* saved original bytes at each BP address */
-static volatile int g_bpSS = 0;     /* which BP is in single-step mode (0=none, 1-4) */
-#define BP_NEWPLAYER_ADDR  0x006a0a30  /* FUN_006a0a30 - NewPlayerHandler */
-#define BP_CHECKSUM_ADDR   0x006a3820  /* FUN_006a3820 - ChecksumRequestSender */
-#define BP_SEND_ADDR       0x006b4c10  /* FUN_006b4c10 - TGNetwork::Send */
-static int g_bpInstalled = 0;
+/* ================================================================
+ * Packet Trace System
+ *
+ * Dedicated log file (packet_trace.log) with:
+ * - Session header with timestamp
+ * - Direction labels (S->C / C->S)
+ * - Peer address tracking
+ * - AlbyRules! cipher decryption (game packets shown decrypted)
+ * - Known opcode decoding from decrypted data
+ * - Full hex+ASCII dumps
+ * ================================================================ */
+static FILE* g_pPacketLog = NULL;
+static volatile LONG g_packetSeq = 0;
+
+/* Peer tracking: map IP:port to a short label */
+#define MAX_PEERS 16
+static struct {
+    DWORD ip;
+    WORD  port;
+    char  label[32]; /* e.g. "Client#1(192.168.1.5:22101)" */
+} g_peers[MAX_PEERS];
+static int g_numPeers = 0;
+
+static const char* PktGetPeerLabel(const struct sockaddr_in* sin) {
+    static char buf[48];
+    int i;
+    DWORD ip = sin->sin_addr.s_addr;
+    WORD port = sin->sin_port; /* network byte order */
+    for (i = 0; i < g_numPeers; i++) {
+        if (g_peers[i].ip == ip && g_peers[i].port == port)
+            return g_peers[i].label;
+    }
+    /* New peer - register it */
+    if (g_numPeers < MAX_PEERS) {
+        i = g_numPeers++;
+        g_peers[i].ip = ip;
+        g_peers[i].port = port;
+        sprintf(g_peers[i].label, "Peer#%d(%d.%d.%d.%d:%d)", i,
+                (unsigned char)((char*)&ip)[0], (unsigned char)((char*)&ip)[1],
+                (unsigned char)((char*)&ip)[2], (unsigned char)((char*)&ip)[3],
+                ntohs(port));
+        if (g_pPacketLog) {
+            fprintf(g_pPacketLog, "# NEW PEER: %s\n", g_peers[i].label);
+            fflush(g_pPacketLog);
+        }
+        return g_peers[i].label;
+    }
+    sprintf(buf, "%d.%d.%d.%d:%d",
+            (unsigned char)((char*)&ip)[0], (unsigned char)((char*)&ip)[1],
+            (unsigned char)((char*)&ip)[2], (unsigned char)((char*)&ip)[3],
+            ntohs(port));
+    return buf;
+}
+
+/* ================================================================
+ * "AlbyRules!" Stream Cipher (TGWinsockNetwork encryption)
+ *
+ * All TGNetwork UDP payloads are encrypted with a custom stream cipher
+ * using the hardcoded key "AlbyRules!" (at 0x0095abb4 in stbc.exe).
+ * Byte 0 of each UDP packet (direction flag) is NOT encrypted.
+ * Reimplemented from FUN_006c2280/006c22f0/006c23c0/006c2490/006c2520.
+ * ================================================================ */
+
+typedef struct {
+    int  temp_a;
+    int  temp_c;
+    int  temp_d;
+    int  state_a;
+    int  running_sum;
+    int  key_word[5];
+    unsigned int prng_output;
+    int  round_counter;
+    unsigned int accumulator;
+    unsigned char key_string[10];
+    int  byte_state;
+} BCCipherState;
+
+static const char BC_KEY[10] = {'A','l','b','y','R','u','l','e','s','!'};
+
+static void BC_Reset(BCCipherState *s) {
+    memset(s, 0, sizeof(*s));
+    memcpy(s->key_string, BC_KEY, 10);
+}
+
+static void BC_PRNGStep(BCCipherState *s) {
+    int rnd = s->round_counter;
+    int kw  = s->key_word[rnd];
+    int mix = s->running_sum + rnd;
+    int cross1 = mix * 0x4E35;
+    int cross2 = kw * 0x15A;
+    int new_rsum = s->state_a + cross1 + cross2;
+    int new_kw = kw * 0x4E35 + 1;
+    s->running_sum = new_rsum;
+    s->state_a = cross2;
+    s->key_word[rnd] = new_kw;
+    s->prng_output = (unsigned int)new_rsum ^ (unsigned int)new_kw;
+    s->round_counter = rnd + 1;
+}
+
+static void BC_KeySchedule(BCCipherState *s) {
+    unsigned char *k = s->key_string;
+    s->key_word[0] = (int)((unsigned int)k[0] * 256 + k[1]);
+    BC_PRNGStep(s);
+    s->accumulator = s->prng_output;
+
+    s->key_word[1] = (int)(((unsigned int)k[2] * 256 + k[3]) ^ (unsigned int)s->key_word[0]);
+    BC_PRNGStep(s);
+    s->accumulator ^= s->prng_output;
+
+    s->key_word[2] = (int)(((unsigned int)k[4] * 256 + k[5]) ^ (unsigned int)s->key_word[1]);
+    BC_PRNGStep(s);
+    s->accumulator ^= s->prng_output;
+
+    s->key_word[3] = (int)(((unsigned int)k[6] * 256 + k[7]) ^ (unsigned int)s->key_word[2]);
+    BC_PRNGStep(s);
+    s->accumulator ^= s->prng_output;
+
+    s->key_word[4] = (int)(((unsigned int)k[8] * 256 + k[9]) ^ (unsigned int)s->key_word[3]);
+    BC_PRNGStep(s);
+    s->round_counter = 0;
+    s->accumulator ^= s->prng_output;
+}
+
+static void BC_DecryptPayload(const unsigned char *in, unsigned char *out, int len) {
+    BCCipherState s;
+    int i, j;
+    BC_Reset(&s);
+    for (i = 0; i < len; i++) {
+        s.byte_state = (int)(signed char)in[i];  /* MOVSX: sign-extend */
+        BC_KeySchedule(&s);
+        s.byte_state = (int)((unsigned int)s.byte_state
+                             ^ (s.accumulator & 0xFF)
+                             ^ (s.accumulator >> 8));
+        for (j = 0; j < 10; j++)
+            s.key_string[j] ^= (unsigned char)s.byte_state;
+        out[i] = (unsigned char)s.byte_state;
+    }
+}
+
+/* Decrypt a full BC UDP packet. Byte 0 (dir flag) is not encrypted. */
+static void BC_DecryptPacket(const unsigned char *wire, unsigned char *plain, int len) {
+    if (len <= 0) return;
+    plain[0] = wire[0];  /* direction flag: 0x01=server, 0x02=client, 0xFF=init */
+    if (len > 1)
+        BC_DecryptPayload(wire + 1, plain + 1, len - 1);
+}
+
+/* ================================================================
+ * Packet Decoder - Structured decode of decrypted TGNetwork packets
+ *
+ * Framing: [dir:1][peer_id:1][sequence:1][messages...]
+ * Messages are either raw transport types or 0x32 reliable wrappers.
+ * Inside reliable wrappers: [0x32][len][flags][seq_hi][seq_lo][payload]
+ * The payload contains game opcodes (0x00-0x1E) or checksum opcodes (0x20-0x27).
+ *
+ * Implements all compression formats from wire-format-spec.md:
+ * - CompressedFloat16 (logarithmic 16-bit float)
+ * - CompressedVector3 (3 direction bytes + magnitude)
+ * - Bit packing (up to 5 bools per byte)
+ * ================================================================ */
+
+/* --- Decoder read cursor --- */
+typedef struct {
+    const unsigned char* data;
+    int len;
+    int pos;
+    int bitPackPos;  /* position of current bit-pack byte, -1 if none */
+    int bitPackIdx;  /* which bit we're on (0-4) */
+    int bitPackCount;/* total bits in current pack byte */
+} PktCursor;
+
+static void PktCursorInit(PktCursor* c, const unsigned char* data, int len, int startPos) {
+    c->data = data;
+    c->len = len;
+    c->pos = startPos;
+    c->bitPackPos = -1;
+    c->bitPackIdx = 0;
+    c->bitPackCount = 0;
+}
+
+static int PktHas(PktCursor* c, int n) { return c->pos + n <= c->len; }
+
+static unsigned char PktReadU8(PktCursor* c) {
+    if (c->pos >= c->len) return 0;
+    c->bitPackPos = -1; /* reset bit packing on any byte read */
+    return c->data[c->pos++];
+}
+
+static unsigned short PktReadU16(PktCursor* c) {
+    unsigned short v;
+    if (c->pos + 2 > c->len) return 0;
+    c->bitPackPos = -1;
+    v = c->data[c->pos] | (c->data[c->pos + 1] << 8);
+    c->pos += 2;
+    return v;
+}
+
+static unsigned int PktReadU32(PktCursor* c) {
+    unsigned int v;
+    if (c->pos + 4 > c->len) return 0;
+    c->bitPackPos = -1;
+    v = c->data[c->pos] | (c->data[c->pos+1]<<8) | (c->data[c->pos+2]<<16) | (c->data[c->pos+3]<<24);
+    c->pos += 4;
+    return v;
+}
+
+static float PktReadFloat(PktCursor* c) {
+    union { unsigned int u; float f; } conv;
+    conv.u = PktReadU32(c);
+    return conv.f;
+}
+
+static int PktReadBit(PktCursor* c) {
+    unsigned char packed;
+    int val;
+    if (c->bitPackPos >= 0 && c->bitPackIdx < c->bitPackCount) {
+        /* still consuming bits from current pack byte */
+        val = (c->data[c->bitPackPos] >> c->bitPackIdx) & 1;
+        c->bitPackIdx++;
+        return val;
+    }
+    /* need a new bit-pack byte */
+    if (c->pos >= c->len) return 0;
+    packed = c->data[c->pos];
+    c->bitPackPos = c->pos;
+    c->pos++;
+    c->bitPackCount = ((packed >> 5) & 7) + 1; /* upper 3 bits = count-1 */
+    c->bitPackIdx = 1; /* we're about to return bit 0 */
+    return packed & 1;
+}
+
+/* --- CompressedFloat16 decoder --- */
+static float PktDecodeCompressedFloat16(unsigned short raw) {
+    unsigned short mantissa = raw & 0xFFF;
+    unsigned char rawScale = (unsigned char)(raw >> 12);
+    int isNeg = (rawScale >> 3) & 1;
+    unsigned char scale = rawScale & 0x7;
+    float rangeLo = 0.0f, rangeHi = 0.001f;
+    unsigned char i;
+    float result;
+    for (i = 0; i < scale; i++) {
+        rangeLo = rangeHi;
+        rangeHi *= 10.0f;
+    }
+    result = rangeLo + (mantissa / 4095.0f) * (rangeHi - rangeLo);
+    return isNeg ? -result : result;
+}
+
+/* --- CompressedVector3 decoder: 3 dir bytes → unit direction --- */
+static void PktDecodeDirection(signed char dx, signed char dy, signed char dz,
+                               float* outX, float* outY, float* outZ) {
+    *outX = (float)dx / 127.0f;
+    *outY = (float)dy / 127.0f;
+    *outZ = (float)dz / 127.0f;
+}
+
+/* --- Opcode name lookup --- */
+static const char* PktGameOpcodeName(unsigned char op) {
+    switch (op) {
+    case 0x00: return "Settings";
+    case 0x01: return "GameInit";
+    case 0x02: return "ObjCreate";
+    case 0x03: return "ObjCreateTeam";
+    case 0x04: return "BootPlayer";
+    case 0x06: return "PythonEvent";
+    case 0x07: return "StartFiring";
+    case 0x08: return "StopFiring";
+    case 0x09: return "StopFiringAt";
+    case 0x0A: return "SubsysStatus";
+    case 0x0B: return "EventFwd_DF";
+    case 0x0C: return "EventFwd";
+    case 0x0D: return "PythonEvent2";
+    case 0x0E: return "StartCloak";
+    case 0x0F: return "StopCloak";
+    case 0x10: return "StartWarp";
+    case 0x13: return "HostMsg";
+    case 0x14: return "DestroyObj";
+    case 0x15: return "Unknown_15";
+    case 0x17: return "DeletePlayerUI";
+    case 0x18: return "DeletePlayerAnim";
+    case 0x19: return "TorpedoFire";
+    case 0x1A: return "BeamFire";
+    case 0x1B: return "TorpTypeChange";
+    case 0x1C: return "StateUpdate";
+    case 0x1D: return "ObjNotFound";
+    case 0x1E: return "RequestObj";
+    case 0x1F: return "EnterSet";
+    case 0x29: return "Explosion";
+    case 0x2A: return "NewPlayerInGame";
+    /* Checksum opcodes */
+    case 0x20: return "ChecksumReq";
+    case 0x21: return "ChecksumResp";
+    case 0x22: return "VersionMismatch";
+    case 0x23: return "SysChecksumFail";
+    case 0x25: return "FileTransfer";
+    case 0x27: return "FileTransferACK";
+    default: return NULL;
+    }
+}
+
+/* --- Phase 1: Settings (0x00) decoder --- */
+static void PktDecodeSettings(FILE* f, PktCursor* c) {
+    float gameTime;
+    int settings1, settings2;
+    unsigned char playerSlot;
+    unsigned short mapLen;
+    int checksumFlag;
+    int i;
+
+    if (!PktHas(c, 4)) { fprintf(f, "      (truncated)\n"); return; }
+    gameTime = PktReadFloat(c);
+    settings1 = PktReadBit(c);
+    settings2 = PktReadBit(c);
+    playerSlot = PktReadU8(c);
+    mapLen = PktReadU16(c);
+
+    fprintf(f, "      gameTime=%.2f collisionDmg=%d friendlyFire=%d slot=%d",
+            gameTime, settings1, settings2, playerSlot);
+
+    if (mapLen > 0 && PktHas(c, mapLen)) {
+        fprintf(f, " map=\"");
+        for (i = 0; i < mapLen && i < 128; i++)
+            fputc(c->data[c->pos + i], f);
+        c->pos += mapLen;
+        fprintf(f, "\"");
+    }
+    checksumFlag = PktReadBit(c);
+    fprintf(f, " checksumCorrection=%d\n", checksumFlag);
+}
+
+/* --- Phase 1: BootPlayer (0x04) decoder --- */
+static void PktDecodeBootPlayer(FILE* f, PktCursor* c) {
+    unsigned char reason;
+    if (!PktHas(c, 1)) return;
+    reason = PktReadU8(c);
+    fprintf(f, "      reason=%d (%s)\n", reason,
+            reason == 2 ? "server full" :
+            reason == 3 ? "game in progress" :
+            reason == 4 ? "kicked" : "unknown");
+}
+
+/* --- Phase 2: State Update (0x1C) decoder --- */
+static void PktDecodeStateUpdate(FILE* f, PktCursor* c, int msgEnd) {
+    unsigned int objId;
+    float gameTime;
+    unsigned char flags;
+    float px, py, pz;
+    int hasHash;
+    unsigned short hash;
+    signed char dx, dy, dz;
+    unsigned short mag;
+    float fx, fy, fz, ux, uy, uz;
+    float speed;
+    unsigned char startIdx, cloakState;
+
+    if (!PktHas(c, 9)) { fprintf(f, "      (truncated)\n"); return; }
+    objId = PktReadU32(c);
+    gameTime = PktReadFloat(c);
+    flags = PktReadU8(c);
+
+    fprintf(f, "      obj=0x%08X t=%.2f flags=0x%02X [", objId, gameTime, flags);
+    if (flags & 0x01) fprintf(f, "POS ");
+    if (flags & 0x02) fprintf(f, "DELTA ");
+    if (flags & 0x04) fprintf(f, "FWD ");
+    if (flags & 0x08) fprintf(f, "UP ");
+    if (flags & 0x10) fprintf(f, "SPD ");
+    if (flags & 0x20) fprintf(f, "SUB ");
+    if (flags & 0x40) fprintf(f, "CLK ");
+    if (flags & 0x80) fprintf(f, "WPN ");
+    fprintf(f, "]\n");
+
+    /* Flag 0x01: Absolute position */
+    if (flags & 0x01) {
+        if (!PktHas(c, 12)) return;
+        px = PktReadFloat(c);
+        py = PktReadFloat(c);
+        pz = PktReadFloat(c);
+        fprintf(f, "        pos=(%.1f, %.1f, %.1f)", px, py, pz);
+        hasHash = PktReadBit(c);
+        if (hasHash) {
+            hash = PktReadU16(c);
+            fprintf(f, " subsysHash=0x%04X", hash);
+        }
+        fprintf(f, "\n");
+    }
+
+    /* Flag 0x02: Position delta (CompressedVector4, param4=1 → 5 bytes) */
+    if (flags & 0x02) {
+        if (!PktHas(c, 5)) return;
+        dx = (signed char)PktReadU8(c);
+        dy = (signed char)PktReadU8(c);
+        dz = (signed char)PktReadU8(c);
+        mag = PktReadU16(c);
+        PktDecodeDirection(dx, dy, dz, &fx, &fy, &fz);
+        speed = PktDecodeCompressedFloat16(mag);
+        fprintf(f, "        delta dir=(%.2f,%.2f,%.2f) mag=%.3f\n",
+                fx, fy, fz, speed);
+    }
+
+    /* Flag 0x04: Forward orientation (CompressedVector3 = 3 bytes dir only) */
+    if (flags & 0x04) {
+        if (!PktHas(c, 3)) return;
+        dx = (signed char)PktReadU8(c);
+        dy = (signed char)PktReadU8(c);
+        dz = (signed char)PktReadU8(c);
+        PktDecodeDirection(dx, dy, dz, &fx, &fy, &fz);
+        fprintf(f, "        fwd=(%.2f, %.2f, %.2f)\n", fx, fy, fz);
+    }
+
+    /* Flag 0x08: Up orientation (CompressedVector3 = 3 bytes dir only) */
+    if (flags & 0x08) {
+        if (!PktHas(c, 3)) return;
+        dx = (signed char)PktReadU8(c);
+        dy = (signed char)PktReadU8(c);
+        dz = (signed char)PktReadU8(c);
+        PktDecodeDirection(dx, dy, dz, &ux, &uy, &uz);
+        fprintf(f, "        up=(%.2f, %.2f, %.2f)\n", ux, uy, uz);
+    }
+
+    /* Flag 0x10: Speed (CompressedFloat16) */
+    if (flags & 0x10) {
+        if (!PktHas(c, 2)) return;
+        mag = PktReadU16(c);
+        speed = PktDecodeCompressedFloat16(mag);
+        fprintf(f, "        speed=%.3f\n", speed);
+    }
+
+    /* Flag 0x40: Cloak state (read before 0x20 in the receiver) */
+    if (flags & 0x40) {
+        cloakState = (unsigned char)PktReadBit(c);
+        fprintf(f, "        cloak=%s\n", cloakState ? "ON" : "OFF");
+    }
+
+    /* Flag 0x20: Subsystem states (round-robin, variable length) */
+    if (flags & 0x20) {
+        int bytesRead;
+        if (!PktHas(c, 1)) return;
+        startIdx = PktReadU8(c);
+        fprintf(f, "        subsystems startIdx=%d data=[", startIdx);
+        bytesRead = 0;
+        while (PktHas(c, 1) && bytesRead < 20 && c->pos < msgEnd) {
+            fprintf(f, "%02X ", c->data[c->pos]);
+            c->pos++;
+            bytesRead++;
+        }
+        fprintf(f, "]\n");
+    }
+
+    /* Flag 0x80: Weapon states (round-robin, variable length) */
+    if (flags & 0x80) {
+        int bytesRead = 0;
+        fprintf(f, "        weapons data=[");
+        while (PktHas(c, 2) && bytesRead < 12 && c->pos < msgEnd) {
+            unsigned char wIdx = c->data[c->pos];
+            unsigned char wHealth = c->data[c->pos + 1];
+            fprintf(f, "%d:%.0f%% ", wIdx, (float)wHealth / 204.0f * 100.0f);
+            c->pos += 2;
+            bytesRead += 2;
+        }
+        fprintf(f, "]\n");
+    }
+}
+
+/* --- Phase 3: Explosion (0x0F) decoder --- */
+static void PktDecodeExplosion(FILE* f, PktCursor* c) {
+    unsigned int objId;
+    signed char dx, dy, dz;
+    unsigned short mag;
+    unsigned short dmgRaw, radRaw;
+    float ix, iy, iz, impactMag, damage, radius;
+
+    if (!PktHas(c, 4 + 5 + 2 + 2)) { fprintf(f, "      (truncated)\n"); return; }
+    objId = PktReadU32(c);
+    /* CompressedVector4 with uint16 magnitude = 5 bytes */
+    dx = (signed char)PktReadU8(c);
+    dy = (signed char)PktReadU8(c);
+    dz = (signed char)PktReadU8(c);
+    mag = PktReadU16(c);
+    PktDecodeDirection(dx, dy, dz, &ix, &iy, &iz);
+    impactMag = PktDecodeCompressedFloat16(mag);
+    ix *= impactMag; iy *= impactMag; iz *= impactMag;
+
+    dmgRaw = PktReadU16(c);
+    radRaw = PktReadU16(c);
+    damage = PktDecodeCompressedFloat16(dmgRaw);
+    radius = PktDecodeCompressedFloat16(radRaw);
+
+    fprintf(f, "      obj=0x%08X impact=(%.1f,%.1f,%.1f) dmg=%.1f radius=%.1f\n",
+            objId, ix, iy, iz, damage, radius);
+}
+
+/* --- Phase 3: TorpedoFire (0x19) decoder --- */
+/* Sender: FUN_0057cb10 TorpedoSystem::SendFireMessage
+ * Format: objectId(i32), flags1(u8), flags2(u8 with has_arc, has_target bits),
+ *         velocity(cv3), [targetId(i32), impactPoint(cv4)] */
+static void PktDecodeTorpedoFire(FILE* f, PktCursor* c) {
+    unsigned int objId;
+    unsigned char flags1, flags2;
+    signed char dx, dy, dz;
+    float vx, vy, vz;
+    int hasArc, hasTarget;
+
+    if (!PktHas(c, 4)) { fprintf(f, "      (truncated)\n"); return; }
+    objId = PktReadU32(c);
+
+    if (!PktHas(c, 2)) return;
+    flags1 = PktReadU8(c);
+    flags2 = PktReadU8(c);
+    hasArc = (flags2 >> 0) & 1;
+    hasTarget = (flags2 >> 1) & 1;
+
+    /* velocity (CompressedVector3 = 3 bytes direction) */
+    if (!PktHas(c, 3)) return;
+    dx = (signed char)PktReadU8(c);
+    dy = (signed char)PktReadU8(c);
+    dz = (signed char)PktReadU8(c);
+    PktDecodeDirection(dx, dy, dz, &vx, &vy, &vz);
+
+    fprintf(f, "      obj=0x%08X flags=0x%02X,0x%02X vel=(%.2f,%.2f,%.2f)",
+            objId, flags1, flags2, vx, vy, vz);
+
+    if (hasTarget && PktHas(c, 4)) {
+        unsigned int targetId = PktReadU32(c);
+        fprintf(f, " target=0x%08X", targetId);
+        /* impact point as CompressedVector4 (3 dir bytes + CF16 magnitude) */
+        if (PktHas(c, 5)) {
+            signed char ix, iy, iz;
+            unsigned short mag;
+            float ipx, ipy, ipz, impactMag;
+            ix = (signed char)PktReadU8(c);
+            iy = (signed char)PktReadU8(c);
+            iz = (signed char)PktReadU8(c);
+            mag = PktReadU16(c);
+            PktDecodeDirection(ix, iy, iz, &ipx, &ipy, &ipz);
+            impactMag = PktDecodeCompressedFloat16(mag);
+            ipx *= impactMag; ipy *= impactMag; ipz *= impactMag;
+            fprintf(f, " impact=(%.1f,%.1f,%.1f)", ipx, ipy, ipz);
+        }
+    }
+    if (hasArc) fprintf(f, " +arc");
+    fprintf(f, "\n");
+}
+
+/* --- Phase 3: BeamFire (0x1A) decoder --- */
+/* Sender: FUN_00575480 PhaserSystem::SendFireMessage
+ * Format: objectId(i32), flags(u8), targetPos(cv3), moreFlags(u8), [targetId(i32)] */
+static void PktDecodeBeamFire(FILE* f, PktCursor* c) {
+    unsigned int objId;
+    unsigned char flags, moreFlags;
+    signed char dx, dy, dz;
+    float tx, ty, tz;
+    int hasTarget;
+    unsigned int targetId;
+
+    if (!PktHas(c, 4)) { fprintf(f, "      (truncated)\n"); return; }
+    objId = PktReadU32(c);
+    if (!PktHas(c, 1)) return;
+    flags = PktReadU8(c);
+
+    /* target position (CompressedVector3 = 3 bytes) */
+    if (!PktHas(c, 3)) return;
+    dx = (signed char)PktReadU8(c);
+    dy = (signed char)PktReadU8(c);
+    dz = (signed char)PktReadU8(c);
+    PktDecodeDirection(dx, dy, dz, &tx, &ty, &tz);
+
+    if (!PktHas(c, 1)) return;
+    moreFlags = PktReadU8(c);
+    hasTarget = moreFlags & 1;
+
+    fprintf(f, "      obj=0x%08X flags=0x%02X targetDir=(%.2f,%.2f,%.2f)",
+            objId, flags, tx, ty, tz);
+    if (hasTarget && PktHas(c, 4)) {
+        targetId = PktReadU32(c);
+        fprintf(f, " target=0x%08X", targetId);
+    }
+    fprintf(f, "\n");
+}
+
+/* --- Phase 3: Event forward (0x07-0x0B, 0x0E-0x10, 0x1B) decoder --- */
+/* These are generic event messages forwarded via FUN_006a17c0/FUN_0069FDA0.
+ * Format: objectId(i32) + event-specific payload (variable) */
+static void PktDecodeEventForward(FILE* f, PktCursor* c, int msgEnd) {
+    unsigned int objId;
+    int remaining;
+    if (!PktHas(c, 4)) { fprintf(f, "      (truncated)\n"); return; }
+    objId = PktReadU32(c);
+    remaining = msgEnd - c->pos;
+    fprintf(f, "      obj=0x%08X", objId);
+    if (remaining > 0) {
+        int i;
+        fprintf(f, " data=[");
+        for (i = 0; i < remaining && i < 32; i++)
+            fprintf(f, "%02X ", c->data[c->pos + i]);
+        if (remaining > 32) fprintf(f, "...");
+        fprintf(f, "] (%d bytes)", remaining);
+    }
+    fprintf(f, "\n");
+    c->pos = msgEnd;
+}
+
+/* --- Phase 3: Python message (0x07/0x08) decoder --- */
+static void PktDecodePythonMsg(FILE* f, PktCursor* c, int msgEnd) {
+    unsigned int eventCode;
+    int remaining;
+    int i;
+
+    if (!PktHas(c, 4)) { fprintf(f, "      (truncated)\n"); return; }
+    eventCode = PktReadU32(c);
+    remaining = msgEnd - c->pos;
+    if (remaining < 0) remaining = 0;
+
+    fprintf(f, "      eventCode=0x%08X", eventCode);
+
+    /* Try to decode known Python message types by peeking at first payload byte */
+    if (remaining > 0) {
+        unsigned char pyType = c->data[c->pos];
+        /* Python message type byte is offset from App.MAX_MESSAGE_TYPES base
+         * Known types: +1=CHAT, +10=MISSION_INIT, +11=SCORE_CHANGE,
+         *              +12=SCORE, +13=END_GAME, +14=RESTART, +20=SCORE_INIT */
+        fprintf(f, " pyType=%d", pyType);
+
+        /* Try to decode MISSION_INIT (+10): [type][playerLimit][systemSpecies][timeLimit][if!=255:endTime(int)][fragLimit] */
+        if (pyType == 10 && remaining >= 4) {
+            unsigned char pLimit = c->data[c->pos + 1];
+            unsigned char sysSpecies = c->data[c->pos + 2];
+            unsigned char timeLim = c->data[c->pos + 3];
+            fprintf(f, " MISSION_INIT playerLimit=%d sysSpecies=%d timeLimit=%d",
+                    pLimit, sysSpecies, timeLim);
+        }
+        /* SCORE (+12): [type][playerID(4)][kills(4)][deaths(4)][score(4)] */
+        else if (pyType == 12 && remaining >= 17) {
+            int pOff = c->pos + 1;
+            unsigned int pid = c->data[pOff]|(c->data[pOff+1]<<8)|(c->data[pOff+2]<<16)|(c->data[pOff+3]<<24);
+            unsigned int kills = c->data[pOff+4]|(c->data[pOff+5]<<8)|(c->data[pOff+6]<<16)|(c->data[pOff+7]<<24);
+            unsigned int deaths = c->data[pOff+8]|(c->data[pOff+9]<<8)|(c->data[pOff+10]<<16)|(c->data[pOff+11]<<24);
+            unsigned int score = c->data[pOff+12]|(c->data[pOff+13]<<8)|(c->data[pOff+14]<<16)|(c->data[pOff+15]<<24);
+            fprintf(f, " SCORE player=%u kills=%u deaths=%u score=%u", pid, kills, deaths, score);
+        }
+    }
+
+    /* Dump remaining payload as hex (limited) */
+    if (remaining > 0) {
+        fprintf(f, " payload=[");
+        for (i = 0; i < remaining && i < 32; i++)
+            fprintf(f, "%02X ", c->data[c->pos + i]);
+        if (remaining > 32) fprintf(f, "...");
+        fprintf(f, "]");
+    }
+    fprintf(f, "\n");
+    c->pos = msgEnd;
+}
+
+/* --- Phase 4: ChecksumRequest (0x20) decoder --- */
+static void PktDecodeChecksumReq(FILE* f, PktCursor* c) {
+    unsigned char reqIdx;
+    unsigned short dirLen, filterLen;
+    int i;
+    int recursive;
+
+    if (!PktHas(c, 1)) return;
+    reqIdx = PktReadU8(c);
+    dirLen = PktReadU16(c);
+    fprintf(f, "      round=%d dir=\"", reqIdx);
+    for (i = 0; i < dirLen && PktHas(c, 1) && i < 64; i++)
+        fputc(PktReadU8(c), f);
+    fprintf(f, "\" filter=\"");
+    filterLen = PktReadU16(c);
+    for (i = 0; i < filterLen && PktHas(c, 1) && i < 64; i++)
+        fputc(PktReadU8(c), f);
+    fprintf(f, "\"");
+    recursive = PktReadBit(c);
+    fprintf(f, " recursive=%d\n", recursive);
+}
+
+/* --- Phase 4: ChecksumResponse (0x21) decoder --- */
+static void PktDecodeChecksumResp(FILE* f, PktCursor* c, int msgEnd) {
+    unsigned char reqIdx;
+    int remaining;
+    int i;
+
+    if (!PktHas(c, 1)) return;
+    reqIdx = PktReadU8(c);
+    remaining = msgEnd - c->pos;
+    if (remaining < 0) remaining = 0;
+
+    if (reqIdx == 0xFF) {
+        unsigned int crc = 0;
+        if (PktHas(c, 4)) crc = PktReadU32(c);
+        fprintf(f, "      first-response crc=0x%08X hashData=%d bytes\n",
+                crc, remaining > 4 ? remaining - 4 : 0);
+    } else {
+        unsigned short dirLen;
+        fprintf(f, "      round=%d", reqIdx);
+        dirLen = PktReadU16(c);
+        fprintf(f, " dir=\"");
+        for (i = 0; i < dirLen && PktHas(c, 1) && i < 64; i++)
+            fputc(PktReadU8(c), f);
+        fprintf(f, "\"\n");
+    }
+    c->pos = msgEnd;
+}
+
+/* --- Phase 4: ChecksumFail (0x22/0x23) decoder --- */
+static void PktDecodeChecksumFail(FILE* f, PktCursor* c, unsigned char subOp) {
+    unsigned short fnLen;
+    int i;
+    fprintf(f, "      %s file=\"",
+            subOp == 0x22 ? "VersionMismatch" : "SystemChecksumFail");
+    fnLen = PktReadU16(c);
+    for (i = 0; i < fnLen && PktHas(c, 1) && i < 128; i++)
+        fputc(PktReadU8(c), f);
+    fprintf(f, "\"\n");
+}
+
+/* --- Phase 4: FileTransfer (0x25) decoder --- */
+static void PktDecodeFileTransfer(FILE* f, PktCursor* c, int msgEnd) {
+    unsigned short fnLen;
+    int remaining;
+    int i;
+    fnLen = PktReadU16(c);
+    fprintf(f, "      file=\"");
+    for (i = 0; i < fnLen && PktHas(c, 1) && i < 128; i++)
+        fputc(PktReadU8(c), f);
+    remaining = msgEnd - c->pos;
+    fprintf(f, "\" dataLen=%d\n", remaining > 0 ? remaining : 0);
+    c->pos = msgEnd;
+}
+
+/* --- Decode a single game opcode payload (after the opcode byte) --- */
+static void PktDecodeGameOpcode(FILE* f, unsigned char opcode, PktCursor* c, int msgEnd) {
+    const char* name = PktGameOpcodeName(opcode);
+    if (name)
+        fprintf(f, "    [0x%02X %s]\n", opcode, name);
+    else
+        fprintf(f, "    [0x%02X]\n", opcode);
+
+    switch (opcode) {
+    case 0x00: PktDecodeSettings(f, c); break;
+    case 0x01: fprintf(f, "      (trigger, no payload)\n"); break;
+    case 0x02:
+    case 0x03: {
+        unsigned char owner = PktReadU8(c);
+        fprintf(f, "      type=%s owner=%d", opcode==3?"team":"std", owner);
+        if (opcode == 0x03 && PktHas(c, 1)) {
+            unsigned char teamId = PktReadU8(c);
+            fprintf(f, " team=%d", teamId);
+        }
+        /* Scan serialized object data for length-prefixed ASCII strings */
+        {
+            int scanPos = c->pos;
+            int stringsFound = 0;
+            while (scanPos < msgEnd - 1 && stringsFound < 4) {
+                unsigned char sLen = c->data[scanPos];
+                if (sLen >= 2 && sLen <= 64 && scanPos + 1 + sLen <= msgEnd) {
+                    /* Check if all bytes are printable ASCII */
+                    int j, allPrint = 1;
+                    for (j = 0; j < sLen; j++) {
+                        unsigned char ch = c->data[scanPos + 1 + j];
+                        if (ch < 0x20 || ch > 0x7E) { allPrint = 0; break; }
+                    }
+                    if (allPrint) {
+                        fprintf(f, " str%d=\"", stringsFound);
+                        for (j = 0; j < sLen; j++)
+                            fputc(c->data[scanPos + 1 + j], f);
+                        fprintf(f, "\"");
+                        scanPos += 1 + sLen;
+                        stringsFound++;
+                        continue;
+                    }
+                }
+                scanPos++;
+            }
+        }
+        fprintf(f, " objData=%d bytes\n", msgEnd - c->pos);
+        c->pos = msgEnd;
+        break;
+    }
+    case 0x04: PktDecodeBootPlayer(f, c); break;
+    case 0x06:
+    case 0x0D: PktDecodePythonMsg(f, c, msgEnd); break;
+    /* Event forward opcodes (all use same generic format) */
+    case 0x07: /* StartFiring */
+    case 0x08: /* StopFiring */
+    case 0x09: /* StopFiringAtTarget */
+    case 0x0A: /* SubsystemStatusChanged */
+    case 0x0B: /* EventFwd 0xDF */
+    case 0x0C: /* EventFwd (generic) */
+    case 0x0E: /* StartCloaking */
+    case 0x0F: /* StopCloaking */
+    case 0x10: /* StartWarp */
+    case 0x1B: /* TorpedoTypeChange */
+        PktDecodeEventForward(f, c, msgEnd); break;
+    case 0x14: {
+        unsigned int objId = PktReadU32(c);
+        fprintf(f, "      destroyObj=0x%08X\n", objId);
+        break;
+    }
+    case 0x19: PktDecodeTorpedoFire(f, c); break;
+    case 0x1A: PktDecodeBeamFire(f, c); break;
+    case 0x1C: PktDecodeStateUpdate(f, c, msgEnd); break;
+    case 0x1D: {
+        unsigned int objId = PktReadU32(c);
+        fprintf(f, "      notFoundObj=0x%08X\n", objId);
+        break;
+    }
+    case 0x1E: {
+        unsigned int objId = PktReadU32(c);
+        fprintf(f, "      requestObj=0x%08X\n", objId);
+        break;
+    }
+    case 0x1F: {
+        /* EnterSet - contains set name */
+        int remaining = msgEnd - c->pos;
+        if (remaining > 0) {
+            int i;
+            fprintf(f, "      set=\"");
+            for (i = 0; i < remaining && i < 64; i++)
+                fputc(c->data[c->pos + i], f);
+            fprintf(f, "\"\n");
+            c->pos = msgEnd;
+        }
+        break;
+    }
+    case 0x29: PktDecodeExplosion(f, c); break;
+    case 0x2A: fprintf(f, "      (new player in game)\n"); break;
+    /* Checksum opcodes */
+    case 0x20: PktDecodeChecksumReq(f, c); break;
+    case 0x21: PktDecodeChecksumResp(f, c, msgEnd); break;
+    case 0x22:
+    case 0x23: PktDecodeChecksumFail(f, c, opcode); break;
+    case 0x25: PktDecodeFileTransfer(f, c, msgEnd); break;
+    case 0x27: fprintf(f, "      (ack, no payload)\n"); break;
+    default:
+        /* Unknown opcode - dump remaining as hex */
+        if (c->pos < msgEnd) {
+            int i, rem = msgEnd - c->pos;
+            fprintf(f, "      data=[");
+            for (i = 0; i < rem && i < 32; i++)
+                fprintf(f, "%02X ", c->data[c->pos + i]);
+            if (rem > 32) fprintf(f, "...");
+            fprintf(f, "] (%d bytes)\n", rem);
+            c->pos = msgEnd;
+        }
+        break;
+    }
+}
+
+/* --- TGNetwork transport message type names --- */
+static const char* PktTransportName(unsigned char type) {
+    switch (type) {
+    case 0x00: return "Keepalive";
+    case 0x01: return "ACK";
+    case 0x03: return "Connect";
+    case 0x04: return "ConnectData";
+    case 0x05: return "ConnectAck";
+    case 0x06: return "Disconnect";
+    case 0x32: return "Reliable";
+    default: return NULL;
+    }
+}
+
+/* --- Main packet decoder: parses framing and dispatches to opcode decoders --- */
+static void PktDecodePacket(FILE* f, const unsigned char* dec, int len) {
+    PktCursor cur;
+    unsigned char dir, msgCount;
+    const char* dirStr;
+    int msgNum;
+
+    if (len < 2) return;
+
+    dir = dec[0];
+    msgCount = dec[1];
+
+    dirStr = (dir == 0x01) ? "S" : (dir == 0x02) ? "C" : (dir == 0xFF) ? "INIT" : "?";
+    fprintf(f, "  DECODE: dir=%s msgs=%d\n", dirStr, msgCount);
+
+    PktCursorInit(&cur, dec, len, 2);
+
+    for (msgNum = 0; msgNum < msgCount && PktHas(&cur, 1); msgNum++) {
+        unsigned char msgType = PktReadU8(&cur);
+
+        if (msgType == 0x32) {
+            /* Reliable message wrapper: [0x32][totalLen][flags][seq_hi?][seq_lo?][payload] */
+            unsigned char totalLen, flags;
+            unsigned short seqNum;
+            unsigned char innerOpcode;
+            int msgStart, innerStart, innerEnd;
+
+            msgStart = cur.pos - 1; /* position of the 0x32 byte */
+            if (!PktHas(&cur, 2)) break;
+            totalLen = PktReadU8(&cur);
+            flags = PktReadU8(&cur);
+
+            if (flags & 0x80) {
+                /* Reliable: has sequence number */
+                if (!PktHas(&cur, 2)) break;
+                seqNum = (unsigned short)(PktReadU8(&cur) << 8) | PktReadU8(&cur);
+                fprintf(f, "  [msg %d] Reliable seq=%d len=%d", msgNum, seqNum, totalLen);
+            } else {
+                /* Unreliable: no sequence */
+                fprintf(f, "  [msg %d] Unreliable len=%d", msgNum, totalLen);
+                seqNum = 0;
+            }
+
+            /* totalLen includes the 0x32 byte itself, so end = msgStart + totalLen */
+            innerStart = cur.pos;
+            innerEnd = msgStart + totalLen;
+            if (innerEnd > len) innerEnd = len;
+            if (innerEnd < innerStart) innerEnd = innerStart;
+
+            if (PktHas(&cur, 1) && cur.pos < innerEnd) {
+                innerOpcode = PktReadU8(&cur);
+                fprintf(f, "\n");
+                PktDecodeGameOpcode(f, innerOpcode, &cur, innerEnd);
+            } else {
+                fprintf(f, " (empty)\n");
+            }
+            cur.pos = innerEnd; /* advance past this message */
+
+        } else if (msgType == 0x01) {
+            /* ACK message: [01][seq][00][flags] = fixed 4 bytes total */
+            if (PktHas(&cur, 3)) {
+                unsigned char ackSeq = PktReadU8(&cur);
+                PktReadU8(&cur); /* padding */
+                PktReadU8(&cur); /* flags */
+                fprintf(f, "  [msg %d] ACK seq=%d\n", msgNum, ackSeq);
+            }
+
+        } else {
+            /* All other transport types: [type][totalLen][data...]
+             * totalLen includes the type byte. Known types:
+             * 0x00=Data, 0x03=Connect, 0x04=ConnectData, 0x05=ConnectAck, 0x06=Disconnect */
+            const char* tName = PktTransportName(msgType);
+            int msgStart = cur.pos - 1; /* position of type byte */
+            int msgEnd;
+
+            if (PktHas(&cur, 1)) {
+                unsigned char totalLen = PktReadU8(&cur);
+                msgEnd = msgStart + totalLen;
+                if (msgEnd > len) msgEnd = len;
+                if (msgEnd < cur.pos) msgEnd = cur.pos;
+                fprintf(f, "  [msg %d] %s (0x%02X) len=%d\n", msgNum,
+                        tName ? tName : "Transport", msgType, totalLen);
+                cur.pos = msgEnd;
+            } else {
+                fprintf(f, "  [msg %d] %s (0x%02X)\n", msgNum,
+                        tName ? tName : "Unknown", msgType);
+            }
+        }
+    }
+}
+
+/* Quick opcode label for the packet header line (legacy compat) */
+static const char* PktIdentifyOpcode(const unsigned char* dec, int len) {
+    unsigned char msgType;
+    if (len < 3) {
+        if (len <= 1) return "";
+        return "[short]";
+    }
+    msgType = dec[2]; /* first message type byte after [dir][msgCount] */
+    switch (msgType) {
+    case 0x00: return "[Keepalive]";
+    case 0x01: return "[ACK]";
+    case 0x03: return "[Connect]";
+    case 0x05: return "[ConnectAck]";
+    case 0x06: return "[Disconnect]";
+    case 0x32: return "[Reliable]";
+    }
+    return "";
+}
+
+static void PktHexDump(FILE* f, const unsigned char* data, int len) {
+    int off, i, rowLen;
+    int maxDump = len < 2048 ? len : 2048;
+    for (off = 0; off < maxDump; off += 16) {
+        rowLen = maxDump - off;
+        if (rowLen > 16) rowLen = 16;
+        fprintf(f, "    %04X: ", off);
+        for (i = 0; i < rowLen; i++)
+            fprintf(f, "%02X ", data[off + i]);
+        for (i = rowLen; i < 16; i++)
+            fprintf(f, "   ");
+        fprintf(f, " |");
+        for (i = 0; i < rowLen; i++) {
+            unsigned char c = data[off + i];
+            fputc((c >= 0x20 && c <= 0x7E) ? c : '.', f);
+        }
+        fprintf(f, "|\n");
+    }
+    if (len > 2048)
+        fprintf(f, "    ... (%d bytes truncated)\n", len - 2048);
+}
+
+static void PktLog(const char* dir, const struct sockaddr_in* peer,
+                    const unsigned char* data, int len, int rc) {
+    SYSTEMTIME st;
+    LONG seq;
+    const char* label;
+    const char* opcode;
+    unsigned char decBuf[2048];
+    int isGamePacket;
+    if (!g_pPacketLog) return;
+    GetLocalTime(&st);
+    seq = InterlockedIncrement(&g_packetSeq);
+    label = peer ? PktGetPeerLabel(peer) : "unknown";
+
+    /* GameSpy packets start with '\' (0x5C) - plaintext, not encrypted.
+     * TGNetwork game packets start with 0x01/0x02/0xFF - encrypted. */
+    isGamePacket = (len > 0 && data[0] != '\\');
+
+    if (isGamePacket && len > 1 && len <= (int)sizeof(decBuf)) {
+        BC_DecryptPacket(data, decBuf, len);
+        opcode = PktIdentifyOpcode(decBuf, len);
+        fprintf(g_pPacketLog,
+                "[%02d:%02d:%02d.%03d] #%ld %s %s len=%d rc=%d %s\n",
+                st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+                seq, dir, label, len, rc, opcode);
+        fprintf(g_pPacketLog, "  Decrypted:\n");
+        PktHexDump(g_pPacketLog, decBuf, len);
+        PktDecodePacket(g_pPacketLog, decBuf, len);
+    } else {
+        opcode = "";
+        fprintf(g_pPacketLog,
+                "[%02d:%02d:%02d.%03d] #%ld %s %s len=%d rc=%d %s\n",
+                st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+                seq, dir, label, len, rc, opcode);
+        fprintf(g_pPacketLog, "  Plaintext:\n");
+        PktHexDump(g_pPacketLog, data, len);
+    }
+    fprintf(g_pPacketLog, "\n");
+    fflush(g_pPacketLog);
+}
+
+/* Open packet trace log - called from DllMain after g_szBasePath is set */
+static void PktTraceOpen(void) {
+    char path[MAX_PATH];
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    lstrcpynA(path, g_szBasePath, MAX_PATH);
+    lstrcatA(path, "packet_trace.log");
+    g_pPacketLog = fopen(path, "w");
+    if (g_pPacketLog) {
+        fprintf(g_pPacketLog,
+                "# STBC Dedicated Server - Packet Trace (DECRYPTED)\n"
+                "# Session started: %04d-%02d-%02d %02d:%02d:%02d\n"
+                "# Format: [time] #seq DIR peer len=N rc=N [opcode]\n"
+                "# DIR: S->C = server to client, C->S = client to server\n"
+                "# Game packets decrypted with AlbyRules! cipher + structured decode\n"
+                "# Framing: [dir:1][peer:1][msgCount:1][messages...]\n"
+                "# Transport: 0x00=Keepalive 0x01=ACK 0x03=Connect 0x05=ConnectAck 0x06=Disconnect\n"
+                "# Reliable wrapper: [0x32][len][flags][seq_hi][seq_lo][game_opcode][payload]\n"
+                "# Game opcodes: 0x00=Settings 0x01=GameInit 0x02/03=ObjCreate 0x04=Boot\n"
+                "#   0x06/0D=Python 0x07=StartFire 0x08=StopFire 0x09=StopFireAt 0x0A=SubsysStatus\n"
+                "#   0x0E=StartCloak 0x0F=StopCloak 0x10=StartWarp 0x14=DestroyObj\n"
+                "#   0x19=TorpedoFire 0x1A=BeamFire 0x1B=TorpTypeChange 0x1C=StateUpdate\n"
+                "#   0x1D=ObjNotFound 0x1E=RequestObj 0x1F=EnterSet 0x29=Explosion 0x2A=NewPlayer\n"
+                "# Checksum: 0x20=Req 0x21=Resp 0x22/23=Fail 0x25=FileXfer 0x27=ACK\n"
+                "# StateUpdate flags: POS=0x01 DELTA=0x02 FWD=0x04 UP=0x08\n"
+                "#   SPD=0x10 SUB=0x20 CLK=0x40 WPN=0x80\n"
+                "# GameSpy packets (start with '\\') shown as plaintext (not encrypted)\n"
+                "# ============================================================\n\n",
+                st.wYear, st.wMonth, st.wDay,
+                st.wHour, st.wMinute, st.wSecond);
+        fflush(g_pPacketLog);
+    }
+}
+
+#ifdef OBSERVE_ONLY
+/* ================================================================
+ * Message Factory Table Hook (OBSERVE_ONLY)
+ *
+ * The TGNetwork receive processor (FUN_006b5c90) decodes transport
+ * framing, then dispatches each message through a factory function
+ * table at 0x009962d4. Each entry creates a typed message object
+ * from the decoded byte stream.
+ *
+ * We replace table entries with our hook to log decoded messages:
+ * - Message type byte (network opcode)
+ * - Message size (from vtable[5] = GetSize method)
+ * - Raw hex dump of decoded message body
+ *
+ * Known message types (from static analysis):
+ *   0x00: FUN_006bc6a0  0x01: FUN_006bd1f0  0x02: FUN_006bdd10
+ *   0x03: FUN_006be860  0x04: FUN_006badb0  0x05: FUN_006bf410
+ *   0x32: FUN_006b83f0
+ *
+ * The game-layer opcodes (settings, checksums, etc.) are carried
+ * as payloads WITHIN these network messages.
+ * ================================================================ */
+#define MSG_FACTORY_TABLE_ADDR  0x009962d4
+#define MSG_FACTORY_TABLE_COUNT 256
+
+typedef int* (__cdecl *MsgFactoryFn)(unsigned char* data);
+typedef int (__attribute__((thiscall)) *MsgGetSizeFn)(void* thisPtr);
+
+static MsgFactoryFn g_origFactories[MSG_FACTORY_TABLE_COUNT];
+static volatile LONG g_factoryHooked = 0;
+static FILE* g_pMsgLog = NULL;
+static volatile LONG g_msgSeq = 0;
+
+static void MsgTraceOpen(void) {
+    char path[MAX_PATH];
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    lstrcpynA(path, g_szBasePath, MAX_PATH);
+    lstrcatA(path, "message_trace.log");
+    g_pMsgLog = fopen(path, "w");
+    if (g_pMsgLog) {
+        fprintf(g_pMsgLog,
+                "# STBC Message Trace - Decoded Application Layer\n"
+                "# Session: %04d-%02d-%02d %02d:%02d:%02d\n"
+                "# Format: [time] #seq MSG type=0xNN size=N vtbl=0xNNNNNNNN\n"
+                "# Followed by hex dump of decoded message body\n"
+                "# Known types: 0x00-0x05 (core network), 0x32 (connection mgmt)\n"
+                "# Game opcodes are in the message PAYLOAD (visible in hex dump)\n"
+                "# ============================================================\n\n",
+                st.wYear, st.wMonth, st.wDay,
+                st.wHour, st.wMinute, st.wSecond);
+        fflush(g_pMsgLog);
+    }
+}
+
+static int* __cdecl HookMsgFactory(unsigned char* data) {
+    unsigned char msgType = data[0];
+    int* msgObj;
+    int msgSize = 0;
+    SYSTEMTIME st;
+    LONG seq;
+
+    /* Call original factory */
+    if (!g_origFactories[msgType]) return NULL;
+    msgObj = g_origFactories[msgType](data);
+    if (!msgObj) return msgObj;
+
+    /* Try to get message size via vtable[5] (offset 0x14 = GetSize) */
+    if (!IsBadReadPtr(msgObj, 44) &&
+        !IsBadReadPtr(*(void**)msgObj, 24)) {
+        void** vt = *(void***)msgObj;
+        MsgGetSizeFn getSize = (MsgGetSizeFn)vt[5];
+        if (getSize && !IsBadCodePtr((FARPROC)getSize)) {
+            msgSize = getSize(msgObj);
+        }
+    }
+
+    /* Log the decoded message */
+    if (g_pMsgLog) {
+        int dumpLen;
+        GetLocalTime(&st);
+        seq = InterlockedIncrement(&g_msgSeq);
+        fprintf(g_pMsgLog, "[%02d:%02d:%02d.%03d] #%ld MSG type=0x%02X",
+                st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+                seq, msgType);
+        if (msgSize > 0)
+            fprintf(g_pMsgLog, " size=%d", msgSize);
+        fprintf(g_pMsgLog, " vtbl=0x%08X\n",
+                (unsigned int)*(unsigned int*)msgObj);
+
+        /* Hex dump message body (opcode byte + payload) */
+        dumpLen = (msgSize > 0 && msgSize < 256) ? msgSize : 64;
+        PktHexDump(g_pMsgLog, data, dumpLen);
+        fprintf(g_pMsgLog, "\n");
+        fflush(g_pMsgLog);
+    }
+
+    return msgObj;
+}
+
+static void TryInstallFactoryHooks(void) {
+    MsgFactoryFn* table;
+    DWORD oldProt;
+    int i, populated;
+
+    if (g_factoryHooked) return;
+
+    table = (MsgFactoryFn*)MSG_FACTORY_TABLE_ADDR;
+
+    /* Check if table is populated (need at least 3 entries) */
+    populated = 0;
+    for (i = 0; i < MSG_FACTORY_TABLE_COUNT; i++) {
+        if (table[i] != NULL) populated++;
+    }
+    if (populated < 3) return;
+
+    /* Open message trace log if not already open */
+    if (!g_pMsgLog) MsgTraceOpen();
+
+    /* Save original factory function pointers */
+    for (i = 0; i < MSG_FACTORY_TABLE_COUNT; i++) {
+        g_origFactories[i] = table[i];
+    }
+
+    /* Make table writable */
+    if (!VirtualProtect(table, MSG_FACTORY_TABLE_COUNT * sizeof(void*),
+                        PAGE_READWRITE, &oldProt)) {
+        ProxyLog("WARN: VirtualProtect on factory table failed (err=%lu)",
+                 GetLastError());
+        return;
+    }
+
+    /* Replace non-NULL entries with our hook */
+    for (i = 0; i < MSG_FACTORY_TABLE_COUNT; i++) {
+        if (table[i] != NULL) {
+            table[i] = HookMsgFactory;
+        }
+    }
+
+    InterlockedExchange(&g_factoryHooked, 1);
+    ProxyLog("Message factory hooks installed (%d active entries)", populated);
+
+    if (g_pMsgLog) {
+        fprintf(g_pMsgLog, "# Factory hooks installed: %d active entries\n", populated);
+        for (i = 0; i < MSG_FACTORY_TABLE_COUNT; i++) {
+            if (g_origFactories[i]) {
+                fprintf(g_pMsgLog, "#   type 0x%02X -> factory at 0x%08X\n",
+                        i, (unsigned int)(uintptr_t)g_origFactories[i]);
+            }
+        }
+        fprintf(g_pMsgLog, "\n");
+        fflush(g_pMsgLog);
+    }
+}
+#endif /* OBSERVE_ONLY */
 
 /* sendto hook for monitoring outbound UDP traffic */
 typedef int (WSAAPI *PFN_sendto)(SOCKET, const char*, int, int,
@@ -35,30 +1246,184 @@ typedef int (WSAAPI *PFN_sendto)(SOCKET, const char*, int, int,
 static PFN_sendto g_pfnOrigSendto = NULL;
 static volatile LONG g_sendtoCount = 0;
 
+/* Forward declaration - defined in PatchDebugConsoleToFile section */
+static void __cdecl ReplacementDebugConsole(void);
+
+/* F12 state dump - C-level polling (avoids breaking event system) */
+static int g_f12WasDown = 0;
+static DWORD g_f12LastDump = 0;
+
+static void TryF12StateDump(void) {
+    int isDown = (GetAsyncKeyState(VK_F12) & 0x8000) ? 1 : 0;
+    if (isDown && !g_f12WasDown) {
+        /* Edge: key just pressed */
+        DWORD now = GetTickCount();
+        if (now - g_f12LastDump > 2000) { /* 2s cooldown */
+            g_f12LastDump = now;
+            ProxyLog("  F12 detected - triggering state dump from C");
+            /* Use PyRun_String (NOT PyRun_SimpleString) so the exception
+             * from dump_state's "raise text" is preserved in the error
+             * indicator. We then call ReplacementDebugConsole directly
+             * to write the dump text to state_dump.log. */
+            {
+                typedef void* (__cdecl *pfn_PyImport_AddModule)(const char*);
+                typedef void* (__cdecl *pfn_PyModule_GetDict)(void*);
+                typedef void* (__cdecl *pfn_PyRun_String)(const char*, int, void*, void*);
+                #define _AddModule  ((pfn_PyImport_AddModule)0x0075b890)
+                #define _GetDict    ((pfn_PyModule_GetDict)0x00773990)
+                #define _RunString  ((pfn_PyRun_String)0x0074b640)
+                #define PY_FILE_INPUT 257
+
+                void* mod = _AddModule("__main__");
+                if (mod) {
+                    void* dict = _GetDict(mod);
+                    if (dict) {
+                        void* result = _RunString(
+                            "import Custom.StateDumper\n"
+                            "Custom.StateDumper.dump_state('F12 MANUAL DUMP')\n",
+                            PY_FILE_INPUT, dict, dict);
+                        if (!result) {
+                            /* Exception raised (the dump text) - write to file */
+                            ReplacementDebugConsole();
+                        }
+                    }
+                }
+
+                #undef _AddModule
+                #undef _GetDict
+                #undef _RunString
+                #undef PY_FILE_INPUT
+            }
+        }
+    }
+    g_f12WasDown = isDown;
+}
+
+/* ================================================================
+ * Tick State Logger - CSV trace of key engine state every game tick
+ *
+ * Writes one line per ~33ms to tick_trace.log with key memory values.
+ * Designed to be cheap: just memory reads + fprintf, no Python.
+ * Called from HookedSendto (OBSERVE_ONLY) or GameLoopTimerProc (server).
+ *
+ * Columns:
+ *   seq       - monotonic sequence number
+ *   ms        - GetTickCount() timestamp
+ *   gt        - gameTime float from clock object
+ *   mpg       - MultiplayerGame pointer (0 = no game)
+ *   players   - WSN player count
+ *   conn      - WSN connection state (2=host, 3=client)
+ *   isCli     - IsClient byte at 0x0097FA88 (0=host, 1=client)
+ *   isHost    - IsHost byte at 0x0097FA89 (1=host, 0=client)
+ *   isMp      - IsMultiplayer byte at 0x0097FA8A
+ *   mpgB0     - MPG+0xB0 (object gate for message processing)
+ *   mpg1F8    - MPG+0x1F8 (ReadyForNewPlayers)
+ *   emQ       - Event manager queue counter
+ *   pUQ       - Peer[0] unreliable send queue size
+ *   pRQ       - Peer[0] reliable send queue size
+ *   pPQ       - Peer[0] priority send queue size
+ * ================================================================ */
+static FILE* g_pTickLog = NULL;
+static DWORD g_tickLastMs = 0;
+static DWORD g_tickSeq = 0;
+
+static void TickLogger(void) {
+    DWORD now = GetTickCount();
+    DWORD wsnPtr = 0, mpg = 0, clockPtr = 0;
+    float gameTime = 0.0f;
+    int playerCount = 0, connState = 0;
+    BYTE isClient = 0, isHost = 0, isMp = 0, mpg1F8 = 0;
+    DWORD mpgB0 = 0, emQ = 0;
+    int pUQ = 0, pRQ = 0, pPQ = 0;
+
+    /* Throttle: one sample per ~33ms (game tick rate) */
+    if (now - g_tickLastMs < 33) return;
+    g_tickLastMs = now;
+
+    /* Open log on first call */
+    if (!g_pTickLog) {
+        char path[MAX_PATH];
+        if (g_szBasePath[0])
+            _snprintf(path, sizeof(path), "%stick_trace.log", g_szBasePath);
+        else
+            _snprintf(path, sizeof(path), "tick_trace.log");
+        path[sizeof(path)-1] = '\0';
+        g_pTickLog = fopen(path, "w");
+        if (!g_pTickLog) return;
+        fprintf(g_pTickLog, "# Tick Trace Log - session %lu\n", (unsigned long)now);
+        fprintf(g_pTickLog, "# seq,ms,gt,mpg,players,conn,isCli,isHost,isMp,mpgB0,mpg1F8,emQ,pUQ,pRQ,pPQ\n");
+        fflush(g_pTickLog);
+    }
+
+    /* Read key addresses */
+    if (!IsBadReadPtr((void*)0x0097FA78, 4))
+        wsnPtr = *(DWORD*)0x0097FA78;
+    if (!IsBadReadPtr((void*)0x0097e238, 4))
+        mpg = *(DWORD*)0x0097e238;
+    if (!IsBadReadPtr((void*)0x009a09d0, 4))
+        clockPtr = *(DWORD*)0x009a09d0;
+    if (clockPtr && !IsBadReadPtr((void*)(clockPtr + 0x90), 4))
+        gameTime = *(float*)(clockPtr + 0x90);
+    if (wsnPtr && !IsBadReadPtr((void*)(wsnPtr + 0x30), 4))
+        playerCount = *(int*)(wsnPtr + 0x30);
+    if (wsnPtr && !IsBadReadPtr((void*)(wsnPtr + 0x14), 4))
+        connState = *(int*)(wsnPtr + 0x14);
+    if (!IsBadReadPtr((void*)0x0097FA88, 1))
+        isClient = *(BYTE*)0x0097FA88;
+    if (!IsBadReadPtr((void*)0x0097FA89, 1))
+        isHost = *(BYTE*)0x0097FA89;
+    if (!IsBadReadPtr((void*)0x0097FA8A, 1))
+        isMp = *(BYTE*)0x0097FA8A;
+    if (mpg && !IsBadReadPtr((void*)(mpg + 0xB0), 4))
+        mpgB0 = *(DWORD*)(mpg + 0xB0);
+    if (mpg && !IsBadReadPtr((void*)(mpg + 0x1F8), 1))
+        mpg1F8 = *(BYTE*)(mpg + 0x1F8);
+    if (!IsBadReadPtr((void*)0x0097F840, 4))
+        emQ = *(DWORD*)0x0097F840;
+
+    /* Peer[0] send queue sizes */
+    if (wsnPtr && playerCount > 0) {
+        DWORD pArray = 0;
+        if (!IsBadReadPtr((void*)(wsnPtr + 0x2C), 4))
+            pArray = *(DWORD*)(wsnPtr + 0x2C);
+        if (pArray) {
+            DWORD pp = 0;
+            if (!IsBadReadPtr((void*)pArray, 4))
+                pp = *(DWORD*)pArray;
+            if (pp && !IsBadReadPtr((void*)(pp + 0xB4), 4)) {
+                pUQ = *(int*)(pp + 0x7C);
+                pRQ = *(int*)(pp + 0x98);
+                pPQ = *(int*)(pp + 0xB4);
+            }
+        }
+    }
+
+    /* Write CSV line */
+    fprintf(g_pTickLog, "%lu,%lu,%.3f,0x%08lX,%d,%d,%d,%d,%d,0x%08lX,%d,%lu,%d,%d,%d\n",
+            (unsigned long)g_tickSeq++, (unsigned long)now, gameTime,
+            (unsigned long)mpg, playerCount, connState, (int)isClient, (int)isHost, (int)isMp,
+            (unsigned long)mpgB0, (int)mpg1F8, (unsigned long)emQ, pUQ, pRQ, pPQ);
+
+    /* Flush every 30 lines (~1 second) to balance I/O and data safety */
+    if (g_tickSeq % 30 == 0)
+        fflush(g_pTickLog);
+}
+
 static int WSAAPI HookedSendto(SOCKET s, const char* buf, int len, int flags,
                                 const struct sockaddr* to, int tolen) {
     int rc;
-    LONG count;
+#ifdef OBSERVE_ONLY
+    if (!g_factoryHooked) TryInstallFactoryHooks();
+    TryF12StateDump();
+    TickLogger();
+#endif
     rc = g_pfnOrigSendto(s, buf, len, flags, to, tolen);
-    count = InterlockedIncrement(&g_sendtoCount);
-    if (count <= 200) {
-        if (to && tolen >= (int)sizeof(struct sockaddr_in)) {
-            const struct sockaddr_in* sin = (const struct sockaddr_in*)to;
-            char hexbuf[97] = {0};
-            int i, hlen = len < 32 ? len : 32;
-            for (i = 0; i < hlen; i++)
-                sprintf(hexbuf + i*3, "%02X ", (unsigned char)buf[i]);
-            ProxyLog("  SENDTO[%ld]: sock=%d len=%d->rc=%d to=%d.%d.%d.%d:%d",
-                     count, (int)s, len, rc,
-                     (unsigned char)((char*)&sin->sin_addr)[0],
-                     (unsigned char)((char*)&sin->sin_addr)[1],
-                     (unsigned char)((char*)&sin->sin_addr)[2],
-                     (unsigned char)((char*)&sin->sin_addr)[3],
-                     ntohs(sin->sin_port));
-            ProxyLog("    DATA: %s", hexbuf);
-        } else {
-            ProxyLog("  SENDTO[%ld]: sock=%d len=%d->rc=%d (no addr)", count, (int)s, len, rc);
-        }
+    InterlockedIncrement(&g_sendtoCount);
+    if (to && tolen >= (int)sizeof(struct sockaddr_in)) {
+        PktLog("S->C", (const struct sockaddr_in*)to,
+               (const unsigned char*)buf, len, rc);
+    } else {
+        PktLog("S->?", NULL, (const unsigned char*)buf, len, rc);
     }
     return rc;
 }
@@ -71,502 +1436,36 @@ static volatile LONG g_recvfromCount = 0;
 
 static int WSAAPI HookedRecvfrom(SOCKET s, char* buf, int len, int flags,
                                   struct sockaddr* from, int* fromlen) {
-    int rc = g_pfnOrigRecvfrom(s, buf, len, flags, from, fromlen);
+    int rc;
+#ifdef OBSERVE_ONLY
+    if (!g_factoryHooked) TryInstallFactoryHooks();
+#endif
+    rc = g_pfnOrigRecvfrom(s, buf, len, flags, from, fromlen);
     if (rc > 0 && !(flags & MSG_PEEK)) {
-        LONG count = InterlockedIncrement(&g_recvfromCount);
-        if (count <= 200) {
-            char hexbuf[97] = {0};
-            int i, hlen = rc < 32 ? rc : 32;
-            for (i = 0; i < hlen; i++)
-                sprintf(hexbuf + i*3, "%02X ", (unsigned char)buf[i]);
-            if (from && fromlen && *fromlen >= (int)sizeof(struct sockaddr_in)) {
-                const struct sockaddr_in* sin = (const struct sockaddr_in*)from;
-                ProxyLog("  RECVFROM[%ld]: sock=%d len=%d flags=0x%X from=%d.%d.%d.%d:%d",
-                         count, (int)s, rc, flags,
-                         (unsigned char)((char*)&sin->sin_addr)[0],
-                         (unsigned char)((char*)&sin->sin_addr)[1],
-                         (unsigned char)((char*)&sin->sin_addr)[2],
-                         (unsigned char)((char*)&sin->sin_addr)[3],
-                         ntohs(sin->sin_port));
-            } else {
-                ProxyLog("  RECVFROM[%ld]: sock=%d len=%d flags=0x%X (no addr)", count, (int)s, rc, flags);
-            }
-            ProxyLog("    DATA: %s", hexbuf);
+        InterlockedIncrement(&g_recvfromCount);
+        if (from && fromlen && *fromlen >= (int)sizeof(struct sockaddr_in)) {
+            PktLog("C->S", (const struct sockaddr_in*)from,
+                   (const unsigned char*)buf, rc, rc);
+        } else {
+            PktLog("C->S", NULL, (const unsigned char*)buf, rc, rc);
         }
     }
     return rc;
 }
 
-/* ================================================================
- * Crash handler - logs diagnostics for unhandled access violations
- * ================================================================ */
+/* OutputDebugStringA hook - captures game debug output */
+typedef void (WINAPI *PFN_OutputDebugStringA)(LPCSTR);
+static PFN_OutputDebugStringA g_pfnOrigODS = NULL;
 
-/* Check if a CALL instruction precedes the address (validates return address) */
-static BOOL HasCallBefore(DWORD addr) {
-    BYTE* p = (BYTE*)addr;
-    if (addr < 0x00401000) return FALSE;
-    if (IsBadReadPtr(p - 7, 7)) return FALSE;
-    /* CALL rel32 (E8 xx xx xx xx) */
-    if (p[-5] == 0xE8) return TRUE;
-    /* CALL [reg] (FF /2: FF 10..17) or CALL reg (FF D0..D7) */
-    if (p[-2] == 0xFF && ((p[-1] & 0xF8) == 0x10 || (p[-1] & 0xF8) == 0xD0)) return TRUE;
-    /* CALL [reg+disp8] (FF 50..57 xx) */
-    if (p[-3] == 0xFF && (p[-2] & 0xF8) == 0x50) return TRUE;
-    /* CALL [reg+disp32] (FF 90..97 xx xx xx xx) */
-    if (p[-6] == 0xFF && (p[-5] & 0xF8) == 0x90) return TRUE;
-    /* CALL [disp32] (FF 15 xx xx xx xx) - IAT calls */
-    if (p[-6] == 0xFF && p[-5] == 0x15) return TRUE;
-    /* CALL [reg*scale+disp32] with SIB: FF 14 xx (3 bytes) */
-    if (p[-3] == 0xFF && p[-2] == 0x14) return TRUE;
-    return FALSE;
+static void WINAPI HookedOutputDebugStringA(LPCSTR lpOutputString) {
+    if (lpOutputString && lpOutputString[0]) {
+        ProxyLog("[ODS] %s", lpOutputString);
+    }
+    if (g_pfnOrigODS)
+        g_pfnOrigODS(lpOutputString);
 }
 
-/* Phase 2 crash recovery: when FUN_00504f10 causes a PE-header crash loop,
- * the VEH longjmps back to the Phase 2 caller. TopWindow is already created
- * by the time the crash cascade starts, so this is safe. */
-static jmp_buf g_phase2JmpBuf;
-static volatile int g_phase2Active = 0;
-
-static LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep) {
-    /* ---- Software breakpoint handler ---- */
-    if (ep->ExceptionRecord->ExceptionCode == 0x80000003 && g_bpInstalled) {
-        CONTEXT* ctx = ep->ContextRecord;
-        DWORD eip = (DWORD)ctx->Eip - 1; /* INT3 advances EIP past the 0xCC byte */
-        if (eip == BP_NEWPLAYER_ADDR) {
-            DWORD* stk = (DWORD*)ctx->Esp;
-            ProxyLog("  BP-HIT: NewPlayerHandler ECX(this)=0x%08X event=0x%08X retAddr=0x%08X",
-                     (unsigned)ctx->Ecx, stk[1], stk[0]);
-            /* Check +0x1F8 on the MultiplayerGame this pointer */
-            if (ctx->Ecx && !IsBadReadPtr((void*)(ctx->Ecx + 0x1F8), 1))
-                ProxyLog("    this+0x1F8=%d +0x1FC(maxPlayers)=%d",
-                         *(BYTE*)(ctx->Ecx + 0x1F8),
-                         !IsBadReadPtr((void*)(ctx->Ecx + 0x1FC), 4) ?
-                         *(int*)(ctx->Ecx + 0x1FC) : -1);
-            *(BYTE*)BP_NEWPLAYER_ADDR = g_bpOrig[0];
-            ctx->Eip = BP_NEWPLAYER_ADDR;
-            ctx->EFlags |= 0x100; /* TF for single-step */
-            g_bpSS = 1;
-            return -1; /* EXCEPTION_CONTINUE_EXECUTION */
-        }
-        if (eip == BP_CHECKSUM_ADDR) {
-            DWORD* stk = (DWORD*)ctx->Esp;
-            ProxyLog("  BP-HIT: ChecksumSend(0x006a3820) csm=0x%08X connID=%u retAddr=0x%08X",
-                     stk[1], stk[2], stk[0]);
-            *(BYTE*)BP_CHECKSUM_ADDR = g_bpOrig[1];
-            ctx->Eip = BP_CHECKSUM_ADDR;
-            ctx->EFlags |= 0x100;
-            g_bpSS = 2;
-            return -1;
-        }
-        if (eip == BP_SEND_ADDR) {
-            DWORD* stk = (DWORD*)ctx->Esp;
-            static int sendHits = 0;
-            sendHits++;
-            if (sendHits <= 20)
-                ProxyLog("  BP-HIT: TGNetwork::Send wsn=0x%08X connID=%u pkt=0x%08X flag=%d",
-                         stk[1], stk[2], stk[3], stk[4]);
-            *(BYTE*)BP_SEND_ADDR = g_bpOrig[2];
-            ctx->Eip = BP_SEND_ADDR;
-            ctx->EFlags |= 0x100;
-            g_bpSS = 3;
-            return -1;
-        }
-        return 0; /* not our breakpoint */
-    }
-    if (ep->ExceptionRecord->ExceptionCode == 0x80000004 && g_bpSS) {
-        /* Single-step: re-install the breakpoint we just executed past */
-        DWORD oldProt;
-        if (g_bpSS == 1) {
-            VirtualProtect((void*)BP_NEWPLAYER_ADDR, 1, PAGE_EXECUTE_READWRITE, &oldProt);
-            *(BYTE*)BP_NEWPLAYER_ADDR = 0xCC;
-            VirtualProtect((void*)BP_NEWPLAYER_ADDR, 1, oldProt, &oldProt);
-        } else if (g_bpSS == 2) {
-            VirtualProtect((void*)BP_CHECKSUM_ADDR, 1, PAGE_EXECUTE_READWRITE, &oldProt);
-            *(BYTE*)BP_CHECKSUM_ADDR = 0xCC;
-            VirtualProtect((void*)BP_CHECKSUM_ADDR, 1, oldProt, &oldProt);
-        } else if (g_bpSS == 3) {
-            VirtualProtect((void*)BP_SEND_ADDR, 1, PAGE_EXECUTE_READWRITE, &oldProt);
-            *(BYTE*)BP_SEND_ADDR = 0xCC;
-            VirtualProtect((void*)BP_SEND_ADDR, 1, oldProt, &oldProt);
-        }
-        ep->ContextRecord->EFlags &= ~0x100; /* clear TF */
-        g_bpSS = 0;
-        return -1;
-    }
-
-    /* Log any non-AV, non-debug exception for diagnostics */
-    if (ep->ExceptionRecord->ExceptionCode != 0xC0000005 &&
-        ep->ExceptionRecord->ExceptionCode != 0x80000003 && /* breakpoint */
-        ep->ExceptionRecord->ExceptionCode != 0x80000004 && /* single step */
-        ep->ExceptionRecord->ExceptionCode != 0x406D1388 && /* thread name */
-        ep->ExceptionRecord->ExceptionCode != 0x40010006) { /* OutputDebugString */
-        CONTEXT* c = ep->ContextRecord;
-        ProxyLog("!!! EXCEPTION 0x%08X at EIP=0x%08X ESP=0x%08X",
-                 (unsigned)ep->ExceptionRecord->ExceptionCode,
-                 (unsigned)c->Eip, (unsigned)c->Esp);
-        if (ep->ExceptionRecord->ExceptionCode == 0xC00000FD) { /* stack overflow */
-            ProxyLog("    STACK OVERFLOW detected");
-            ProxyLog("    EAX=%08X EBX=%08X ECX=%08X EDX=%08X ESI=%08X EDI=%08X EBP=%08X",
-                     (unsigned)c->Eax, (unsigned)c->Ebx, (unsigned)c->Ecx,
-                     (unsigned)c->Edx, (unsigned)c->Esi, (unsigned)c->Edi,
-                     (unsigned)c->Ebp);
-        }
-        return 0; /* pass through to default handler */
-    }
-    if (ep->ExceptionRecord->ExceptionCode == 0xC0000005) {
-        CONTEXT* ctx = ep->ContextRecord;
-        DWORD eip = (DWORD)ctx->Eip;
-        DWORD faultAddr = (DWORD)ep->ExceptionRecord->ExceptionInformation[1];
-        int isWrite = ep->ExceptionRecord->ExceptionInformation[0] ? 1 : 0;
-
-        /* ---- NULL/bad EIP: executing non-code memory ----
-           Happens when code calls/jumps through a NULL or stale pointer.
-           Scan the stack for a return address preceded by a CALL instruction.
-           Game code is 0x00401000-0x008FFFFF; anything outside that is "bad EIP". */
-        if (eip < 0x00401000 || (eip >= 0x00900000 && eip < 0x10000000)) {
-            DWORD* stack = (DWORD*)ctx->Esp;
-            static int nullEipCount = 0;
-            nullEipCount++;
-            if (!IsBadReadPtr(stack, 2048) && nullEipCount <= 500) {
-                int i;
-                /* First pass: find CLOSE game code return address (within 32 DWORDs = 128 bytes).
-                   Recovering to addresses far up the stack corrupts program state. */
-                for (i = 0; i < 32; i++) {
-                    if (stack[i] >= 0x00401000 && stack[i] < 0x00900000
-                        && HasCallBefore(stack[i])) {
-                        if (nullEipCount <= 10)
-                            ProxyLog("  VEH-FIX: bad EIP=0x%X, return to 0x%08X (ESP+%X, fix #%d)",
-                                     (unsigned)eip, (unsigned)stack[i], i * 4, nullEipCount);
-                        ctx->Eip = stack[i];
-                        ctx->Esp += (i + 1) * 4;
-                        ctx->Eax = 0;
-                        return -1;
-                    }
-                }
-                /* Log stack for debugging (only first few times) */
-                if (nullEipCount <= 3) {
-                    ProxyLog("  VEH: bad EIP=0x%X, no close return addr found.", (unsigned)eip);
-                    ProxyLog("  Registers: EAX=%08X EBX=%08X ECX=%08X EDX=%08X",
-                             (unsigned)ctx->Eax, (unsigned)ctx->Ebx,
-                             (unsigned)ctx->Ecx, (unsigned)ctx->Edx);
-                    ProxyLog("  Registers: ESI=%08X EDI=%08X EBP=%08X ESP=%08X",
-                             (unsigned)ctx->Esi, (unsigned)ctx->Edi,
-                             (unsigned)ctx->Ebp, (unsigned)ctx->Esp);
-                    /* Raw stack dump - 48 DWORDs = 192 bytes */
-                    ProxyLog("  Raw stack (48 DWORDs):");
-                    for (i = 0; i < 48; i += 4)
-                        ProxyLog("    ESP+%03X: %08X %08X %08X %08X",
-                                 i * 4,
-                                 (unsigned)stack[i], (unsigned)stack[i+1],
-                                 (unsigned)stack[i+2], (unsigned)stack[i+3]);
-                    /* Also log any game/DLL code addresses found further on stack */
-                    for (i = 48; i < 512; i++) {
-                        if ((stack[i] >= 0x00401000 && stack[i] < 0x00900000) ||
-                            (stack[i] >= 0x10000000 && stack[i] < 0x20000000)) {
-                            ProxyLog("    ESP+%04X: 0x%08X (%s, HasCallBefore=%d)",
-                                     i * 4, (unsigned)stack[i],
-                                     stack[i] < 0x00900000 ? "game" : "DLL",
-                                     HasCallBefore(stack[i]));
-                        }
-                    }
-                }
-            }
-            /* Phase 2 crash recovery: if we can't find a return address and
-               Phase 2 is active, longjmp back. TopWindow is already created. */
-            if (g_phase2Active) {
-                ProxyLog("  VEH: bad EIP=0x%X during Phase 2 -> longjmp recovery (fix #%d)",
-                         (unsigned)eip, nullEipCount);
-                g_phase2Active = 0;
-                longjmp(g_phase2JmpBuf, 1);
-            }
-            if (nullEipCount <= 10)
-                ProxyLog("  VEH: bad EIP=0x%X, no valid return address found (fix #%d)",
-                         (unsigned)eip, nullEipCount);
-        }
-
-        /* ---- NULL pointer WRITE handler ----
-           Redirect the register containing the fault address to dummy buffer.
-           This lets writes to NULL succeed harmlessly in stub mode. */
-        if (isWrite && faultAddr < 0x10000 && g_pNullDummy) {
-            static int writeFixCount = 0;
-            DWORD target = (DWORD)g_pNullDummy + faultAddr;
-            const char* regName = NULL;
-            writeFixCount++;
-            if (writeFixCount > 2000) goto log_crash;
-            if      (ctx->Ecx == faultAddr) { ctx->Ecx = target; regName = "ECX"; }
-            else if (ctx->Eax == faultAddr) { ctx->Eax = target; regName = "EAX"; }
-            else if (ctx->Edx == faultAddr) { ctx->Edx = target; regName = "EDX"; }
-            else if (ctx->Esi == faultAddr) { ctx->Esi = target; regName = "ESI"; }
-            else if (ctx->Edi == faultAddr) { ctx->Edi = target; regName = "EDI"; }
-            else if (ctx->Ebx == faultAddr) { ctx->Ebx = target; regName = "EBX"; }
-            if (regName) {
-                if (writeFixCount <= 5 || writeFixCount % 100 == 0)
-                    ProxyLog("  VEH-FIX: NULL write+0x%X at EIP=0x%08X, set %s -> dummy (wfix #%d)",
-                             (unsigned)faultAddr, (unsigned)eip, regName, writeFixCount);
-                return -1;
-            }
-        }
-
-        /* ---- General NULL pointer READ handler ----
-           Handles crashes caused by NULL 'this' pointers or NULL object
-           pointers. Redirect NULL register to a large zeroed dummy buffer. */
-        if (!isWrite && faultAddr < 0x10000 && g_pNullDummy) {
-            static DWORD lastFixEip = 0;
-            static int sameEipCount = 0;
-            static int totalFixCount = 0;
-
-            if (eip == lastFixEip) {
-                sameEipCount++;
-                if (sameEipCount > 1000) goto log_crash;
-            } else {
-                lastFixEip = eip;
-                sameEipCount = 0;
-            }
-            totalFixCount++;
-
-            if (totalFixCount == 1)
-                PatchNullGlobals();
-
-            /* For mipmap code range: inject dummy surface */
-            if (faultAddr <= 4 && eip >= 0x007C0000 && eip <= 0x007D0000
-                && g_pPatchDummy) {
-                DWORD* stack = (DWORD*)ctx->Esp;
-                if (totalFixCount <= 5)
-                    ProxyLog("  VEH-FIX: NULL deref at EIP=0x%08X, injecting dummy surface",
-                             (unsigned)eip);
-                ctx->Eax = (DWORD)g_pPatchDummy;
-                if (!IsBadWritePtr(stack, 4) && stack[0] == 0)
-                    stack[0] = (DWORD)g_pPatchDummy;
-                return -1;
-            }
-
-            /* General case: fix the NULL register */
-            {
-                DWORD dummy = (DWORD)g_pNullDummy;
-                const char* regName = NULL;
-                if      (ctx->Ecx == 0) { ctx->Ecx = dummy; regName = "ECX"; }
-                else if (ctx->Eax == 0) { ctx->Eax = dummy; regName = "EAX"; }
-                else if (ctx->Edx == 0) { ctx->Edx = dummy; regName = "EDX"; }
-                else if (ctx->Esi == 0) { ctx->Esi = dummy; regName = "ESI"; }
-                else if (ctx->Edi == 0) { ctx->Edi = dummy; regName = "EDI"; }
-                else if (ctx->Ebx == 0) { ctx->Ebx = dummy; regName = "EBX"; }
-                if (regName) {
-                    if (totalFixCount <= 5 || totalFixCount % 100 == 0)
-                        ProxyLog("  VEH-FIX: NULL+0x%X at EIP=0x%08X, set %s -> dummy (fix #%d)",
-                                 (unsigned)faultAddr, (unsigned)eip, regName, totalFixCount);
-                    return -1;
-                }
-            }
-        }
-
-        /* Log unhandled crashes (suppress noise from system DLLs like IsBadReadPtr) */
-        log_crash:
-        if (eip >= 0x70000000) {
-            /* System DLL crash - likely IsBadReadPtr or similar. Pass through silently. */
-            return 0;
-        }
-        {
-            static int totalCrashCount = 0;
-            totalCrashCount++;
-            if (totalCrashCount > 50) {
-                /* Too many unrecoverable crashes - abort to prevent infinite loop */
-                if (totalCrashCount == 51)
-                    ProxyLog("!!! TOO MANY CRASHES (%d), passing to OS", totalCrashCount);
-                return 0; /* let OS handle it */
-            }
-        }
-        ProxyLog("!!! CRASH: EIP=0x%08X accessing 0x%08X (%s)",
-                 (unsigned)eip, (unsigned)faultAddr, isWrite ? "write" : "read");
-        ProxyLog("    EAX=0x%08X EBX=0x%08X ECX=0x%08X EDX=0x%08X",
-                 (unsigned)ctx->Eax, (unsigned)ctx->Ebx,
-                 (unsigned)ctx->Ecx, (unsigned)ctx->Edx);
-        ProxyLog("    ESI=0x%08X EDI=0x%08X EBP=0x%08X ESP=0x%08X",
-                 (unsigned)ctx->Esi, (unsigned)ctx->Edi,
-                 (unsigned)ctx->Ebp, (unsigned)ctx->Esp);
-        {
-            BYTE* code = (BYTE*)eip;
-            if (!IsBadReadPtr(code - 16, 64)) {
-                char hexBuf[512];
-                char *p = hexBuf;
-                int j;
-                for (j = -16; j < 32; j++) {
-                    if (j == 0) { *p++ = '['; }
-                    p += wsprintfA(p, "%02X ", code[j]);
-                    if (j == 0) { p[-1] = ']'; *p++ = ' '; }
-                }
-                ProxyLog("    Code: %s", hexBuf);
-            }
-        }
-    }
-    return 0; /* EXCEPTION_CONTINUE_SEARCH */
-}
-
-/* ================================================================
- * Hook abort() in game's static CRT
- *
- * abort() at 0x0085A108 starts with "push 0Ah; call raise".
- * We redirect to a code cave that calls HookedAbort then returns,
- * effectively suppressing the abort.
- * ================================================================ */
-static BYTE* g_pAbortCave = NULL;
-static LONG g_abortCount = 0;
-
-static void __cdecl __attribute__((optimize("O0"))) HookedAbort(void) {
-    DWORD* ebp_val;
-    char buf[256];
-
-    g_abortCount++;
-    __asm__ volatile("movl %%ebp, %0" : "=r" (ebp_val));
-
-    if (g_abortCount <= 5) {
-        if (ebp_val && !IsBadReadPtr(ebp_val, 12)) {
-            DWORD callerOfAbort = ebp_val[2];
-            ResolveAddr(callerOfAbort, buf, sizeof(buf));
-            ProxyLog("!!! abort() #%d SUPPRESSED - called from: %s",
-                     g_abortCount, buf);
-        } else {
-            ProxyLog("!!! abort() #%d SUPPRESSED (ebp=%p)", g_abortCount, ebp_val);
-        }
-
-        if (g_abortCount == 1) {
-            DWORD* stack;
-            int i, found = 0;
-            __asm__ volatile("movl %%esp, %0" : "=r" (stack));
-            ProxyLog("  Raw stack scan:");
-            for (i = 0; i < 256 && !IsBadReadPtr(stack + i, 4); i++) {
-                DWORD val = stack[i];
-                if (val >= 0x00401000 && val < 0x00900000) {
-                    ResolveAddr(val, buf, sizeof(buf));
-                    ProxyLog("    ESP+%04X: %s", i * 4, buf);
-                    found++;
-                    if (found >= 20) break;
-                }
-            }
-        }
-    } else if (g_abortCount == 6) {
-        ProxyLog("!!! abort() called %d times, suppressing further logging", g_abortCount);
-    }
-}
-
-static void HookAbort(void) {
-    BYTE* pAbort = (BYTE*)0x0085A108;
-    BYTE* cave;
-    DWORD oldProt;
-    LONG jmpOffset;
-    int c;
-
-    if (IsBadReadPtr(pAbort, 7)) {
-        ProxyLog("  HookAbort: address not readable");
-        return;
-    }
-    if (pAbort[0] != 0x6A || pAbort[1] != 0x0A) {
-        ProxyLog("  HookAbort: bytes don't match (expected 6A 0A, got %02X %02X)",
-                 pAbort[0], pAbort[1]);
-        return;
-    }
-
-    cave = (BYTE*)VirtualAlloc(NULL, 4096, MEM_COMMIT | MEM_RESERVE,
-                                PAGE_EXECUTE_READWRITE);
-    if (!cave) {
-        ProxyLog("  HookAbort: VirtualAlloc failed");
-        return;
-    }
-    g_pAbortCave = cave;
-
-    c = 0;
-    cave[c++] = 0xE8; /* call HookedAbort */
-    jmpOffset = (LONG)((BYTE*)HookedAbort - (cave + c + 4));
-    memcpy(cave + c, &jmpOffset, 4); c += 4;
-    cave[c++] = 0xC3; /* ret - return to abort's caller, skip actual abort */
-    ProxyLog("  HookAbort: cave written (%d bytes) - abort() SUPPRESSED", c);
-
-    VirtualProtect(pAbort, 7, PAGE_EXECUTE_READWRITE, &oldProt);
-    pAbort[0] = 0xE9;
-    jmpOffset = (LONG)((DWORD)cave - (DWORD)(pAbort + 5));
-    memcpy(pAbort + 1, &jmpOffset, 4);
-    pAbort[5] = 0x90; pAbort[6] = 0x90;
-    VirtualProtect(pAbort, 7, oldProt, &oldProt);
-    ProxyLog("  HookAbort: patched 0x0085A108 -> JMP %p", cave);
-}
-
-/* ================================================================
- * PatchNullSurface - fix NULL surface dereference in mipmap code
- *
- * At 0x7CB322, the game stores a surface pointer and calls AddRef
- * without checking for NULL. We redirect to a code cave that
- * substitutes a dummy surface when eax==NULL.
- * ================================================================ */
-static BYTE* g_pCodeCave = NULL;
-
-static void PatchNullSurface(void) {
-    BYTE* pTarget = (BYTE*)0x007CB322;
-    DWORD returnAddr = 0x007CB32A;
-    BYTE* cave;
-    DWORD oldProt, dummyAddr;
-    LONG jmpOffset;
-    int c;
-
-    if (IsBadReadPtr(pTarget, 8)) {
-        ProxyLog("  PATCH: target 0x7CB322 not readable");
-        return;
-    }
-    if (pTarget[0] != 0x89 || pTarget[1] != 0x06 ||
-        pTarget[2] != 0x50 ||
-        pTarget[3] != 0x8B || pTarget[4] != 0x08 ||
-        pTarget[5] != 0xFF || pTarget[6] != 0x51 || pTarget[7] != 0x04) {
-        ProxyLog("  PATCH: bytes at 0x7CB322 don't match expected pattern");
-        return;
-    }
-
-    g_pPatchDummy = CreateProxySurface7(1, 1, 16, DDSCAPS_TEXTURE | DDSCAPS_SYSTEMMEMORY);
-    if (!g_pPatchDummy) {
-        ProxyLog("  PATCH: failed to create dummy surface");
-        return;
-    }
-    g_pPatchDummy->refCount = 10000;
-    ProxyLog("  PATCH: dummy surface at %p", g_pPatchDummy);
-
-    cave = (BYTE*)VirtualAlloc(NULL, 4096, MEM_COMMIT | MEM_RESERVE,
-                                PAGE_EXECUTE_READWRITE);
-    if (!cave) {
-        ProxyLog("  PATCH: VirtualAlloc for code cave failed");
-        return;
-    }
-    g_pCodeCave = cave;
-    ProxyLog("  PATCH: code cave at %p", cave);
-
-    dummyAddr = (DWORD)g_pPatchDummy;
-    c = 0;
-    /* test eax, eax */
-    cave[c++] = 0x85; cave[c++] = 0xC0;
-    /* jnz +6 (skip to original code path) */
-    cave[c++] = 0x75; cave[c++] = 0x06;
-    /* mov eax, imm32 (load dummy surface address) */
-    cave[c++] = 0xB8;
-    memcpy(cave + c, &dummyAddr, 4); c += 4;
-    /* Original code: mov [esi], eax */
-    cave[c++] = 0x89; cave[c++] = 0x06;
-    /* push eax */
-    cave[c++] = 0x50;
-    /* mov ecx, [eax] */
-    cave[c++] = 0x8B; cave[c++] = 0x08;
-    /* call [ecx+4] (AddRef) */
-    cave[c++] = 0xFF; cave[c++] = 0x51; cave[c++] = 0x04;
-    /* jmp returnAddr */
-    cave[c++] = 0xE9;
-    jmpOffset = (LONG)(returnAddr - (DWORD)(cave + c + 4));
-    memcpy(cave + c, &jmpOffset, 4); c += 4;
-
-    ProxyLog("  PATCH: cave code %d bytes", c);
-
-    VirtualProtect(pTarget, 8, PAGE_EXECUTE_READWRITE, &oldProt);
-    pTarget[0] = 0xE9;
-    jmpOffset = (LONG)((DWORD)cave - (DWORD)(pTarget + 5));
-    memcpy(pTarget + 1, &jmpOffset, 4);
-    pTarget[5] = 0x90; pTarget[6] = 0x90; pTarget[7] = 0x90;
-    VirtualProtect(pTarget, 8, oldProt, &oldProt);
-    ProxyLog("  PATCH: patched 0x7CB322 -> JMP %p (NULL surface fix)", cave);
-}
+/* (VEH crash handler removed - replaced by CrashDumpHandler via SetUnhandledExceptionFilter) */
 
 /* ================================================================
  * PatchRenderTick - Skip render work in the per-frame function
@@ -600,93 +1499,11 @@ static void PatchRenderTick(void) {
     ProxyLog("  PatchRenderTick: patched JNZ->JMP at 0x004433EA (skip render work)");
 }
 
-/* ================================================================
- * PatchSkipRendererCtor - Skip the NiDX7Renderer constructor in Init
- *
- * In UtopiaApp::Init (FUN_0043ad70), the renderer is constructed at:
- *   0x0043ADB6: JZ 0x0043ADC3  (74 0B) - skip ctor if alloc=NULL
- *   0x0043ADBA: CALL 0x007E7AF0        - renderer constructor
- *   0x0043ADC3: XOR EDI,EDI           - renderer = NULL path
- *
- * The renderer constructor creates D3D devices and initializes HW
- * pipelines that crash without a real GPU. We patch JZ→JMP to always
- * take the "no renderer" path. Init continues with renderer=NULL.
- * ================================================================ */
-static void PatchSkipRendererCtor(void) {
-    BYTE* pTarget = (BYTE*)0x0043ADB6;
-    DWORD oldProt;
+/* PatchSkipRendererCtor REMOVED - renderer constructor now runs normally.
+ * The D3D proxy provides valid COM objects so the constructor succeeds. */
 
-    if (IsBadReadPtr(pTarget, 2)) {
-        ProxyLog("  PatchSkipRendererCtor: address not readable");
-        return;
-    }
-    if (pTarget[0] != 0x74 || pTarget[1] != 0x0B) {
-        ProxyLog("  PatchSkipRendererCtor: bytes don't match (expected 74 0B, got %02X %02X)",
-                 pTarget[0], pTarget[1]);
-        return;
-    }
-
-    VirtualProtect(pTarget, 2, PAGE_EXECUTE_READWRITE, &oldProt);
-    pTarget[0] = 0xEB;  /* JMP rel8 (unconditional) */
-    VirtualProtect(pTarget, 2, oldProt, &oldProt);
-    ProxyLog("  PatchSkipRendererCtor: patched JZ->JMP at 0x0043ADB6 (skip renderer construction)");
-}
-
-/* ================================================================
- * PatchRendererCtorEntry - Patch the NiDX7Renderer constructor itself
- *
- * FUN_007e7af0 is the NiDX7Renderer constructor. It's called from
- * 10 different locations. Rather than patching each call site, we
- * patch the entry point to zero the object and set the vtable.
- *
- * The NiDX7Renderer is 0x224 bytes. Many code paths read fields and
- * check for NULL before dereferencing. Zero-initializing ensures all
- * those NULL checks pass cleanly.
- *
- * Original:  6A FF    PUSH -1
- *            68 ...   PUSH SEH handler
- * Patched:   PUSHAD
- *            MOV EDI, ECX       ; dest = this
- *            XOR EAX, EAX       ; fill = 0
- *            MOV ECX, 0x89      ; 0x224/4 = 137 DWORDs
- *            REP STOSD           ; zero 0x224 bytes
- *            POPAD
- *            MOV [ECX], 0x89902C ; set vtable
- *            MOV EAX, ECX       ; return this
- *            RET
- * ================================================================ */
-static void PatchRendererCtorEntry(void) {
-    BYTE* pTarget = (BYTE*)0x007E7AF0;
-    DWORD oldProt;
-    int i = 0;
-
-    if (IsBadReadPtr(pTarget, 24)) {
-        ProxyLog("  PatchRendererCtorEntry: address not readable");
-        return;
-    }
-    if (pTarget[0] != 0x6A || pTarget[1] != 0xFF) {
-        ProxyLog("  PatchRendererCtorEntry: bytes don't match (expected 6A FF, got %02X %02X)",
-                 pTarget[0], pTarget[1]);
-        return;
-    }
-
-    VirtualProtect(pTarget, 22, PAGE_EXECUTE_READWRITE, &oldProt);
-    pTarget[i++] = 0x60;                   /* PUSHAD */
-    pTarget[i++] = 0x8B; pTarget[i++] = 0xF9; /* MOV EDI, ECX */
-    pTarget[i++] = 0x33; pTarget[i++] = 0xC0; /* XOR EAX, EAX */
-    pTarget[i++] = 0xB9;                   /* MOV ECX, imm32 */
-    pTarget[i++] = 0x89; pTarget[i++] = 0x00;
-    pTarget[i++] = 0x00; pTarget[i++] = 0x00; /* = 0x89 DWORDs */
-    pTarget[i++] = 0xF3; pTarget[i++] = 0xAB; /* REP STOSD */
-    pTarget[i++] = 0x61;                   /* POPAD */
-    pTarget[i++] = 0xC7; pTarget[i++] = 0x01; /* MOV [ECX], imm32 */
-    pTarget[i++] = 0x2C; pTarget[i++] = 0x90;
-    pTarget[i++] = 0x89; pTarget[i++] = 0x00; /* = 0x0089902C (real vtable) */
-    pTarget[i++] = 0x8B; pTarget[i++] = 0xC1; /* MOV EAX, ECX */
-    pTarget[i++] = 0xC3;                   /* RET */
-    VirtualProtect(pTarget, 22, oldProt, &oldProt);
-    ProxyLog("  PatchRendererCtorEntry: patched 0x007E7AF0 (zero 0x224 bytes + set vtable 0x89902C + RET)");
-}
+/* PatchRendererCtorEntry REMOVED - the real NiDX7Renderer constructor
+ * runs so the renderer has valid internal state (arrays, matrices, frustum). */
 
 /* ================================================================
  * PatchInitAbort - Prevent abort() when init check fails
@@ -716,41 +1533,9 @@ static void PatchInitAbort(void) {
     ProxyLog("  PatchInitAbort: NOPed JMP at 0x0043B1D2 (abort suppressed)");
 }
 
-/* ================================================================
- * PatchSkipRendererSetup - Skip renderer pipeline construction
- *
- * After the D3D caps check passes at 0x007C39CF in FUN_007c3480
- * (the NiDX7Renderer setup function), skip all the rendering
- * pipeline creation (clone/AddRef calls, texture managers, etc.)
- * and jump directly to the success return at 0x007C3D75.
- *
- * The caps check, format enumeration, and z-buffer setup all run
- * normally. Only the rendering pipeline objects are skipped since
- * the headless server never renders.
- *
- * Patch: 007C39CF  PUSH 0x976b98 (5 bytes) -> JMP 007C3D75
- * ================================================================ */
-static void PatchSkipRendererSetup(void) {
-    BYTE* target = (BYTE*)0x007C39CF;
-    DWORD oldProt;
-    LONG jmpOff;
-
-    if (IsBadReadPtr(target, 5) || target[0] != 0x68) {
-        ProxyLog("  PatchSkipRendererSetup: unexpected bytes at 0x007C39CF (%02X), skipped",
-                 target[0]);
-        return;
-    }
-
-    /* JMP rel32 to 0x007C3D75 (success return: MOV AL,1; epilogue; RET 0x24) */
-    jmpOff = (LONG)(0x007C3D75 - (DWORD)(target + 5));
-
-    VirtualProtect(target, 5, PAGE_EXECUTE_READWRITE, &oldProt);
-    target[0] = 0xE9;
-    memcpy(target + 1, &jmpOff, 4);
-    VirtualProtect(target, 5, oldProt, &oldProt);
-
-    ProxyLog("  PatchSkipRendererSetup: 007C39CF -> JMP 007C3D75 (skip pipeline, return TRUE)");
-}
+/* PatchSkipRendererSetup REMOVED - the full renderer pipeline now runs.
+ * Dev_GetDirect3D returns a valid ProxyD3D7, so pipeline ctors get valid
+ * COM objects. All D3D calls go through our proxy (no real GPU needed). */
 
 /* ================================================================
  * PatchSkipDeviceLost - Skip "device lost" recreation path
@@ -759,7 +1544,7 @@ static void PatchSkipRendererSetup(void) {
  * 0x00898984) is called every frame. It calls FUN_007c45b0 to check
  * device status. When the device appears "lost" (always true for stubs),
  * it tries to destroy+recreate pipeline objects at offsets 0xC4, 0xC0,
- * 0xB8, 0xBC - which are NULL because PatchSkipRendererSetup skipped them.
+ * 0xB8, 0xBC - which may be NULL or stub pointers from the proxy pipeline.
  *
  * Patch: 007C1346 JZ +0x49 (74 49) -> JMP +0x49 (EB 49)
  * This always skips the destruction/recreation sequence.
@@ -792,6 +1577,7 @@ static void PatchSkipDeviceLost(void) {
 static void PatchRendererMethods(void) {
     static const BYTE p_ret[]       = { 0xC3 };
     static const BYTE p_ret4_zero[] = { 0x33, 0xC0, 0xC2, 0x04, 0x00 };
+    static const BYTE p_ret18[]     = { 0xC2, 0x18, 0x00 };
     static const struct {
         DWORD addr;
         BYTE expect;
@@ -807,6 +1593,12 @@ static void PatchRendererMethods(void) {
          * thiscall, 1 stack param → XOR EAX,EAX; RET 4 */
         { 0x007C2A10, 0x56, p_ret4_zero, 5,
           "FUN_007c2a10 (pipeline call) -> XOR EAX,EAX; RET 4" },
+        /* FUN_007c16f0 (vtable+0xa4): SetCameraData - copies camera/frustum
+         * params into renderer, then calls internal functions that dereference
+         * NULL pointers in headless mode. Not needed for headless server.
+         * thiscall, 6 stack params (24 bytes) → RET 0x18 */
+        { 0x007C16F0, 0x83, p_ret18, 3,
+          "FUN_007c16f0 (vtable+0xa4 SetCameraData) -> RET 0x18" },
     };
     int i;
     for (i = 0; i < (int)(sizeof(fixes) / sizeof(fixes[0])); i++) {
@@ -822,6 +1614,39 @@ static void PatchRendererMethods(void) {
         VirtualProtect(target, fixes[i].len, oldProt, &oldProt);
         ProxyLog("  PatchRendererMethods: %s at 0x%08X", fixes[i].desc, (unsigned)fixes[i].addr);
     }
+}
+
+/* ================================================================
+ * PatchDeviceCapsRawCopy - Skip raw memory copy from Device7 object
+ *
+ * FUN_007d1ff0 (NiD3DTextureManager ctor) copies 59 DWORDs (236 bytes)
+ * directly from the IDirect3DDevice7 object starting at offset 0x00.
+ * This bypasses COM and reads the internal Microsoft D3D7 memory layout.
+ * Our ProxyDevice7 has a COM vtable pointer at offset 0, refCount at +4,
+ * etc. - completely different from Microsoft's layout. The copied garbage
+ * gets interpreted as D3D caps data by downstream pipeline constructors
+ * (FUN_007ccd10), causing EIP=0x0 crash from NULL vtable entry dereference.
+ *
+ * Fix: Change MOV ECX,0x3B at 0x007d2118 to MOV ECX,0x00.
+ * REP MOVSD with ECX=0 is a no-op. The destination stays zeroed (from
+ * HEAP_ZERO_MEMORY allocation), meaning "no device caps" - safe for
+ * a headless server that never renders.
+ * ================================================================ */
+static void PatchDeviceCapsRawCopy(void) {
+    /* MOV ECX,0x3B at 0x007d2118 = B9 3B 00 00 00
+     * The 0x3B immediate is at instruction_start+1 = 0x007d2119 */
+    BYTE* target = (BYTE*)0x007d2119;
+    DWORD oldProt;
+
+    if (IsBadReadPtr(target, 1) || *target != 0x3B) {
+        ProxyLog("  PatchDeviceCapsRawCopy: unexpected byte %02X at 0x007d2119 (expected 3B), skipped",
+                 *target);
+        return;
+    }
+    VirtualProtect(target, 1, PAGE_EXECUTE_READWRITE, &oldProt);
+    *target = 0x00;
+    VirtualProtect(target, 1, oldProt, &oldProt);
+    ProxyLog("  PatchDeviceCapsRawCopy: MOV ECX,0x3B -> MOV ECX,0x00 at 0x007d2118 (skip 236-byte Device7 raw copy)");
 }
 
 /* ================================================================
@@ -881,74 +1706,663 @@ static void PatchHeadlessCrashSites(void) {
  *      later during game init at 0x00438b10)
  *   2. Set DAT_0099add6 = 0 so the normal path calls PyErr_Print instead
  *      (traceback goes to stderr = our log file) */
-static void PatchDisableDebugConsole(void) {
-    BYTE* func = (BYTE*)0x006f9470;
-    BYTE* flag = (BYTE*)0x0099add6;
+/* PatchDisableDebugConsole - REPLACED by PatchDebugConsoleToFile above.
+ * Previously: patched FUN_006f9470 to RET and set flag to 0.
+ * Now: PatchDebugConsoleToFile redirects to our file-logging replacement. */
+
+/* ================================================================
+ * PatchTGLFindEntry - Fix NULL+0x1C sentinel from TGL lookup
+ *
+ * FUN_006D1E10 (TGL::FindEntry) returns `this + 0x1C` as a pointer
+ * to the default/empty entry. When the TGL file fails to load in
+ * headless mode, `this` is NULL, so the function returns 0x1C --
+ * a non-NULL invalid pointer that passes all NULL checks downstream
+ * and crashes when dereferenced (reads at address 0x24 = 0x1C+8).
+ *
+ * Fix: Insert a check at function entry. If ECX (this) is NULL,
+ * return NULL immediately (XOR EAX,EAX / RET 4). Otherwise, fall
+ * through to the original code.
+ *
+ * Original bytes at 0x006D1E10:
+ *   8B 44 24 04   MOV EAX,[ESP+4]   (4 bytes)
+ *   56            PUSH ESI           (1 byte)
+ *   85 C0         TEST EAX,EAX       (continues at 0x006D1E15)
+ * ================================================================ */
+static void PatchTGLFindEntry(void) {
+    static BYTE cave[] = {
+        0x85, 0xC9,             /* TEST ECX,ECX          */
+        0x75, 0x05,             /* JNZ  +5 (.original)   */
+        0x33, 0xC0,             /* XOR  EAX,EAX          */
+        0xC2, 0x04, 0x00,       /* RET  4                */
+        /* .original: */
+        0x8B, 0x44, 0x24, 0x04, /* MOV  EAX,[ESP+4]      */
+        0x56,                   /* PUSH ESI               */
+        0xE9, 0x00, 0x00, 0x00, 0x00  /* JMP 0x006D1E15  (fixup) */
+    };
+    BYTE* pCave;
+    DWORD oldProt;
+    DWORD jmpFrom, jmpTo;
+
+    pCave = (BYTE*)VirtualAlloc(NULL, sizeof(cave),
+                                MEM_COMMIT | MEM_RESERVE,
+                                PAGE_EXECUTE_READWRITE);
+    if (!pCave) {
+        ProxyLog("  PatchTGLFindEntry: VirtualAlloc failed");
+        return;
+    }
+    memcpy(pCave, cave, sizeof(cave));
+
+    /* Fix up JMP rel32: offset = target - (addr_after_jmp) */
+    jmpFrom = (DWORD)(pCave + 19);   /* address after the JMP instruction */
+    jmpTo   = 0x006D1E15;            /* original TEST EAX,EAX */
+    *(DWORD*)(pCave + 15) = jmpTo - jmpFrom;
+
+    /* Overwrite function entry: JMP to cave (exactly 5 bytes) */
+    VirtualProtect((void*)0x006D1E10, 5, PAGE_EXECUTE_READWRITE, &oldProt);
+    *(BYTE*)0x006D1E10 = 0xE9;       /* JMP rel32 */
+    *(DWORD*)0x006D1E11 = (DWORD)pCave - (0x006D1E10 + 5);
+    VirtualProtect((void*)0x006D1E10, 5, oldProt, &oldProt);
+
+    ProxyLog("  PatchTGLFindEntry: 0x006D1E10 -> cave at %p (NULL this returns NULL)",
+             pCave);
+}
+
+/* ================================================================
+ * PatchNetworkUpdateNullLists - Fix malformed update packets for headless ships
+ *
+ * FUN_005b17f0 (network object state update) builds a flags byte that
+ * indicates which data sections follow in the update packet. Bit 0x20
+ * means "subsystem data follows" and bit 0x80 means "weapon data".
+ *
+ * In headless mode, ship objects have no subsystems or weapons (the
+ * linked lists at object+0x284 are NULL). The flags byte is written
+ * to the stream with these bits set, but the loops that would write
+ * the actual data crash (or are VEH-skipped). This produces a packet
+ * where the flags promise data that doesn't exist, causing the client
+ * to misparse the packet and interpret the ship as destroyed.
+ *
+ * Fix: Code cave at the flags-byte-write point (0x005b1d57). Before
+ * writing the flags, check if ESI+0x284 (subsystem/weapon list) is
+ * NULL. If NULL, clear bits 0x20 and 0x80 so the client knows to
+ * skip those sections.
+ *
+ * Patched bytes at 0x005b1d57 (5 bytes):
+ *   8B 4C 24 14  MOV ECX,[ESP+0x14]  (4 bytes)
+ *   51           PUSH ECX            (1 byte)
+ *   -> replaced with JMP to code cave
+ *   Code cave executes the check, then these two instructions, then
+ *   JMP back to 0x005b1d5c.
+ * ================================================================ */
+static void PatchNetworkUpdateNullLists(void) {
+    static BYTE cave[] = {
+        /* Save EAX (we need it for the check) */
+        0x50,                               /* PUSH EAX                    */
+        /* Check if subsystem/weapon list pointer is NULL */
+        0x8B, 0x86, 0x84, 0x02, 0x00, 0x00, /* MOV EAX,[ESI+0x284]        */
+        0x85, 0xC0,                         /* TEST EAX,EAX                */
+        0x75, 0x05,                         /* JNZ +5 (.has_lists)         */
+        /* List is NULL: clear bits 0x20 and 0x80 from flags */
+        0x80, 0x64, 0x24, 0x18, 0x5F,       /* AND byte [ESP+0x18],0x5F   */
+        /* .has_lists: */
+        0x58,                               /* POP EAX                     */
+        /* Execute original 2 instructions we overwrote */
+        0x8B, 0x4C, 0x24, 0x14,             /* MOV ECX,[ESP+0x14]          */
+        0x51,                               /* PUSH ECX                    */
+        /* Jump back to original code */
+        0xE9, 0x00, 0x00, 0x00, 0x00        /* JMP 0x005b1d5c (fixup)     */
+    };
+    BYTE* pCave;
+    DWORD oldProt;
+    DWORD jmpFrom, jmpTo;
+
+    pCave = (BYTE*)VirtualAlloc(NULL, sizeof(cave),
+                                MEM_COMMIT | MEM_RESERVE,
+                                PAGE_EXECUTE_READWRITE);
+    if (!pCave) {
+        ProxyLog("  PatchNetworkUpdateNullLists: VirtualAlloc failed");
+        return;
+    }
+    memcpy(pCave, cave, sizeof(cave));
+
+    /* Fix up JMP rel32 in cave: offset = target - addr_after_jmp */
+    jmpFrom = (DWORD)(pCave + sizeof(cave));   /* address after the JMP */
+    jmpTo   = 0x005b1d5c;                      /* LEA ECX,[ESP+0x74] */
+    *(DWORD*)(pCave + sizeof(cave) - 4) = jmpTo - jmpFrom;
+
+    /* Overwrite 5 bytes at 0x005b1d57: JMP to cave */
+    VirtualProtect((void*)0x005b1d57, 5, PAGE_EXECUTE_READWRITE, &oldProt);
+    *(BYTE*)0x005b1d57 = 0xE9;
+    *(DWORD*)0x005b1d58 = (DWORD)pCave - (0x005b1d57 + 5);
+    VirtualProtect((void*)0x005b1d57, 5, oldProt, &oldProt);
+
+    ProxyLog("  PatchNetworkUpdateNullLists: 0x005b1d57 -> cave at %p "
+             "(clear subsys/weapon flags when lists NULL)", pCave);
+}
+
+/* PatchChecksumAlwaysPass REMOVED - flag=0 means "no mismatches" which is
+ * correct for first player connecting (no peers to compare against).
+ * Forcing flag=1 corrupted the Settings packet with bogus mismatch data. */
+
+/* ================================================================
+ * PatchSubsystemHashCheck - Fix false-positive anti-cheat kicks
+ *
+ * FUN_005b21c0 (ship network state update receiver) processes incoming
+ * opcode 0x1C packets. It computes a hash over all ship subsystem states
+ * (shields, weapons, hull, power, sensors) via FUN_005b5eb0(this+0x27c)
+ * and compares it with the hash sent by the client.
+ *
+ * On our headless server, ships have no subsystem objects (the linked
+ * list at this+0x284 is NULL). FUN_005b5eb0 iterates this list and
+ * returns 0/garbage when it's empty. This ALWAYS mismatches the client's
+ * valid hash, triggering false-positive cheat detection:
+ *   -> Posts ET_BOOT_PLAYER event (0x8000f6)
+ *   -> BootPlayerHandler sends type=4 sub-command=4 (kick) to client
+ *   -> Client disconnects: "You have been disconnected from the host"
+ *
+ * Fix: Code cave replaces the CALL to FUN_005b5eb0 at 0x005b22b5.
+ * Before computing the hash, check if the subsystem linked list head
+ * at [ESI+0x284] is NULL. If NULL (no subsystems to hash), return the
+ * RECEIVED hash value (EDI) so the comparison naturally passes. If the
+ * list is valid, call the real FUN_005b5eb0 for normal anti-cheat.
+ *
+ * This keeps anti-cheat ACTIVE for any ship that has proper subsystem
+ * data, while preventing false kicks for headless ships without it.
+ *
+ * Assembly context at 0x005b22af-0x005b22c9:
+ *   005b22af: LEA ECX,[ESI+0x27c]   ; subsystem data base
+ *   005b22b5: CALL FUN_005b5eb0     ; compute hash (5 bytes: E8 xx xx xx xx)
+ *   005b22ba: MOV EDX,EAX
+ *   005b22bc: SAR EDX,0x10
+ *   005b22bf: MOVSX ECX,DX          ; high16
+ *   005b22c2: MOVSX EAX,AX          ; low16
+ *   005b22c5: XOR ECX,EAX           ; computed = high16 ^ low16
+ *   005b22c7: CMP ECX,EDI           ; compare computed vs received
+ *   005b22c9: JZ  005b2338          ; skip boot if equal
+ * ================================================================ */
+
+/* Code cave: check subsystem list, delegate or return received hash */
+static BYTE g_subsysHashCave[32];
+
+static void PatchSubsystemHashCheck(void) {
+    BYTE* callSite = (BYTE*)0x005b22b5;  /* CALL FUN_005b5eb0 */
     DWORD oldProt;
 
-    /* Patch function entry to RET */
-    if (!IsBadReadPtr(func, 1)) {
-        VirtualProtect(func, 1, PAGE_EXECUTE_READWRITE, &oldProt);
-        ProxyLog("  PatchDisableDebugConsole: FUN_006f9470 first byte was 0x%02X, patching to RET",
-                 (int)func[0]);
-        func[0] = 0xC3; /* RET */
-        VirtualProtect(func, 1, oldProt, &oldProt);
+    if (IsBadReadPtr(callSite, 5)) {
+        ProxyLog("  PatchSubsystemHashCheck: address 0x005b22b5 not readable, skipped");
+        return;
     }
 
-    /* Also clear the flag (belt and suspenders) */
-    if (!IsBadReadPtr(flag, 1)) {
-        VirtualProtect(flag, 1, PAGE_READWRITE, &oldProt);
-        *flag = 0;
-        VirtualProtect(flag, 1, oldProt, &oldProt);
+    /* Verify it's a CALL rel32 (E8 xx xx xx xx) */
+    if (callSite[0] != 0xE8) {
+        ProxyLog("  PatchSubsystemHashCheck: expected E8 at 0x005b22b5, got 0x%02X - skipped",
+                 (int)callSite[0]);
+        return;
+    }
+
+    /* Build code cave:
+     *   CMP DWORD PTR [ESI+0x284], 0   ; check subsystem list head
+     *   JNE .call_real                  ; if list exists, compute real hash
+     *   ; No subsystems: forge a hash that will match the received value (EDI)
+     *   ; We need EAX to produce the same final result as EDI after:
+     *   ;   MOV EDX,EAX / SAR EDX,10 / MOVSX ECX,DX / MOVSX EAX,AX / XOR ECX,EAX
+     *   ; Simplest: return to AFTER the XOR (005b22c7) with ECX=EDI
+     *   ; so CMP ECX,EDI succeeds immediately
+     *   MOV ECX, EDI                   ; set computed = received
+     *   JMP 0x005b22c7                 ; jump to CMP ECX,EDI (will match)
+     * .call_real:
+     *   JMP FUN_005b5eb0              ; original hash computation
+     */
+    BYTE* cave = g_subsysHashCave;
+    DWORD caveAddr = (DWORD)cave;
+    int i = 0;
+
+    /* CMP DWORD PTR [ESI+0x284], 0  (81 BE 84 02 00 00 00 00 00 00) */
+    cave[i++] = 0x81; cave[i++] = 0xBE;
+    cave[i++] = 0x84; cave[i++] = 0x02; cave[i++] = 0x00; cave[i++] = 0x00;  /* offset 0x284 */
+    cave[i++] = 0x00; cave[i++] = 0x00; cave[i++] = 0x00; cave[i++] = 0x00;  /* imm32 = 0 */
+
+    /* JNE .call_real (75 XX) - jump over the next 7 bytes */
+    cave[i++] = 0x75;
+    cave[i++] = 0x07;  /* skip MOV ECX,EDI (2) + JMP rel32 (5) = 7 bytes */
+
+    /* MOV ECX, EDI  (89 F9) */
+    cave[i++] = 0x89; cave[i++] = 0xF9;
+
+    /* JMP 0x005b22c7  (E9 xx xx xx xx) - jump to CMP ECX,EDI */
+    cave[i++] = 0xE9;
+    {
+        DWORD jmpTarget = 0x005b22c7;
+        DWORD jmpFrom = caveAddr + i + 4;  /* address after this JMP instruction */
+        DWORD rel = jmpTarget - jmpFrom;
+        cave[i++] = (BYTE)(rel);
+        cave[i++] = (BYTE)(rel >> 8);
+        cave[i++] = (BYTE)(rel >> 16);
+        cave[i++] = (BYTE)(rel >> 24);
+    }
+
+    /* .call_real: JMP FUN_005b5eb0  (E9 xx xx xx xx) */
+    cave[i++] = 0xE9;
+    {
+        DWORD jmpTarget = 0x005b5eb0;
+        DWORD jmpFrom = caveAddr + i + 4;
+        DWORD rel = jmpTarget - jmpFrom;
+        cave[i++] = (BYTE)(rel);
+        cave[i++] = (BYTE)(rel >> 8);
+        cave[i++] = (BYTE)(rel >> 16);
+        cave[i++] = (BYTE)(rel >> 24);
+    }
+
+    /* Make code cave executable */
+    VirtualProtect(cave, sizeof(g_subsysHashCave), PAGE_EXECUTE_READWRITE, &oldProt);
+
+    /* Patch the CALL at 0x005b22b5 to point to our cave instead of FUN_005b5eb0 */
+    VirtualProtect(callSite, 5, PAGE_EXECUTE_READWRITE, &oldProt);
+    {
+        DWORD rel = caveAddr - ((DWORD)callSite + 5);
+        callSite[1] = (BYTE)(rel);
+        callSite[2] = (BYTE)(rel >> 8);
+        callSite[3] = (BYTE)(rel >> 16);
+        callSite[4] = (BYTE)(rel >> 24);
+    }
+    VirtualProtect(callSite, 5, oldProt, &oldProt);
+
+    ProxyLog("  PatchSubsystemHashCheck: code cave at %p, redirected CALL at 0x005b22b5",
+             (void*)cave);
+    ProxyLog("    -> NULL subsystem list [ESI+0x284]: skip hash (match received)");
+    ProxyLog("    -> Valid subsystem list: call real FUN_005b5eb0 for anti-cheat");
+}
+
+/* ================================================================
+ * PatchCompressedVectorRead - Prevent cascading crash in FUN_006d2eb0
+ *
+ * FUN_006d2eb0 reads a compressed 3-byte vector from a network stream
+ * using four vtable calls: three ReadByte calls (vtable+0x50) and one
+ * decode call (vtable+0xB8 with 6 stack params, __thiscall, callee-clean).
+ *
+ * If the stream reader object's vtable pointer is corrupted (e.g. from
+ * a prior memory corruption or stack misalignment), ALL four vtable calls
+ * fail. The VEH handler recovers from each by popping the return address,
+ * but the fourth call's callee was supposed to clean 24 bytes of params
+ * via RET 0x18. Since the callee never runs, those params remain on the
+ * stack. The function's epilogue (POP ESI; ADD ESP,0xC; RET 0xC) then
+ * uses the wrong stack offsets, popping garbage as the return address.
+ *
+ * The VEH handler finds the real return address deeper on the stack and
+ * adjusts ESP, but this leaves the CALLER's stack misaligned by 12 bytes.
+ * The next call to FUN_006d2eb0 uses a wrong `this` pointer (offset by
+ * 12 bytes into wrong memory), reads a garbage "vtable" = 1, and crashes
+ * fatally at CALL [1 + 0x50] -> access violation at 0x00000051.
+ *
+ * Fix: Code cave at FUN_006d2eb0 entry (0x006D2EB0). Validate that the
+ * vtable pointer (first DWORD of the this object) is in the valid .rdata
+ * range for stbc.exe (0x00800000-0x008FFFFF). If invalid, skip the
+ * function entirely: zero-fill the 3 output float params and RET 0xC.
+ *
+ * Overwritten bytes at 0x006D2EB0 (6 bytes):
+ *   83 EC 0C     SUB ESP,0xC
+ *   56           PUSH ESI
+ *   8B F1        MOV ESI,ECX
+ *   -> replaced with: E9 xx xx xx xx  JMP cave
+ *                      90              NOP
+ *   Cave executes validation, then these 6 bytes, then JMP back.
+ *
+ * Also protects FUN_006d2fd0 (0x006D2FD0) which has the same structure
+ * and the same cascading failure risk. Its first 6 bytes are identical.
+ * ================================================================ */
+static void PatchCompressedVectorRead(void) {
+    /* We patch TWO functions: FUN_006d2eb0 and FUN_006d2fd0.
+     * Both have identical prologues and identical vtable-crash risk.
+     * Each gets its own code cave. */
+    static BYTE cave1[80]; /* cave for FUN_006d2eb0 (RET 0xC) */
+    static BYTE cave2[80]; /* cave for FUN_006d2fd0 (RET 0x10) */
+    DWORD oldProt;
+    int i;
+
+    /* --- Cave 1: FUN_006d2eb0 (3 params, RET 0xC) --- */
+    {
+        BYTE* site = (BYTE*)0x006D2EB0;
+        BYTE* cave = cave1;
+        DWORD caveAddr = (DWORD)cave;
+
+        /* Verify original bytes: 83 EC 0C 56 8B F1 */
+        if (IsBadReadPtr(site, 6)) {
+            ProxyLog("  PatchCompressedVectorRead: 0x006D2EB0 not readable, skipped");
+            goto patch2;
+        }
+        if (site[0] != 0x83 || site[1] != 0xEC || site[2] != 0x0C ||
+            site[3] != 0x56 || site[4] != 0x8B || site[5] != 0xF1) {
+            ProxyLog("  PatchCompressedVectorRead: unexpected bytes at 0x006D2EB0, skipped");
+            goto patch2;
+        }
+
+        i = 0;
+        /* Validate this pointer (ECX) and its vtable pointer */
+        cave[i++] = 0x85; cave[i++] = 0xC9;             /* TEST ECX,ECX                */
+        cave[i++] = 0x74;                                 /* JZ .bad_vtable              */
+        cave[i++] = 0x00; /* placeholder */
+        {
+            int jz_offset_pos = i - 1;
+
+            cave[i++] = 0x8B; cave[i++] = 0x01;         /* MOV EAX,[ECX]               */
+            cave[i++] = 0x3D;                             /* CMP EAX, imm32              */
+            cave[i++] = 0x00; cave[i++] = 0x00;
+            cave[i++] = 0x80; cave[i++] = 0x00;           /* 0x00800000                  */
+            cave[i++] = 0x72; /* JB .bad_vtable */
+            cave[i++] = 0x00; /* placeholder */
+            {
+                int jb_offset_pos = i - 1;
+
+                cave[i++] = 0x3D;                         /* CMP EAX, imm32              */
+                cave[i++] = 0x00; cave[i++] = 0x00;
+                cave[i++] = 0x90; cave[i++] = 0x00;       /* 0x00900000                  */
+                cave[i++] = 0x73; /* JAE .bad_vtable */
+                cave[i++] = 0x00; /* placeholder */
+                {
+                    int jae_offset_pos = i - 1;
+
+                /* VALID vtable: execute original 6 bytes and return to function body */
+                cave[i++] = 0x83; cave[i++] = 0xEC; cave[i++] = 0x0C; /* SUB ESP,0xC    */
+                cave[i++] = 0x56;                                       /* PUSH ESI        */
+                cave[i++] = 0x8B; cave[i++] = 0xF1;                    /* MOV ESI,ECX     */
+                cave[i++] = 0xE9;                                       /* JMP back        */
+                {
+                    DWORD from = caveAddr + i + 4;
+                    DWORD to   = 0x006D2EB6;  /* instruction after the overwritten bytes */
+                    DWORD rel = to - from;
+                    cave[i++] = (BYTE)(rel);
+                    cave[i++] = (BYTE)(rel >> 8);
+                    cave[i++] = (BYTE)(rel >> 16);
+                    cave[i++] = (BYTE)(rel >> 24);
+                }
+
+                    /* .bad_vtable: zero-fill 3 output float params and return cleanly */
+                    {
+                        int bad_vtable_pos = i;
+                        cave[jz_offset_pos]  = (BYTE)(bad_vtable_pos - (jz_offset_pos + 1));
+                        cave[jb_offset_pos]  = (BYTE)(bad_vtable_pos - (jb_offset_pos + 1));
+                        cave[jae_offset_pos] = (BYTE)(bad_vtable_pos - (jae_offset_pos + 1));
+                    }
+                    /* The 3 params are pointers to floats on the caller's stack.
+                     * [ESP+4] = param_1 (float*), [ESP+8] = param_2 (float*), [ESP+C] = param_3 (float*)
+                     * (ESP+0 is the return address since we haven't done SUB ESP yet) */
+                    cave[i++] = 0x8B; cave[i++] = 0x44; cave[i++] = 0x24; cave[i++] = 0x04;
+                                                               /* MOV EAX,[ESP+4] (param_1)  */
+                    cave[i++] = 0xC7; cave[i++] = 0x00;
+                    cave[i++] = 0x00; cave[i++] = 0x00; cave[i++] = 0x00; cave[i++] = 0x00;
+                                                               /* MOV DWORD [EAX], 0          */
+                    cave[i++] = 0x8B; cave[i++] = 0x44; cave[i++] = 0x24; cave[i++] = 0x08;
+                                                               /* MOV EAX,[ESP+8] (param_2)  */
+                    cave[i++] = 0xC7; cave[i++] = 0x00;
+                    cave[i++] = 0x00; cave[i++] = 0x00; cave[i++] = 0x00; cave[i++] = 0x00;
+                                                               /* MOV DWORD [EAX], 0          */
+                    cave[i++] = 0x8B; cave[i++] = 0x44; cave[i++] = 0x24; cave[i++] = 0x0C;
+                                                               /* MOV EAX,[ESP+C] (param_3)  */
+                    cave[i++] = 0xC7; cave[i++] = 0x00;
+                    cave[i++] = 0x00; cave[i++] = 0x00; cave[i++] = 0x00; cave[i++] = 0x00;
+                                                               /* MOV DWORD [EAX], 0          */
+                    cave[i++] = 0xC2; cave[i++] = 0x0C; cave[i++] = 0x00;
+                                                               /* RET 0xC (clean 3 params)    */
+                }
+            }
+        }
+
+        /* Make cave executable */
+        VirtualProtect(cave, sizeof(cave1), PAGE_EXECUTE_READWRITE, &oldProt);
+
+        /* Overwrite FUN_006d2eb0 entry: JMP cave + NOP */
+        VirtualProtect(site, 6, PAGE_EXECUTE_READWRITE, &oldProt);
+        site[0] = 0xE9;
+        {
+            DWORD rel = caveAddr - ((DWORD)site + 5);
+            site[1] = (BYTE)(rel);
+            site[2] = (BYTE)(rel >> 8);
+            site[3] = (BYTE)(rel >> 16);
+            site[4] = (BYTE)(rel >> 24);
+        }
+        site[5] = 0x90; /* NOP */
+        VirtualProtect(site, 6, oldProt, &oldProt);
+
+        ProxyLog("  PatchCompressedVectorRead: FUN_006d2eb0 -> cave at %p "
+                 "(vtable validation + safe RET 0xC)", (void*)cave);
+    }
+
+patch2:
+    /* --- Cave 2: FUN_006d2fd0 (4 params, RET 0x10) --- */
+    {
+        BYTE* site = (BYTE*)0x006D2FD0;
+        BYTE* cave = cave2;
+        DWORD caveAddr = (DWORD)cave;
+
+        /* Verify original bytes: 83 EC 0C 56 8B F1 */
+        if (IsBadReadPtr(site, 6)) {
+            ProxyLog("  PatchCompressedVectorRead: 0x006D2FD0 not readable, skipped");
+            return;
+        }
+        if (site[0] != 0x83 || site[1] != 0xEC || site[2] != 0x0C ||
+            site[3] != 0x56 || site[4] != 0x8B || site[5] != 0xF1) {
+            ProxyLog("  PatchCompressedVectorRead: unexpected bytes at 0x006D2FD0, skipped");
+            return;
+        }
+
+        i = 0;
+        /* Same validation logic as cave1 */
+        cave[i++] = 0x85; cave[i++] = 0xC9;             /* TEST ECX,ECX                */
+        cave[i++] = 0x74;                                 /* JZ .bad_vtable              */
+        cave[i++] = 0x00; /* placeholder */
+        {
+            int jz_offset_pos = i - 1;
+
+            cave[i++] = 0x8B; cave[i++] = 0x01;         /* MOV EAX,[ECX]               */
+            cave[i++] = 0x3D;
+            cave[i++] = 0x00; cave[i++] = 0x00;
+            cave[i++] = 0x80; cave[i++] = 0x00;           /* CMP EAX, 0x00800000         */
+            cave[i++] = 0x72;
+            cave[i++] = 0x00; /* JB placeholder */
+            {
+                int jb_offset_pos = i - 1;
+
+                cave[i++] = 0x3D;
+                cave[i++] = 0x00; cave[i++] = 0x00;
+                cave[i++] = 0x90; cave[i++] = 0x00;       /* CMP EAX, 0x00900000         */
+                cave[i++] = 0x73;
+                cave[i++] = 0x00; /* JAE placeholder */
+                {
+                    int jae_offset_pos = i - 1;
+
+                    /* VALID: execute original bytes and continue */
+                    cave[i++] = 0x83; cave[i++] = 0xEC; cave[i++] = 0x0C;
+                    cave[i++] = 0x56;
+                    cave[i++] = 0x8B; cave[i++] = 0xF1;
+                    cave[i++] = 0xE9;
+                    {
+                        DWORD from = caveAddr + i + 4;
+                        DWORD to   = 0x006D2FD6;
+                        DWORD rel = to - from;
+                        cave[i++] = (BYTE)(rel);
+                        cave[i++] = (BYTE)(rel >> 8);
+                        cave[i++] = (BYTE)(rel >> 16);
+                        cave[i++] = (BYTE)(rel >> 24);
+                    }
+
+                    /* .bad_vtable: zero-fill 3 output params (skip param_4) and RET 0x10 */
+                    {
+                        int bad_vtable_pos = i;
+                        cave[jz_offset_pos]  = (BYTE)(bad_vtable_pos - (jz_offset_pos + 1));
+                        cave[jb_offset_pos]  = (BYTE)(bad_vtable_pos - (jb_offset_pos + 1));
+                        cave[jae_offset_pos] = (BYTE)(bad_vtable_pos - (jae_offset_pos + 1));
+                    }
+                    /* FUN_006d2fd0 params: [ESP+4]=p1, [ESP+8]=p2, [ESP+C]=p3, [ESP+10]=p4(char) */
+                    cave[i++] = 0x8B; cave[i++] = 0x44; cave[i++] = 0x24; cave[i++] = 0x04;
+                    cave[i++] = 0xC7; cave[i++] = 0x00;
+                    cave[i++] = 0x00; cave[i++] = 0x00; cave[i++] = 0x00; cave[i++] = 0x00;
+                    cave[i++] = 0x8B; cave[i++] = 0x44; cave[i++] = 0x24; cave[i++] = 0x08;
+                    cave[i++] = 0xC7; cave[i++] = 0x00;
+                    cave[i++] = 0x00; cave[i++] = 0x00; cave[i++] = 0x00; cave[i++] = 0x00;
+                    cave[i++] = 0x8B; cave[i++] = 0x44; cave[i++] = 0x24; cave[i++] = 0x0C;
+                    cave[i++] = 0xC7; cave[i++] = 0x00;
+                    cave[i++] = 0x00; cave[i++] = 0x00; cave[i++] = 0x00; cave[i++] = 0x00;
+                    cave[i++] = 0xC2; cave[i++] = 0x10; cave[i++] = 0x00;
+                                                               /* RET 0x10 (clean 4 params)   */
+                }
+            }
+        }
+
+        VirtualProtect(cave, sizeof(cave2), PAGE_EXECUTE_READWRITE, &oldProt);
+
+        VirtualProtect(site, 6, PAGE_EXECUTE_READWRITE, &oldProt);
+        site[0] = 0xE9;
+        {
+            DWORD rel = caveAddr - ((DWORD)site + 5);
+            site[1] = (BYTE)(rel);
+            site[2] = (BYTE)(rel >> 8);
+            site[3] = (BYTE)(rel >> 16);
+            site[4] = (BYTE)(rel >> 24);
+        }
+        site[5] = 0x90;
+        VirtualProtect(site, 6, oldProt, &oldProt);
+
+        ProxyLog("  PatchCompressedVectorRead: FUN_006d2fd0 -> cave at %p "
+                 "(vtable validation + safe RET 0x10)", (void*)cave);
     }
 }
 
 /* ================================================================
- * PatchChecksumAlwaysPass - Fix first-player-connects-to-empty-server
+ * PatchDebugConsoleToFile - Replace debug console with file logging
  *
- * FUN_006a1b10 (ChecksumCompleteHandler) verifies the connecting player's
- * checksums by comparing them against OTHER connected players.  On a fresh
- * dedicated server there are no other players, so the verification loop
- * finds no match and sets the checksum flag to 0 (FAIL).
+ * BC's embedded Python has ALL file I/O disabled (open, nt.open, AND
+ * nt.write all fail). Python cannot write to files at all.
  *
- * This causes two problems:
- *   1. The opcode 0x00 packet is sent with checksum_flag=0
- *   2. FUN_006f3f30 (which appends critical game state to the packet)
- *      is skipped because of the `if (flag != 0)` guard
+ * Instead, we intercept the Python exception debug console function
+ * (FUN_006f9470) and replace it with our own C function that:
+ *   1. Calls PyErr_Fetch to get the exception
+ *   2. For string exceptions (raise "text"), writes the text to state_dump.log
+ *   3. Returns immediately (no popup, no "resume" prompt)
  *
- * The client receives an incomplete settings packet and enters a bad
- * state (black screen with music, no ship selection).
+ * StateDumper.py uses "raise text" to dump state. The exception propagates
+ * to the C engine's exception handler (FUN_006f9b80) which calls our
+ * replacement, writing the dump to file silently.
  *
- * Fix: Change the flag initialization from 0 to 1 at 0x006a1b75.
- * Assembly: MOV byte ptr [ESP+0x1C], 0x0  ->  MOV byte ptr [ESP+0x1C], 0x1
- * Machine code change: C6 44 24 1C 00  ->  C6 44 24 1C 01
+ * Python C API addresses (from Ghidra analysis):
+ *   PyErr_Fetch      = 0x00753110
+ *   PyString_AsString = 0x007507d0  (returns ob_sval at +0x14, or 0 on type error)
+ *   PyString_Type    = 0x0095e960
+ *   _Py_NoneStruct   = 0x0095dd20
  * ================================================================ */
-static void PatchChecksumAlwaysPass(void) {
-    BYTE* target = (BYTE*)0x006a1b75;
+static FILE* g_pStateDump = NULL;
+
+/* Forward-declare Python C API functions needed before the main API block */
+typedef void (__cdecl *pfn_PyErr_Fetch_Early)(void**, void**, void**);
+#define PY_ErrFetch_Early ((pfn_PyErr_Fetch_Early)0x00753110)
+
+#define PY_STRING_TYPE_ADDR  ((void*)0x0095e960)
+typedef const char* (__cdecl *pfn_PyString_AsString)(void*);
+#define PY_StringAsString ((pfn_PyString_AsString)0x007507d0)
+
+/* Replacement for the debug console popup (FUN_006f9470).
+ * Called by FUN_006f9b80 when a Python exception occurs and the
+ * debug console flag (DAT_0099add6) is 1. */
+static void __cdecl ReplacementDebugConsole(void) {
+    static int callCount = 0;
+    void *excType = NULL, *excValue = NULL, *excTB = NULL;
+    const char *text = NULL;
+
+    callCount++;
+
+    /* Diagnostic: log every entry to confirm handler is reached */
+    if (g_pStateDump) {
+        fprintf(g_pStateDump, "\n[DIAG] ReplacementDebugConsole called (#%d)\n", callCount);
+        fflush(g_pStateDump);
+    }
+    ProxyLog("  ReplacementDebugConsole: entry #%d", callCount);
+
+    /* Fetch the current exception (this clears the error indicator;
+     * caller FUN_006f9b80 calls PY_ErrClear after us anyway) */
+    PY_ErrFetch_Early(&excType, &excValue, &excTB);
+
+    if (!excType) return;
+
+    /* For string exceptions (raise "text"), excType IS the string.
+     * Check ob_type at offset +4 against PyString_Type. */
+    if (!IsBadReadPtr(excType, 24) &&
+        *(void**)((char*)excType + 4) == PY_STRING_TYPE_ADDR) {
+        text = PY_StringAsString(excType);
+    }
+    /* For class exceptions, try excValue as string */
+    else if (excValue && !IsBadReadPtr(excValue, 24) &&
+             *(void**)((char*)excValue + 4) == PY_STRING_TYPE_ADDR) {
+        text = PY_StringAsString(excValue);
+    }
+
+    if (text && g_pStateDump) {
+        fprintf(g_pStateDump, "%s\n", text);
+        fflush(g_pStateDump);
+    }
+
+    /* Log a short note to ddraw_proxy.log */
+    if (text) {
+        /* Show first 80 chars in proxy log */
+        char preview[84];
+        int i;
+        for (i = 0; i < 80 && text[i]; i++) {
+            preview[i] = (text[i] == '\n' || text[i] == '\r') ? ' ' : text[i];
+        }
+        preview[i] = '\0';
+        ProxyLog("  Python exception -> state_dump.log: %.80s%s",
+                 preview, text[i] ? "..." : "");
+    }
+
+    /* Leak excType/excValue/excTB refs - harmless for rare exception events.
+     * Caller (FUN_006f9b80) will call PY_ErrClear which is now a no-op
+     * since PY_ErrFetch already cleared the indicator. */
+}
+
+static void PatchDebugConsoleToFile(void) {
+    char sdPath[MAX_PATH];
+    BYTE* func = (BYTE*)0x006f9470;
     DWORD oldProt;
 
-    if (IsBadReadPtr(target, 1)) {
-        ProxyLog("  PatchChecksumAlwaysPass: address 0x006a1b75 not readable, skipped");
-        return;
+    /* Open state_dump.log */
+    lstrcpynA(sdPath, g_szBasePath, MAX_PATH);
+    lstrcatA(sdPath, "state_dump.log");
+    g_pStateDump = fopen(sdPath, "w");
+    if (g_pStateDump) {
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+        fprintf(g_pStateDump,
+                "# STBC State Dump Log\n"
+                "# Session started: %04d-%02d-%02d %02d:%02d:%02d\n"
+                "# Press F12 at any time to dump engine state.\n"
+                "# ============================================================\n\n",
+                st.wYear, st.wMonth, st.wDay,
+                st.wHour, st.wMinute, st.wSecond);
+        fflush(g_pStateDump);
+        ProxyLog("  PatchDebugConsoleToFile: opened %s", sdPath);
+    } else {
+        ProxyLog("  PatchDebugConsoleToFile: WARNING could not open %s", sdPath);
     }
 
-    if (*target != 0x00) {
-        ProxyLog("  PatchChecksumAlwaysPass: expected 0x00 at 0x006a1b75, got 0x%02X - skipped",
-                 (int)*target);
-        return;
+    /* Patch FUN_006f9470 entry: MOV EAX, <addr>; JMP EAX (7 bytes) */
+    if (!IsBadReadPtr(func, 7)) {
+        VirtualProtect(func, 7, PAGE_EXECUTE_READWRITE, &oldProt);
+        func[0] = 0xB8;  /* MOV EAX, imm32 */
+        *(DWORD*)(func + 1) = (DWORD)ReplacementDebugConsole;
+        func[5] = 0xFF;  /* JMP EAX */
+        func[6] = 0xE0;
+        VirtualProtect(func, 7, oldProt, &oldProt);
+        ProxyLog("  PatchDebugConsoleToFile: patched FUN_006f9470 -> 0x%08X",
+                 (unsigned)(DWORD)ReplacementDebugConsole);
     }
 
-    /* Verify the instruction prefix bytes (C6 44 24 1C) to be safe */
-    BYTE* instr = (BYTE*)0x006a1b71;
-    if (instr[0] != 0xC6 || instr[1] != 0x44 || instr[2] != 0x24 || instr[3] != 0x1C) {
-        ProxyLog("  PatchChecksumAlwaysPass: instruction prefix mismatch at 0x006a1b71, skipped");
-        return;
+    /* Ensure debug console flag (DAT_0099add6) is 1 so our path is taken
+     * in FUN_006f9b80 (the exception handler dispatcher) */
+    {
+        BYTE* flag = (BYTE*)0x0099add6;
+        if (!IsBadReadPtr(flag, 1)) {
+            VirtualProtect(flag, 1, PAGE_READWRITE, &oldProt);
+            *flag = 1;
+            VirtualProtect(flag, 1, oldProt, &oldProt);
+        }
     }
-
-    VirtualProtect(target, 1, PAGE_EXECUTE_READWRITE, &oldProt);
-    *target = 0x01;
-    VirtualProtect(target, 1, oldProt, &oldProt);
-    ProxyLog("  PatchChecksumAlwaysPass: patched 0x006a1b75 (checksum flag init 0->1)");
 }
 
 /* ================================================================
@@ -1121,6 +2535,33 @@ typedef void (__cdecl *pfn_qr_handle_query)(void* qr, void* buf, struct sockaddr
 #define UTOPIA_APP_OBJ       ((void*)0x0097FA00)
 #define GAMESPY_PTR          (*(DWORD*)0x0097FA7C)  /* UtopiaModule+0x7C */
 
+/* ================================================================
+ * NewPlayerInGame - FUN_006a1e70
+ *
+ * REMOVED: Manual FUN_006a1e70 call from GameLoopTimerProc.
+ *
+ * Investigation (2026-02-10) found the engine's normal dispatcher at
+ * 0x0069f2a0 ALREADY handles the client's 0x2A (NewPlayerInGame) by
+ * calling FUN_006a1e70 internally. The client DOES send 0x2A after
+ * receiving Settings+GameInit. Our manual call was redundant, causing:
+ *   - Duplicate 0x35/0x37/0x17 messages
+ *   - Client ACK storm (16 ACKs repeated 3x)
+ *   - Double ObjNotFound for the same object
+ *   - VEH crash cascade at 0x006CF1DC (double cleanup of stack buffer)
+ *
+ * The engine's natural path handles everything:
+ *   - FUN_006a1e70 fires NewPlayerInGame event -> Python NewPlayerHandler
+ *     runs and registers scoring dicts (g_kKillsDictionary, g_kDeathsDictionary)
+ *   - FUN_006a1e70 calls Python InitNetwork -> sends MISSION_INIT_MESSAGE
+ *     + SCORE_MESSAGEs to the joining client
+ *   - FUN_006a1e70 iterates existing game objects and sends them to new player
+ * ================================================================ */
+
+/* Flag for HeartbeatThread to request Python diagnostics on main thread.
+ * Python 1.5.2's allocator has NO locks - all Python C API calls MUST
+ * happen on the main thread to avoid GIL violations and heap corruption. */
+static volatile int g_runPyDiag = 0;
+
 static VOID CALLBACK GameLoopTimerProc(HWND hwnd, UINT msg,
                                         UINT_PTR id, DWORD time) {
     static int tickCount = 0;
@@ -1197,6 +2638,43 @@ static VOID CALLBACK GameLoopTimerProc(HWND hwnd, UINT msg,
         }
     }
 
+    /* One-time renderer pipeline verification at tick 1.
+     * With PatchSkipRendererSetup active, pipeline objects at renderer offsets
+     * 0xB8, 0xBC, 0xC0, 0xC4 will be NULL (pipeline creation is skipped).
+     * The renderer ptr is at *(DWORD*)(appObj + 0x0C) where appObj = *(DWORD*)0x009a09d0. */
+    {
+        static int pipelineChecked = 0;
+        if (!pipelineChecked && tickCount == 1) {
+            DWORD appPtr = 0, rendPtr = 0;
+            DWORD p_b8 = 0, p_bc = 0, p_c0 = 0, p_c4 = 0;
+            pipelineChecked = 1;
+
+            if (!IsBadReadPtr((void*)0x009a09d0, 4))
+                appPtr = *(DWORD*)0x009a09d0;
+            if (appPtr && !IsBadReadPtr((void*)(appPtr + 0x0c), 4))
+                rendPtr = *(DWORD*)(appPtr + 0x0c);
+            if (rendPtr) {
+                if (!IsBadReadPtr((void*)(rendPtr + 0xb8), 4))
+                    p_b8 = *(DWORD*)(rendPtr + 0xb8);
+                if (!IsBadReadPtr((void*)(rendPtr + 0xbc), 4))
+                    p_bc = *(DWORD*)(rendPtr + 0xbc);
+                if (!IsBadReadPtr((void*)(rendPtr + 0xc0), 4))
+                    p_c0 = *(DWORD*)(rendPtr + 0xc0);
+                if (!IsBadReadPtr((void*)(rendPtr + 0xc4), 4))
+                    p_c4 = *(DWORD*)(rendPtr + 0xc4);
+            }
+            ProxyLog("  PIPELINE CHECK: app=0x%08X renderer=0x%08X", appPtr, rendPtr);
+            ProxyLog("    +0xB8=0x%08X +0xBC=0x%08X +0xC0=0x%08X +0xC4=0x%08X",
+                     p_b8, p_bc, p_c0, p_c4);
+            if (rendPtr && p_b8 && p_bc && p_c0 && p_c4)
+                ProxyLog("    Pipeline objects ALL populated - FUN_007c3480 succeeded");
+            else if (rendPtr)
+                ProxyLog("    WARNING: Some pipeline objects NULL - FUN_007c3480 may have failed");
+            else
+                ProxyLog("    WARNING: Renderer pointer NULL - renderer not created");
+        }
+    }
+
     /* Check emQ BEFORE MainTick to see if events were pending from TGNetwork_Update */
     {
         static DWORD lastPreEmQ = 0;
@@ -1211,6 +2689,9 @@ static VOID CALLBACK GameLoopTimerProc(HWND hwnd, UINT msg,
 
     /* Call the game's main tick (processes timers, events, subsystems) */
     UTOPIA_MAIN_TICK(UTOPIA_APP_OBJ, NULL);
+
+    /* Log tick state (server build) */
+    TickLogger();
 
     /* After MainTick: check if event processing resulted in queued outbound packets.
      * If NewPlayerHandler was dispatched, it calls ChecksumSend which calls
@@ -1398,7 +2879,7 @@ static VOID CALLBACK GameLoopTimerProc(HWND hwnd, UINT msg,
             incomingQ = *(DWORD*)(wsnPtr + 0x54);
 
         if (playerCount != lastPlayerCount) {
-            int connState = -1, numPlayers = 0;
+            int connState = -1;
             DWORD hostID = 0, localID = 0;
             if (wsnPtr && !IsBadReadPtr((void*)(wsnPtr + 0x14), 4))
                 connState = *(int*)(wsnPtr + 0x14);
@@ -1476,6 +2957,36 @@ static VOID CALLBACK GameLoopTimerProc(HWND hwnd, UINT msg,
         }
     }
 
+    /* Run deferred Python diagnostics requested by HeartbeatThread.
+     * Must execute on main thread to avoid GIL/allocator corruption. */
+    if (g_runPyDiag) {
+        g_runPyDiag = 0;
+        ProxyLog("  PY_DIAG: Running deferred diagnostics on main thread");
+        {
+            DWORD* pFrozenPtr = (DWORD*)0x00975860;
+            if (!IsBadReadPtr(pFrozenPtr, 4)) {
+                BYTE* entry = (BYTE*)(*(DWORD*)pFrozenPtr);
+                int idx;
+                ProxyLog("  PY_DIAG: FrozenModules table at %p", entry);
+                for (idx = 0; idx < 5 && entry; idx++) {
+                    char* name = *(char**)entry;
+                    if (!name || IsBadReadPtr(name, 1)) break;
+                    ProxyLog("  FROZEN[%d]: '%s' code=%p size=%d",
+                             idx, name,
+                             *(void**)(entry + 4),
+                             *(int*)(entry + 8));
+                    entry += 12;
+                }
+            }
+        }
+        {
+            void *modules = PY_GetModuleDict();
+            ProxyLog("  PY_DIAG: sys.modules = %p", modules);
+        }
+        RunPyCode("pass\n");
+        ProxyLog("  PY_DIAG: RunPyCode('pass') OK");
+    }
+
     /* Periodic status every ~10s */
     if (time - lastLogTime >= 10000) {
         DWORD clockPtr = 0;
@@ -1551,14 +3062,22 @@ static VOID CALLBACK DedicatedServerTimerProc(HWND hwnd, UINT msg,
 
         ProxyLog("  DS_TIMER[0]: Setting flags (poll %d, nest=%d)", polls, nestLvl);
 
-        /* Direct memory writes for critical flags */
+        /* Direct memory writes for critical flags
+         * 0x0097FA88 = IsClient (0=host, 1=client) - NOT "IsHost"!
+         * 0x0097FA89 = IsHost   (1=host, 0=client) - the REAL IsHost flag
+         * 0x0097FA8A = IsMultiplayer (1=MP active)
+         * Stock host: IsClient=0, IsHost=1, IsMp=1
+         * Stock client: IsClient=1, IsHost=0, IsMp=0
+         */
         VirtualProtect((void*)0x0097FA88, 4, PAGE_READWRITE, &oldProt);
-        *(BYTE*)0x0097FA88 = 1;  /* IsHost */
-        *(BYTE*)0x0097FA8A = 1;  /* IsMultiplayer */
+        *(BYTE*)0x0097FA88 = 0;  /* IsClient = 0 (we are the host, NOT a client) */
+        *(BYTE*)0x0097FA89 = 1;  /* IsHost = 1 (we ARE the host) */
+        *(BYTE*)0x0097FA8A = 1;  /* IsMultiplayer = 1 */
         VirtualProtect((void*)0x0097FA88, 4, oldProt, &oldProt);
 
-        ProxyLog("  DS_TIMER[0]: Direct flags: IsHost=%d IsMultiplayer=%d",
-                 (int)*(BYTE*)0x0097FA88, (int)*(BYTE*)0x0097FA8A);
+        ProxyLog("  DS_TIMER[0]: Direct flags: IsClient=%d IsHost=%d IsMultiplayer=%d",
+                 (int)*(BYTE*)0x0097FA88, (int)*(BYTE*)0x0097FA89,
+                 (int)*(BYTE*)0x0097FA8A);
 
         /* Also call SWIG methods for any side effects (non-critical) */
         rc = RunPyCode(
@@ -1575,7 +3094,7 @@ static VOID CALLBACK DedicatedServerTimerProc(HWND hwnd, UINT msg,
             "    App.g_kConfigMapping.SetStringValue(\n"
             "        'Multiplayer Options', 'Game_Name', 'Dedicated Server')\n"
             "    App.g_kConfigMapping.SetStringValue(\n"
-            "        'Multiplayer Options', 'Player_Name', 'Server')\n"
+            "        'Multiplayer Options', 'Player_Name', 'Dedicated Server')\n"
             "    App.g_kConfigMapping.SetStringValue(\n"
             "        'Multiplayer Options', 'Password', '')\n"
             "except:\n"
@@ -1643,13 +3162,7 @@ static VOID CALLBACK DedicatedServerTimerProc(HWND hwnd, UINT msg,
         DWORD twPtr;
 
         ProxyLog("  DS_TIMER[2]: Creating MultiplayerGame (poll %d, nest=%d)", polls, nestLvl);
-        g_phase2Active = 1;
-        if (setjmp(g_phase2JmpBuf) == 0) {
-            pCreate();
-        } else {
-            ProxyLog("  DS_TIMER[2]: Recovered from crash via longjmp");
-        }
-        g_phase2Active = 0;
+        pCreate();
 
         twPtr = 0;
         if (!IsBadReadPtr((void*)0x0097e238, 4))
@@ -1673,28 +3186,51 @@ static VOID CALLBACK DedicatedServerTimerProc(HWND hwnd, UINT msg,
 
         ProxyLog("  DS_TIMER[3]: Triggering automation (poll %d, nest=%d)", polls, nestLvl);
 
+        /* First check if Custom.DedicatedServer is loaded */
+        {
+            int chk = RunPyCode(
+                "import sys\n"
+                "_has_ds = sys.modules.has_key('Custom.DedicatedServer')\n"
+                "_mods = filter(lambda k: k[:6]=='Custom', sys.modules.keys())\n"
+                "print 'DS_TIMER3: has_DS=' + str(_has_ds) + ' custom_mods=' + str(_mods)\n");
+            ProxyLog("  DS_TIMER[3]: pre-check rc=%d", chk);
+        }
+
         rc = RunPyCode(
             "import sys\n"
             "try:\n"
             "    import App\n"
             "    tw = App.TopWindow_GetTopWindow()\n"
+            "    print 'DS_TIMER3: tw=' + str(tw) + ' type=' + str(type(tw))\n"
             "    if tw is not None:\n"
-            "        ds = sys.modules['Custom.DedicatedServer']\n"
-            "        ds.TopWindowInitialized(tw)\n"
-            "        n = ds.PatchLoadedMissionModules()\n"
-            "        f = open('dedicated_init.log', 'a')\n"
-            "        f.write('DS_TIMER: TopWindowInitialized called OK\\n')\n"
-            "        f.write('DS_TIMER: PatchLoadedMissionModules = ' + str(n) + '\\n')\n"
-            "        f.close()\n"
+            "        if sys.modules.has_key('Custom.DedicatedServer'):\n"
+            "            ds = sys.modules['Custom.DedicatedServer']\n"
+            "            print 'DS_TIMER3: calling TopWindowInitialized'\n"
+            "            ds.TopWindowInitialized(tw)\n"
+            "            n = ds.PatchLoadedMissionModules()\n"
+            "            f = open('dedicated_init.log', 'a')\n"
+            "            f.write('DS_TIMER: TopWindowInitialized called OK\\n')\n"
+            "            f.write('DS_TIMER: PatchLoadedMissionModules = ' + str(n) + '\\n')\n"
+            "            f.close()\n"
+            "        else:\n"
+            "            print 'DS_TIMER3: Custom.DedicatedServer NOT in sys.modules!'\n"
+            "            f = open('dedicated_init.log', 'a')\n"
+            "            f.write('DS_TIMER ERROR: Custom.DedicatedServer not loaded\\n')\n"
+            "            f.close()\n"
             "    else:\n"
+            "        print 'DS_TIMER3: TopWindow is None'\n"
             "        f = open('dedicated_init.log', 'a')\n"
             "        f.write('DS_TIMER: TopWindow_GetTopWindow returned None\\n')\n"
             "        f.close()\n"
             "except:\n"
             "    ei = sys.exc_info()\n"
-            "    f = open('dedicated_init.log', 'a')\n"
-            "    f.write('DS_TIMER Phase3 ERROR: ' + str(ei[0]) + ': ' + str(ei[1]) + '\\n')\n"
-            "    f.close()\n");
+            "    print 'DS_TIMER3 ERROR: ' + str(ei[0]) + ': ' + str(ei[1])\n"
+            "    try:\n"
+            "        f = open('dedicated_init.log', 'a')\n"
+            "        f.write('DS_TIMER Phase3 ERROR: ' + str(ei[0]) + ': ' + str(ei[1]) + '\\n')\n"
+            "        f.close()\n"
+            "    except:\n"
+            "        print 'DS_TIMER3: ALSO FAILED to write log!'\n");
 
         ProxyLog("  DS_TIMER[3]: TopWindowInit rc=%d", rc);
 
@@ -1759,16 +3295,17 @@ static VOID CALLBACK DedicatedServerTimerProc(HWND hwnd, UINT msg,
          * In vanilla, the config reader at ~0x00438880 reads "Dedicated Server"
          * from config and restores IsClient=0 post-construction. We bypass that
          * code path, so we must set it directly.
-         * IsClient=0 tells the engine this is a dedicated server:
-         *   - Skips ship selection UI, hides info pane
-         *   - Doesn't add host as a player in score tracking
-         *   - Changes object creation, warp, physics behavior */
+         * Reinforce correct flag state after MultiplayerGame creation:
+         *   0x0097FA88 = IsClient = 0 (we are the host)
+         *   0x0097FA89 = IsHost = 1 (we ARE the host)
+         * This is needed because CreateMultiplayerGame may alter these flags. */
         {
             DWORD oldProt;
-            VirtualProtect((void*)0x0097FA89, 1, PAGE_READWRITE, &oldProt);
-            *(BYTE*)0x0097FA89 = 0;  /* IsClient = 0 */
-            VirtualProtect((void*)0x0097FA89, 1, oldProt, &oldProt);
-            ProxyLog("  DS_TIMER[3]: Set IsClient=0 (0x0097FA89) for dedicated server mode");
+            VirtualProtect((void*)0x0097FA88, 2, PAGE_READWRITE, &oldProt);
+            *(BYTE*)0x0097FA88 = 0;  /* IsClient = 0 */
+            *(BYTE*)0x0097FA89 = 1;  /* IsHost = 1 */
+            VirtualProtect((void*)0x0097FA88, 2, oldProt, &oldProt);
+            ProxyLog("  DS_TIMER[3]: Reinforced IsClient=0 IsHost=1 for dedicated server mode");
         }
 
         /* Set MultiplayerGame+0x1F8 = 1 to enable immediate new player handling.
@@ -1943,13 +3480,51 @@ static void __cdecl PostAutoexecCallback(void) {
         PY_ErrClear();
     }
 
+    /* Fix sys.path: in headless mode, Autoexec.py may not set up Scripts path.
+       Use absolute paths derived from g_szBasePath for reliability. */
+    {
+        char pyFixPath[1024];
+        char fwdPath[MAX_PATH];
+        int pi, prc;
+        lstrcpynA(fwdPath, g_szBasePath, MAX_PATH);
+        for (pi = 0; fwdPath[pi]; pi++)
+            if (fwdPath[pi] == '\\') fwdPath[pi] = '/';
+        wsprintfA(pyFixPath,
+            "import sys\n"
+            "sys.path.insert(0, '%sScripts')\n"
+            "sys.path.insert(1, '%s')\n"
+            "sys.path.append('%sscripts/Icons')\n"
+            "sys._ds_base_path = '%s'\n",
+            fwdPath, fwdPath, fwdPath, fwdPath);
+        prc = PY_RunSimpleString(pyFixPath);
+        ProxyLog("  PostAutoexecCallback: path-fix rc=%d", prc);
+    }
+
     /* Import Local.py directly via C API */
     localMod = PY_ImportModule("Local");
     ProxyLog("  PostAutoexecCallback: import Local = %p", localMod);
 
     if (PY_ErrOccurred()) {
-        ProxyLog("  PostAutoexecCallback: Local import had errors");
-        PY_ErrPrint();
+        void *errType = NULL, *errValue = NULL, *errTB = NULL;
+        PY_ErrFetch(&errType, &errValue, &errTB);
+        if (errType) {
+            const char *typeName = "(bad-ptr)";
+            if (!IsBadReadPtr(errType, 16)) {
+                const char *namePtr = *(const char**)((char*)errType + 12);
+                if (namePtr && !IsBadReadPtr(namePtr, 4))
+                    typeName = namePtr;
+            }
+            const char *valStr = "(no-value)";
+            if (errValue && !IsBadReadPtr(errValue, 24)) {
+                const char *candidate = (const char*)errValue + 20;
+                if (!IsBadReadPtr(candidate, 4))
+                    valStr = candidate;
+            }
+            ProxyLog("  PostAutoexecCallback: Local import error: %s: %s",
+                     typeName, valStr);
+        } else {
+            ProxyLog("  PostAutoexecCallback: Local import failed (no error info)");
+        }
     }
 
     LogPyModules("POST-LOCAL");
@@ -2131,47 +3706,26 @@ static void PatchPyFatalError(void) {
 }
 
 /* ================================================================
- * PatchNullGlobals - Write dummy pointer to known NULL globals
+ * PatchDirectDrawCreateExCache - Pre-fill DAT_009a12a4
  *
- * [0x009878CC] = scene/render manager singleton - NULL in stub mode.
- * Writing the dummy buffer address prevents cascading NULL derefs.
+ * FUN_007c7f80 checks: if (DAT_009a12a4 != NULL) skip GetModuleHandle/GetProcAddress.
+ * By setting this to OUR DirectDrawCreateEx, the game calls us directly
+ * and bypasses apphelp.dll's shim (which crashes with proxy DDraw objects).
+ * The adapter enumeration via FUN_007c8eb0 still runs normally through our
+ * DirectDrawEnumerateExA export, populating DAT_009a1298/129c/12a0.
  * ================================================================ */
-static volatile LONG g_bNullGlobalsPatched = 0;
-
-static void PatchNullGlobals(void) {
-    DWORD* pGlobal;
+static void PatchDirectDrawCreateExCache(void) {
     DWORD oldProt;
-
-    if (!g_pNullDummy) return;
-    if (InterlockedExchange(&g_bNullGlobalsPatched, 1)) return;
-
-    pGlobal = (DWORD*)0x009878CC;
-    if (!IsBadReadPtr(pGlobal, 4) && *pGlobal == 0) {
-        VirtualProtect(pGlobal, 4, PAGE_READWRITE, &oldProt);
-        *pGlobal = (DWORD)g_pNullDummy;
-        VirtualProtect(pGlobal, 4, oldProt, &oldProt);
-        ProxyLog("  PatchNullGlobals: [0x009878CC] = dummy (0x%08X)",
-                 (unsigned)(DWORD)g_pNullDummy);
-    }
-
-    /* Pre-fill DAT_009a12a4 (cached DirectDrawCreateEx function pointer).
-       FUN_007c7f80 checks: if (DAT_009a12a4 != NULL) skip GetModuleHandle/GetProcAddress.
-       By setting this to OUR DirectDrawCreateEx, the game calls us directly
-       and bypasses apphelp.dll's shim (which crashes with proxy DDraw objects).
-       The adapter enumeration via FUN_007c8eb0 still runs normally through our
-       DirectDrawEnumerateExA export, populating DAT_009a1298/129c/12a0. */
-    {
-        DWORD* pDDCreateExCache = (DWORD*)0x009A12A4;
-        if (!IsBadReadPtr(pDDCreateExCache, 4) && *pDDCreateExCache == 0) {
-            HMODULE hSelf = GetModuleHandleA("ddraw.dll");
-            FARPROC pfn = GetProcAddress(hSelf, "DirectDrawCreateEx");
-            if (pfn) {
-                VirtualProtect(pDDCreateExCache, 4, PAGE_READWRITE, &oldProt);
-                *pDDCreateExCache = (DWORD)pfn;
-                VirtualProtect(pDDCreateExCache, 4, oldProt, &oldProt);
-                ProxyLog("  PatchNullGlobals: [0x009A12A4] = DirectDrawCreateEx (0x%08X)",
-                         (unsigned)(DWORD)pfn);
-            }
+    DWORD* pDDCreateExCache = (DWORD*)0x009A12A4;
+    if (!IsBadReadPtr(pDDCreateExCache, 4) && *pDDCreateExCache == 0) {
+        HMODULE hSelf = GetModuleHandleA("ddraw.dll");
+        FARPROC pfn = GetProcAddress(hSelf, "DirectDrawCreateEx");
+        if (pfn) {
+            VirtualProtect(pDDCreateExCache, 4, PAGE_READWRITE, &oldProt);
+            *pDDCreateExCache = (DWORD)pfn;
+            VirtualProtect(pDDCreateExCache, 4, oldProt, &oldProt);
+            ProxyLog("  PatchDirectDrawCreateExCache: [0x009A12A4] = DirectDrawCreateEx (0x%08X)",
+                     (unsigned)(DWORD)pfn);
         }
     }
 }
@@ -2363,6 +3917,59 @@ static void HookGameIAT(void) {
     }
 }
 
+#ifdef OBSERVE_ONLY
+/* Observer mode: minimal IAT hooks for passive logging only */
+static void ObserverHookIAT(void) {
+    HMODULE hWs2 = GetModuleHandleA("ws2_32.dll");
+    HMODULE hWsock = GetModuleHandleA("wsock32.dll");
+    HMODULE hKernel = GetModuleHandleA("kernel32.dll");
+    FARPROC pfn;
+
+    /* Hook sendto */
+    pfn = NULL;
+    if (hWs2) pfn = GetProcAddress(hWs2, "sendto");
+    if (!pfn && hWsock) pfn = GetProcAddress(hWsock, "sendto");
+    if (pfn) {
+        g_pfnOrigSendto = (PFN_sendto)pfn;
+        if (!PatchIATEntry(pfn, (FARPROC)HookedSendto, "sendto")) {
+            if (hWsock) {
+                FARPROC pfn2 = GetProcAddress(hWsock, "sendto");
+                if (pfn2 && pfn2 != pfn) {
+                    g_pfnOrigSendto = (PFN_sendto)pfn2;
+                    PatchIATEntry(pfn2, (FARPROC)HookedSendto, "sendto(wsock32)");
+                }
+            }
+        }
+    }
+
+    /* Hook recvfrom */
+    pfn = NULL;
+    if (hWs2) pfn = GetProcAddress(hWs2, "recvfrom");
+    if (!pfn && hWsock) pfn = GetProcAddress(hWsock, "recvfrom");
+    if (pfn) {
+        g_pfnOrigRecvfrom = (PFN_recvfrom)pfn;
+        if (!PatchIATEntry(pfn, (FARPROC)HookedRecvfrom, "recvfrom")) {
+            if (hWsock) {
+                FARPROC pfn2 = GetProcAddress(hWsock, "recvfrom");
+                if (pfn2 && pfn2 != pfn) {
+                    g_pfnOrigRecvfrom = (PFN_recvfrom)pfn2;
+                    PatchIATEntry(pfn2, (FARPROC)HookedRecvfrom, "recvfrom(wsock32)");
+                }
+            }
+        }
+    }
+
+    /* Hook OutputDebugStringA */
+    if (hKernel) {
+        pfn = GetProcAddress(hKernel, "OutputDebugStringA");
+        if (pfn) {
+            g_pfnOrigODS = (PFN_OutputDebugStringA)pfn;
+            PatchIATEntry(pfn, (FARPROC)HookedOutputDebugStringA, "OutputDebugStringA");
+        }
+    }
+}
+#endif /* OBSERVE_ONLY */
+
 /* ================================================================
  * Globals
  * ================================================================ */
@@ -2522,13 +4129,15 @@ ProxyD3D7* CreateProxyD3D7(ProxyDDraw7* parent) {
     return p;
 }
 
-ProxyDevice7* CreateProxyDevice7(ProxySurface7* renderTarget) {
+ProxyDevice7* CreateProxyDevice7(ProxySurface7* renderTarget, ProxyD3D7* parent) {
     ProxyDevice7* p = (ProxyDevice7*)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*p));
     if (!p) return NULL;
     p->lpVtbl = g_Device7Vtbl;
     p->refCount = 1;
     p->renderTarget = renderTarget;
-    ProxyLog("CreateProxyDevice7: %p (target=%p)", p, renderTarget);
+    p->parent = parent;
+    if (parent) parent->refCount++;
+    ProxyLog("CreateProxyDevice7: %p (target=%p, parent=%p)", p, renderTarget, parent);
     return p;
 }
 
@@ -2553,63 +4162,7 @@ ProxyVB7* CreateProxyVB7(DWORD fvf, DWORD numVertices) {
     return p;
 }
 
-/* ================================================================
- * Parse GPU device name from Options.cfg
- * ================================================================ */
-static void ParseDeviceNameFromConfig(void) {
-    char cfgPath[MAX_PATH];
-    char cfgBuf[4096];
-    DWORD bytesRead = 0;
-    HANDLE hFile;
-
-    lstrcpynA(cfgPath, g_szBasePath, MAX_PATH);
-    lstrcatA(cfgPath, "Options.cfg");
-    hFile = CreateFileA(cfgPath, GENERIC_READ, FILE_SHARE_READ,
-                         NULL, OPEN_EXISTING, 0, NULL);
-    if (hFile == INVALID_HANDLE_VALUE) {
-        ProxyLog("  Options.cfg not found, using default device name");
-        return;
-    }
-
-    ReadFile(hFile, cfgBuf, sizeof(cfgBuf) - 1, &bytesRead, NULL);
-    CloseHandle(hFile);
-
-    if (bytesRead > 0) {
-        char *found, *val, *eol, *onPos;
-        DWORD i;
-        for (i = 0; i < bytesRead; i++) {
-            if (cfgBuf[i] == '\0') cfgBuf[i] = ' ';
-        }
-        cfgBuf[bytesRead] = '\0';
-
-        found = strstr(cfgBuf, "Display Device=");
-        if (!found) found = strstr(cfgBuf, "Display Device-");
-        if (found) {
-            val = found;
-            while (*val && *val != '=' && *val != '-') val++;
-            if (*val) val++;
-            eol = val;
-            while (*eol && *eol != '\r' && *eol != '\n') eol++;
-            ProxyLog("  Options.cfg Display Device: '%.*s'", (int)(eol - val), val);
-            onPos = strstr(val, " on ");
-            if (onPos && onPos < eol) {
-                char *gpuName = onPos + 4;
-                int len = (int)(eol - gpuName);
-                if (len > 0 && len < (int)sizeof(g_szDeviceName)) {
-                    memcpy(g_szDeviceName, gpuName, len);
-                    g_szDeviceName[len] = '\0';
-                }
-            } else {
-                int len = (int)(eol - val);
-                if (len > 0 && len < (int)sizeof(g_szDeviceName)) {
-                    memcpy(g_szDeviceName, val, len);
-                    g_szDeviceName[len] = '\0';
-                }
-            }
-        }
-    }
-    ProxyLog("  Device name: '%s'", g_szDeviceName);
-}
+/* (ParseDeviceNameFromConfig removed - g_szDeviceName has static default) */
 
 /* ================================================================
  * Utilities
@@ -2632,6 +4185,153 @@ static void ResolveAddr(DWORD addr, char* out, int outLen) {
         }
     }
     wsprintfA(out, "0x%08X", addr);
+}
+
+/* ================================================================
+ * CrashDumpHandler - Log full crash diagnostics then let process die
+ *
+ * Registered via SetUnhandledExceptionFilter. Writes detailed crash
+ * info to crash_dump.log, flushes all open log files, then returns
+ * EXCEPTION_CONTINUE_SEARCH so the OS terminates the process normally.
+ * ================================================================ */
+static LONG WINAPI CrashDumpHandler(EXCEPTION_POINTERS* ep) {
+    CONTEXT* ctx = ep->ContextRecord;
+    DWORD eip = (DWORD)ctx->Eip;
+    DWORD excCode = ep->ExceptionRecord->ExceptionCode;
+    FILE* fp;
+    char path[MAX_PATH];
+    char resolved[256];
+    SYSTEMTIME st;
+    int i;
+
+    /* Skip benign exceptions */
+    if (excCode == 0x406D1388 ||   /* SetThreadName */
+        excCode == 0x40010006 ||   /* OutputDebugString */
+        excCode == 0x80000003 ||   /* INT3 breakpoint */
+        excCode == 0x80000004)     /* Single-step */
+        return EXCEPTION_CONTINUE_SEARCH;
+
+    /* Open crash dump log (append so multiple crashes in one session are captured) */
+    if (g_szBasePath[0])
+        _snprintf(path, sizeof(path), "%scrash_dump.log", g_szBasePath);
+    else
+        _snprintf(path, sizeof(path), "crash_dump.log");
+    path[sizeof(path)-1] = '\0';
+    fp = fopen(path, "a");
+    if (!fp) return EXCEPTION_CONTINUE_SEARCH;
+
+    GetLocalTime(&st);
+    fprintf(fp, "========================================\n");
+    fprintf(fp, "FATAL CRASH at %04d-%02d-%02d %02d:%02d:%02d.%03d\n",
+            st.wYear, st.wMonth, st.wDay,
+            st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+    fprintf(fp, "========================================\n\n");
+
+    /* Exception info */
+    ResolveAddr(eip, resolved, sizeof(resolved));
+    fprintf(fp, "Exception: 0x%08X at EIP=%s\n", (unsigned)excCode, resolved);
+    if (excCode == 0xC0000005) {
+        DWORD rw = (DWORD)ep->ExceptionRecord->ExceptionInformation[0];
+        DWORD faultAddr = (DWORD)ep->ExceptionRecord->ExceptionInformation[1];
+        fprintf(fp, "Access violation: %s 0x%08X\n",
+                rw == 0 ? "reading" : rw == 1 ? "writing" : "executing",
+                (unsigned)faultAddr);
+    } else if (excCode == 0xC00000FD) {
+        fprintf(fp, "STACK OVERFLOW\n");
+    }
+
+    /* Register dump */
+    fprintf(fp, "\nRegisters:\n");
+    fprintf(fp, "  EAX=%08X  EBX=%08X  ECX=%08X  EDX=%08X\n",
+            (unsigned)ctx->Eax, (unsigned)ctx->Ebx,
+            (unsigned)ctx->Ecx, (unsigned)ctx->Edx);
+    fprintf(fp, "  ESI=%08X  EDI=%08X  EBP=%08X  ESP=%08X\n",
+            (unsigned)ctx->Esi, (unsigned)ctx->Edi,
+            (unsigned)ctx->Ebp, (unsigned)ctx->Esp);
+    fprintf(fp, "  EIP=%08X  EFlags=%08X\n",
+            (unsigned)ctx->Eip, (unsigned)ctx->EFlags);
+
+    /* EBP chain stack walk */
+    fprintf(fp, "\nStack trace (EBP chain):\n");
+    {
+        DWORD* frame = (DWORD*)ctx->Ebp;
+        for (i = 0; i < 32 && frame; i++) {
+            DWORD retAddr;
+            if (IsBadReadPtr(frame, 8)) break;
+            retAddr = frame[1];
+            if (retAddr == 0) break;
+            ResolveAddr(retAddr, resolved, sizeof(resolved));
+            fprintf(fp, "  [%2d] %s\n", i, resolved);
+            frame = (DWORD*)frame[0];
+            if ((DWORD)frame < 0x10000 || (DWORD)frame > 0x7FFFFFFF) break;
+        }
+    }
+
+    /* Raw stack hex dump (256 bytes from ESP) */
+    fprintf(fp, "\nRaw stack (256 bytes from ESP=0x%08X):\n", (unsigned)ctx->Esp);
+    if (!IsBadReadPtr((void*)ctx->Esp, 256)) {
+        BYTE* sp = (BYTE*)ctx->Esp;
+        for (i = 0; i < 256; i += 16) {
+            int j;
+            fprintf(fp, "  %08X: ", (unsigned)(ctx->Esp + i));
+            for (j = 0; j < 16; j++)
+                fprintf(fp, "%02X ", sp[i + j]);
+            fprintf(fp, " ");
+            for (j = 0; j < 16; j++) {
+                BYTE b = sp[i + j];
+                fprintf(fp, "%c", (b >= 0x20 && b < 0x7F) ? b : '.');
+            }
+            fprintf(fp, "\n");
+        }
+    }
+
+    /* Code bytes around crash EIP (32 before, 32 after) */
+    fprintf(fp, "\nCode bytes around EIP=0x%08X:\n  ", (unsigned)eip);
+    if (!IsBadReadPtr((void*)(eip - 32), 64)) {
+        BYTE* code = (BYTE*)eip;
+        for (i = -32; i < 32; i++) {
+            if (i == 0) fprintf(fp, "[%02X] ", code[i]);
+            else        fprintf(fp, "%02X ", code[i]);
+        }
+        fprintf(fp, "\n");
+    }
+
+    /* Memory at key register targets */
+    {
+        struct { const char* name; DWORD val; } regs[] = {
+            {"EAX", ctx->Eax}, {"ECX", ctx->Ecx}, {"ESI", ctx->Esi},
+            {"EDI", ctx->Edi}, {"EBX", ctx->Ebx}, {"EDX", ctx->Edx}
+        };
+        fprintf(fp, "\nMemory at registers:\n");
+        for (i = 0; i < 6; i++) {
+            if (regs[i].val >= 0x10000 && !IsBadReadPtr((void*)regs[i].val, 32)) {
+                DWORD* p = (DWORD*)regs[i].val;
+                fprintf(fp, "  [%s=0x%08lX]: %08lX %08lX %08lX %08lX %08lX %08lX %08lX %08lX\n",
+                        regs[i].name, (unsigned long)regs[i].val,
+                        (unsigned long)p[0], (unsigned long)p[1],
+                        (unsigned long)p[2], (unsigned long)p[3],
+                        (unsigned long)p[4], (unsigned long)p[5],
+                        (unsigned long)p[6], (unsigned long)p[7]);
+            }
+        }
+    }
+
+    fprintf(fp, "\n");
+    fclose(fp);
+
+    /* Flush all open log files */
+    if (g_pLog) fflush(g_pLog);
+    if (g_pPacketLog) fflush(g_pPacketLog);
+    if (g_pTickLog) fflush(g_pTickLog);
+    if (g_pStateDump) fflush(g_pStateDump);
+
+    /* One-liner to main proxy log */
+    ResolveAddr(eip, resolved, sizeof(resolved));
+    ProxyLog("!!! FATAL CRASH: exception 0x%08X at %s - see crash_dump.log",
+             (unsigned)excCode, resolved);
+    if (g_pLog) fflush(g_pLog);
+
+    return EXCEPTION_CONTINUE_SEARCH;
 }
 
 /* Find and auto-dismiss CRT abort dialogs */
@@ -2693,91 +4393,12 @@ static DWORD WINAPI HeartbeatThread(LPVOID param) {
             ProxyLog("  STATE CHECK (%ds): Py_Initialized=%u WSN=0x%08X",
                      i / 2, pyInit, wsnPtr);
 
-            /* One-shot Python diagnostic at 15s */
+            /* Request Python diagnostics on main thread at 15s.
+             * NEVER call Python C API from this thread - the allocator
+             * has no locks and concurrent access causes heap corruption. */
             if (i == 30 && pyInit) {
-                /* Check Python internals step by step */
-                typedef void* (__cdecl *pfn_void)(void);
-                typedef void* (__cdecl *pfn_str)(const char*);
-                typedef void* (__cdecl *pfn_dict)(void*);
-                typedef void* (__cdecl *pfn_run4)(const char*, int, void*, void*);
-                typedef int (__cdecl *pfn_PyRun)(const char*);
-                typedef void (__cdecl *pfn_errprint)(void);
-
-                pfn_void  PySys_GetModules   = (pfn_void)0x0075b250;
-                pfn_str   PyImport_AddModule = (pfn_str)0x0075b890;
-                pfn_dict  PyModule_GetDict   = (pfn_dict)0x00773990;
-                pfn_run4  PyRun_String       = (pfn_run4)0x0074b640;
-                pfn_PyRun PyRunSimple        = (pfn_PyRun)0x0074ae80;
-                pfn_errprint PyErr_Print     = (pfn_errprint)0x0074af10;
-
-                void *modules, *mainMod, *mainDict, *result;
-
-                /* Dump frozen modules table */
-                {
-                    DWORD* pFrozenPtr = (DWORD*)0x00975860;
-                    if (!IsBadReadPtr(pFrozenPtr, 4)) {
-                        BYTE* entry = (BYTE*)(*(DWORD*)pFrozenPtr);
-                        int idx;
-                        ProxyLog("  PY_DIAG: FrozenModules table at %p", entry);
-                        for (idx = 0; idx < 50 && entry; idx++) {
-                            char* name = *(char**)entry;
-                            if (!name || IsBadReadPtr(name, 1)) break;
-                            ProxyLog("  FROZEN[%d]: '%s' code=%p size=%d",
-                                     idx, name,
-                                     *(void**)(entry + 4),
-                                     *(int*)(entry + 8));
-                            entry += 12;
-                        }
-                    }
-                }
-
-                modules = PySys_GetModules();
-                ProxyLog("  PY_DIAG: sys.modules = %p", modules);
-
-                mainMod = PyImport_AddModule("__main__");
-                ProxyLog("  PY_DIAG: __main__ module = %p", mainMod);
-
-                if (mainMod) {
-                    mainDict = PyModule_GetDict(mainMod);
-                    ProxyLog("  PY_DIAG: __main__.__dict__ = %p", mainDict);
-
-                    /* Try simplest possible statement */
-                    result = PyRun_String("pass\n", 0x101, mainDict, mainDict);
-                    ProxyLog("  PY_DIAG: PyRun_String('pass') = %p", result);
-                    if (!result) {
-                        ProxyLog("  PY_DIAG: Python execution failed, calling PyErr_Print");
-                        PyErr_Print();
-                    }
-
-                    /* Try writing diagnostic file */
-                    result = PyRun_String(
-                        "import sys, traceback\n"
-                        "f = open('py_diag.log', 'w')\n"
-                        "mods = sys.modules.keys()\n"
-                        "mods.sort()\n"
-                        "f.write('Modules: ' + str(mods) + '\\n')\n"
-                        "f.write('Path: ' + str(sys.path) + '\\n')\n"
-                        "try:\n"
-                        "    import App\n"
-                        "    f.write('import App: OK, App=' + str(App) + '\\n')\n"
-                        "    attrs = dir(App)\n"
-                        "    f.write('App has ' + str(len(attrs)) + ' attrs\\n')\n"
-                        "    net = filter(lambda x: 'WSN' in x or 'Winsock' in x or 'Network' in x, attrs)\n"
-                        "    f.write('Network attrs: ' + str(net) + '\\n')\n"
-                        "except:\n"
-                        "    f.write('import App: FAILED\\n')\n"
-                        "    traceback.print_exc(file=f)\n"
-                        "try:\n"
-                        "    import Local\n"
-                        "    f.write('import Local: OK\\n')\n"
-                        "except:\n"
-                        "    f.write('import Local: FAILED\\n')\n"
-                        "    traceback.print_exc(file=f)\n"
-                        "f.close()\n",
-                        0x101, mainDict, mainDict);
-                    ProxyLog("  PY_DIAG: diag write = %p", result);
-                    if (!result) PyErr_Print();
-                }
+                g_runPyDiag = 1;
+                ProxyLog("  HEARTBEAT: Requested Python diagnostics on main thread");
             }
         }
         /* Set up timer to keep the message pump running */
@@ -2798,8 +4419,8 @@ static DWORD WINAPI HeartbeatThread(LPVOID param) {
                 wsnPtr = *(DWORD*)0x0097FA78;
             ProxyLog("HEARTBEAT #%u (%u sec) WSN=0x%08X",
                      count, count * 5 + 30, wsnPtr);
-            /* Track module loading from C API (read-only, safe from background thread) */
-            if (count <= 3) LogPyModules("HEARTBEAT-MODS");
+            /* NOTE: Do NOT call LogPyModules or any Python C API from this thread.
+             * Python 1.5.2 allocator has no locks - concurrent access = heap corruption. */
         }
     }
     return 0;
@@ -2819,31 +4440,16 @@ BOOL WINAPI DllMain(HINSTANCE hInstDLL, DWORD reason, LPVOID reserved) {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(hInstDLL);
 
-        /* Allocate 64KB dummy object for NULL this-pointer fixups */
-        g_pNullDummy = (BYTE*)VirtualAlloc(NULL, 65536, MEM_COMMIT | MEM_RESERVE,
-                                            PAGE_EXECUTE_READWRITE);
-        if (g_pNullDummy) {
-            BYTE* stub = g_pNullDummy + 0xFF00;
-            DWORD* vtable = (DWORD*)(g_pNullDummy + 0x8000);
-            DWORD stubAddr = (DWORD)stub;
-            int i;
-            stub[0] = 0x31; stub[1] = 0xC0;  /* xor eax, eax */
-            stub[2] = 0xC3;                    /* ret */
-            stub[3] = 0x31; stub[4] = 0xC0;  /* xor eax, eax */
-            stub[5] = 0xC2; stub[6] = 0x04; stub[7] = 0x00;  /* ret 4 */
-            stub[8] = 0x31; stub[9] = 0xC0;  /* xor eax, eax */
-            stub[10] = 0xC2; stub[11] = 0x08; stub[12] = 0x00; /* ret 8 */
-            *(DWORD*)g_pNullDummy = (DWORD)vtable;
-            for (i = 0; i < 7424; i++)
-                vtable[i] = stubAddr;
-        }
-        AddVectoredExceptionHandler(1, CrashHandler);
+#ifndef OBSERVE_ONLY
+        /* Install crash dump handler (logs diagnostics, lets process die) */
+        SetUnhandledExceptionFilter(CrashDumpHandler);
 
         g_dwMainThreadId = GetCurrentThreadId();
         DuplicateHandle(GetCurrentProcess(), GetCurrentThread(),
                         GetCurrentProcess(), &g_hMainThread,
                         THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION,
                         FALSE, 0);
+#endif /* !OBSERVE_ONLY */
 
         /* Resolve base path */
         GetModuleFileNameA(hInstDLL, g_szBasePath, MAX_PATH);
@@ -2858,9 +4464,60 @@ BOOL WINAPI DllMain(HINSTANCE hInstDLL, DWORD reason, LPVOID reserved) {
         lstrcpynA(filePath, g_szBasePath, MAX_PATH);
         lstrcatA(filePath, "ddraw_proxy.log");
         g_pLog = fopen(filePath, "w");
-        ProxyLog("DDraw Proxy loaded (minimal shim mode)");
+        PktTraceOpen();
+        /* Set CWD to game directory - critical when launched from WSL/cmd */
+        SetCurrentDirectoryA(g_szBasePath);
+
+        ProxyLog("DDraw Proxy loaded");
         ProxyLog("Base path: %s", g_szBasePath);
 
+#ifdef OBSERVE_ONLY
+        /* OBSERVER MODE: passive logging only, no patches */
+        ProxyLog("OBSERVE_ONLY build - passive packet/event logging, zero patches");
+        SetEnvironmentVariableA("STBC_GAME_DIR", g_szBasePath);
+        ProxyLog("Set STBC_GAME_DIR=%s", g_szBasePath);
+
+        /* Write basepath file for Python to read (absolute path discovery) */
+        {
+            char bpPath[MAX_PATH];
+            FILE* bpf;
+            lstrcpynA(bpPath, g_szBasePath, MAX_PATH);
+            lstrcatA(bpPath, "Scripts\\Custom\\_basepath");
+            bpf = fopen(bpPath, "w");
+            if (bpf) {
+                fprintf(bpf, "%s", g_szBasePath);
+                fclose(bpf);
+                ProxyLog("Wrote _basepath: %s", bpPath);
+            }
+        }
+
+        /* Write Python config module with game dir as constant string.
+         * NOTE: BC's embedded Python has file writing disabled (open() for 'w'
+         * fails for all paths including nt.open). Only the import machinery
+         * can write .pyc files. Python logging must go through C hooks. */
+        {
+            char cfgPath[MAX_PATH];
+            FILE* cfgf;
+            const char* p;
+            lstrcpynA(cfgPath, g_szBasePath, MAX_PATH);
+            lstrcatA(cfgPath, "Scripts\\Custom\\_config.py");
+            cfgf = fopen(cfgPath, "w");
+            if (cfgf) {
+                fprintf(cfgf, "GAME_DIR = \"");
+                for (p = g_szBasePath; *p; p++) {
+                    if (*p == '\\') fprintf(cfgf, "\\\\");
+                    else fputc(*p, cfgf);
+                }
+                fprintf(cfgf, "\"\n");
+                fclose(cfgf);
+                ProxyLog("Wrote _config.py: %s", cfgPath);
+            }
+        }
+
+        PatchDebugConsoleToFile();
+        MsgTraceOpen();
+        ObserverHookIAT();
+#else
         /* Check for dedicated server mode */
         lstrcpynA(filePath, g_szBasePath, MAX_PATH);
         lstrcatA(filePath, "dedicated.cfg");
@@ -2966,21 +4623,25 @@ BOOL WINAPI DllMain(HINSTANCE hInstDLL, DWORD reason, LPVOID reserved) {
             /* Apply patches for stub mode */
             HookGameIAT();
             InlineHookMessageBoxA();
-            HookAbort();
-            PatchNullSurface();
-            PatchRenderTick();
-            PatchRendererCtorEntry(); /* Neuter renderer ctor at entry (all callers) */
-            /* NOTE: Don't use PatchSkipRendererCtor - we WANT the neutered ctor to run
-               so the renderer object is non-NULL with a proper vtable. */
+            PatchRenderTick();        /* Skip per-frame render work (no-op draw calls) */
+            /* PatchRendererCtorEntry REMOVED - let the real NiDX7Renderer constructor
+               run so the renderer has valid internal state (arrays, matrices, frustum). */
             PatchInitAbort();         /* Prevent abort when init check fails */
             PatchPyFatalError();      /* Make Py_FatalError return instead of tail-calling abort */
             PatchCreateAppModule();   /* Create SWIG "App" module before init imports it */
-            PatchNullGlobals();       /* Pre-fill NULL globals with dummy */
-            PatchSkipRendererSetup(); /* Skip pipeline after caps check */
+            PatchDirectDrawCreateExCache(); /* Pre-fill DDCreateEx cache to bypass apphelp shim */
+            /* PatchSkipRendererSetup REMOVED - let the full pipeline run. Dev_GetDirect3D
+               now returns a valid ProxyD3D7, so the pipeline ctors get valid COM objects.
+               All D3D calls go through our proxy (no real GPU needed). */
             PatchSkipDeviceLost();    /* Skip device-lost recreation path */
-            PatchRendererMethods();   /* Stub specific renderer methods */
+            PatchRendererMethods();   /* Stub SetCameraData/frustum during pipeline setup */
+            PatchDeviceCapsRawCopy(); /* Skip 236-byte raw Device7 memory copy in NI pipeline */
             PatchHeadlessCrashSites(); /* NOP mission UI functions that crash headless */
-            PatchDisableDebugConsole(); /* Auto-resume Python exceptions (log to stderr) */
+            PatchTGLFindEntry();      /* TGL FindEntry: return NULL when this==NULL */
+            PatchNetworkUpdateNullLists(); /* Clear subsys/weapon flags when lists NULL */
+            PatchSubsystemHashCheck(); /* Fix false-positive anti-cheat when subsystems NULL */
+            PatchCompressedVectorRead(); /* Validate vtable in compressed vector read to prevent cascade crash */
+            PatchDebugConsoleToFile(); /* Redirect Python exceptions to state_dump.log */
             /* PatchChecksumAlwaysPass REMOVED - flag=0 means "no mismatches"
              * which is CORRECT for first player (no peers to compare against).
              * Forcing flag=1 corrupted the settings packet with bogus mismatch data. */
@@ -2994,6 +4655,7 @@ BOOL WINAPI DllMain(HINSTANCE hInstDLL, DWORD reason, LPVOID reserved) {
             g_bStubMode = FALSE;
             ProxyLog("No dedicated.cfg - FORWARD MODE (normal play)");
         }
+#endif /* !OBSERVE_ONLY */
 
         /* Always load real ddraw.dll from System32 */
         GetSystemDirectoryA(sysPath, MAX_PATH);
@@ -3028,6 +4690,15 @@ BOOL WINAPI DllMain(HINSTANCE hInstDLL, DWORD reason, LPVOID reserved) {
         if (g_hRealDDraw) {
             FreeLibrary(g_hRealDDraw);
             g_hRealDDraw = NULL;
+        }
+        if (g_pTickLog) {
+            fflush(g_pTickLog);
+            fclose(g_pTickLog);
+            g_pTickLog = NULL;
+        }
+        if (g_pPacketLog) {
+            fclose(g_pPacketLog);
+            g_pPacketLog = NULL;
         }
         if (g_pLog) {
             fclose(g_pLog);
