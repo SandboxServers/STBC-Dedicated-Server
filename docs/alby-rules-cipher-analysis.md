@@ -1,0 +1,106 @@
+# The "AlbyRules!" Cipher: Analysis and Impact on Reverse Engineering
+
+## Discovery
+
+Every UDP game packet in Star Trek: Bridge Commander is encrypted by a custom stream cipher before transmission. The cipher key is the hardcoded ASCII string `"AlbyRules!"` (10 bytes: `41 6C 62 79 52 75 6C 65 73 21`), stored in the `.rdata` section of `stbc.exe` at address `0x0095abb4`. The name is almost certainly a reference to a Totally Games developer — likely an in-joke that shipped to production.
+
+The cipher was identified by tracing the TGWinsockNetwork send/receive path through Ghidra decompilation:
+
+| Address | Function | Role |
+|---------|----------|------|
+| 0x006c2280 | Reset | Copies `"AlbyRules!"` into cipher object, zeros PRNG state |
+| 0x006c22f0 | Key schedule | Derives 5 key words from the 10-byte key, runs 5 PRNG rounds |
+| 0x006c23c0 | PRNG step | LCG-variant with cross-multiplication (multiplier 0x4E35, addend 0x15A) |
+| 0x006c2490 | Encrypt | Per-byte: key schedule, XOR with PRNG output, plaintext feedback into key |
+| 0x006c2520 | Decrypt | Inverse of encrypt (feedback happens after XOR instead of before) |
+
+## How It Works
+
+The cipher is a **stream cipher with plaintext feedback**. It is not a simple XOR — each plaintext byte modifies the key state for subsequent bytes, creating position-dependent encryption.
+
+Per-packet behavior:
+1. **Reset** — every encrypt/decrypt call starts from the same initial state (fresh copy of `"AlbyRules!"`)
+2. **Key schedule** — 10 key bytes are paired into 5 key words, each XORed with its predecessor, then 5 rounds of PRNG produce an accumulator value
+3. **Per-byte encryption** — for each byte: run the full key schedule, extract `mask_low` and `mask_high` from the PRNG accumulator, XOR the plaintext byte with both masks, then feed the plaintext byte back into all 10 key bytes (modifying them for the next byte)
+4. **Decryption** is identical except the feedback step happens after XOR (both encrypt and decrypt feed back the **plaintext**, ensuring the same keystream)
+
+Critical properties:
+- **Static key** — same for all sessions, all players, all packets. No key exchange, no nonces, no session keys.
+- **Per-packet reset** — each packet starts from the same cipher state. Same plaintext always produces the same ciphertext.
+- **Byte 0 quirk** — the first PRNG output happens to XOR to `0x00` with the `"AlbyRules!"` key, so byte 0 passes through unchanged. (It is technically encrypted, but the XOR mask is zero.)
+- **Byte 0 not encrypted** — at the transport layer, byte 0 of each UDP datagram is the direction flag (`0x01`=server, `0x02`=client, `0xFF`=initial contact) and is **not** passed through the cipher. Encryption starts at byte 1.
+
+## Verification
+
+The cipher reimplementation was verified against captured packet traces:
+
+| Test | Result |
+|------|--------|
+| Packet #3 (8 bytes) | Decrypts to `01 01 03 06 C0 00 00 02` — correct connect message |
+| Packet #4 (33 bytes) | Decrypts to checksum request containing ASCII `"scripts/App.pyc"` |
+| 22 keepalive packets | All decode consistently with incrementing sequence numbers |
+| Packet #55 (72 bytes) | Contains float `1.0f` (`FF FF FF 3F` little-endian) — confirms byte ordering |
+| Round-trip test | encrypt(decrypt(data)) == data for all tested packets |
+
+## Impact on Reverse Engineering
+
+### Before: Opaque Wire Data
+Without the cipher, packet traces were walls of seemingly random bytes. Analysis was limited to:
+- Timing patterns (when packets arrived, how often)
+- Packet sizes (which could hint at content type)
+- The unencrypted direction flag byte
+- Correlation with game events (connect, disconnect) by timing alone
+
+Any attempt to understand **what** the server was sending or **why** the client disconnected required either running the full game engine (impossible headless) or guessing at packet structure from behavioral observations.
+
+### After: Full Protocol Visibility
+With the cipher broken, we can now:
+
+**1. Read every packet in plaintext.**
+Our packet trace system (`packet_trace.log`) now decrypts all game traffic in real-time and performs structured decode. Each packet is logged with its opcode name, parsed fields, and full hex dump of the decrypted payload. This turned an opaque binary stream into readable protocol documentation.
+
+**2. Identify the exact disconnect cause.**
+The cipher breakthrough directly led to identifying why clients disconnect after ship selection. By reading decrypted StateUpdate packets, we discovered the server sends `flags=0x00` (empty) instead of `flags=0x20` (subsystem data). This is because NIF ship models don't load headlessly, leaving the subsystem list at `ship+0x284` as NULL. Without decrypted packets, this would have been nearly impossible to diagnose — the symptom (client disconnect) is many layers removed from the cause (empty subsystem flags in a specific packet field).
+
+**3. Compare our server against stock.**
+We can capture packet traces from both our dedicated server and a stock hosted game, decrypt both, and diff them opcode-by-opcode. This revealed:
+- Stock server cycles StateUpdate `startIdx` through `0, 2, 6, 8, 10` at ~100ms intervals (subsystem round-robin)
+- Our server sends `startIdx=0` with `flags=0x00` every time (no subsystems to cycle)
+- Stock server sends `flags=0x20` (SUB) on S->C; client sends `flags=0x80` (WPN) on C->S — mutually exclusive by direction
+- The `0x80` flag in the decompiled code at FUN_005b17f0 checks `IsMultiplayer` (`0x0097FA8A`), but the client sends `0x80` in multiplayer mode, suggesting the client-side `IsMultiplayer` value differs from the host during serialization
+
+**4. Discover undocumented opcodes.**
+Decrypted traces revealed opcodes not previously documented anywhere:
+- `0x11` — Unknown (seen in stock server post-join)
+- `0x12` — Unknown (seen in stock server post-join)
+- `0x13` — Unknown (post-join)
+- `0x28` — Unknown (post-join)
+- `0x2C` — Appears related to game state sync
+- `0x35`, `0x37` — Seen during gameplay
+
+**5. Validate our handshake implementation.**
+We can verify that our checksum exchange, settings packet (opcode `0x00`), and NewPlayerInGame (opcode `0x2A`) match what the stock server sends byte-for-byte. Any deviation is immediately visible in the decrypted trace.
+
+**6. Build protocol documentation from evidence.**
+The [wire format spec](wire-format-spec.md) was written entirely from decrypted packet analysis. Every field offset, flag bit, and opcode meaning was determined by reading actual decrypted traffic — not guessing from behavioral observations.
+
+### Enables Future Work
+The cipher is also the key enabler for potential future capabilities:
+- **Standalone server** — a from-scratch server implementation could use this cipher to communicate with unmodified clients, without needing the game engine at all
+- **Protocol proxy** — a man-in-the-middle tool could decrypt, inspect, modify, and re-encrypt packets between client and server for debugging
+- **Automated testing** — synthetic packets can be constructed, encrypted, and injected to test specific server behaviors without a real client
+
+## Cryptographic Assessment
+
+This is **not** a secure cipher by any modern standard. It was clearly designed as an obfuscation layer, not for security:
+
+- **Fixed key with no session randomness** — identical plaintext always produces identical ciphertext
+- **No authentication** — packets can be forged or modified without detection
+- **Key in `.rdata`** — trivially extractable from the binary (as we did)
+- **Deterministic PRNG** — the LCG-variant is reversible and predictable
+
+This is typical for early-2000s game networking where the threat model was casual cheating, not determined attackers. The cipher's purpose was to prevent trivial packet sniffing with tools like Wireshark from revealing game state — and for that limited goal, it was adequate for its era.
+
+## Implementation
+
+The cipher is reimplemented in ~80 lines of C in `src/proxy/ddraw_main.c` (functions `BC_InitCipher`, `BC_PrngStep`, `BC_KeySchedule`, `BC_DecryptPacket`). It is used by the packet trace system to decrypt all captured traffic before logging.

@@ -97,20 +97,44 @@ See [docs/black-screen-investigation.md](docs/black-screen-investigation.md) for
 
 ## Documentation
 
+### Getting Started
 | Document | Description |
 |----------|-------------|
-| [black-screen-investigation.md](docs/black-screen-investigation.md) | Current issue: client disconnect after ship selection |
-| [dedicated-server.md](docs/dedicated-server.md) | Bootstrap sequence, active patches, crash handling |
+| [architecture-overview.md](docs/architecture-overview.md) | How the proxy DLL works: loading, COM chain, bootstrap, game loop |
+| [developer-workflow.md](docs/developer-workflow.md) | Build, deploy, test, debug cycle end-to-end |
+| [troubleshooting.md](docs/troubleshooting.md) | Symptom-to-cause matrix for known issues |
+
+### Reference
+| Document | Description |
+|----------|-------------|
+| [python-152-guide.md](docs/python-152-guide.md) | Python 1.5.2 survival guide: syntax traps, missing builtins, BC quirks |
+| [binary-patching-primer.md](docs/binary-patching-primer.md) | Code caves, JMP patches, NOPs — how and when to use each |
+| [reading-decompiled-code.md](docs/reading-decompiled-code.md) | How to read Ghidra C output: variables, vtables, constants |
+| [alby-rules-cipher-analysis.md](docs/alby-rules-cipher-analysis.md) | The AlbyRules! stream cipher: discovery, algorithm, implications |
+
+### Protocol & Network
+| Document | Description |
+|----------|-------------|
 | [wire-format-spec.md](docs/wire-format-spec.md) | UDP wire format, opcodes, fragmentation |
 | [network-protocol.md](docs/network-protocol.md) | Protocol architecture, event system, handler tables |
 | [multiplayer-flow.md](docs/multiplayer-flow.md) | Client/server join flow from discovery to gameplay |
+| [message-trace-vs-packet-trace.md](docs/message-trace-vs-packet-trace.md) | Stock-dedi opcode cross-reference |
+
+### Investigation & Analysis
+| Document | Description |
+|----------|-------------|
+| [black-screen-investigation.md](docs/black-screen-investigation.md) | Current issue: client disconnect after ship selection |
 | [empty-stateupdate-root-cause.md](docs/empty-stateupdate-root-cause.md) | Why server sends empty state updates |
 | [veh-cascade-triage.md](docs/veh-cascade-triage.md) | Why VEH crash recovery was removed |
+| [dedicated-server.md](docs/dedicated-server.md) | Bootstrap sequence, active patches, crash handling |
+| [lessons-learned.md](docs/lessons-learned.md) | Debugging pitfalls and architecture insights |
+
+### Engine Reference
+| Document | Description |
+|----------|-------------|
 | [swig-api.md](docs/swig-api.md) | SWIG Python binding reference |
 | [decompiled-functions.md](docs/decompiled-functions.md) | Key function analysis from Ghidra |
 | [function-map.md](docs/function-map.md) | Organized map of ~18K game functions |
-| [lessons-learned.md](docs/lessons-learned.md) | Python 1.5 quirks, debugging pitfalls |
-| [message-trace-vs-packet-trace.md](docs/message-trace-vs-packet-trace.md) | Stock-dedi opcode cross-reference |
 
 ## Diagnostic Logs
 
