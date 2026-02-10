@@ -12,7 +12,7 @@ The stock "Dedicated Server" toggle (MultiplayerMenus.py:2996) only sets IsClien
 CreateShip -> SetupModel(NIF load) -> LoadPropertySet(hardpoints) -> SetupProperties(C++ engine creates subsystem objects from hardpoints + scene graph nodes) -> UpdateNodeOnly. SetupProperties requires named NiNode children in the scene graph matching hardpoint names.
 
 ### The Correct Headless Approach
-Stub D3D draw calls (DrawPrimitive, Present/Flip) at the lowest level. Do NOT skip renderer construction or setup pipeline. The NIF loader and scene graph construction depend on renderer internal state. See [design-intent.md](design-intent.md) for full analysis.
+Stub D3D draw calls (DrawPrimitive, Present/Flip) at the lowest level. Let renderer pipeline build fully. The NIF loader and scene graph construction depend on renderer internal state. PatchDeviceCapsRawCopy prevents the raw memcpy crash, PatchRendererMethods stubs specific vtable methods. See [design-intent.md](design-intent.md) for full analysis.
 
 ### NiDX7Renderer Pipeline (FUN_007c3480) Analysis
 FUN_007cb2c0 (NiD3DGeometryGroupManager ctor) takes 3 stack params, not 1 as Ghidra shows:
@@ -20,12 +20,6 @@ IDirect3D7*, IDirect3DDevice7*, bool. RET 0xC confirms. Both D3D pointers get Ad
 vtable[1]. T&L flag determines SYSTEMMEMORY vs WRITEONLY VB path. Adapter creation (FUN_007c7f80)
 calls DirectDrawCreateEx internally via GetProcAddress("DDRAW.DLL") which hits the proxy DLL.
 Full analysis in [design-intent.md](design-intent.md).
-
-### DAT_00995a3c: Potential Render Suppression Flag
-In FUN_0043b4f0 (MainTick) at line 5053, `if (DAT_00995a3c < 1)` gates the entire render
-path. If this is a "suppress rendering" counter, setting it to 1 would skip rendering
-while letting simulation, events, timers, and networking all run normally. Needs Ghidra
-investigation to find what writes to 0x00995a3c and what side effects it has.
 
 ### Multiplayer Architecture: Server-Authoritative with Delta Compression
 NOT lockstep, NOT peer-to-peer. Host runs full simulation for all ships. Sends delta

@@ -20,14 +20,12 @@
 - GetBoundingBox (FUN_004360c0) reads vtable+0xe4 (GetWorldBound) return value
 - NULL return = Update() was never called OR NiAVObject base not initialized
 
-## Recommended Approach: Fix Proxy COM (Virtual Framebuffer)
-- Pipeline objects at renderer+0xB8/0xBC/0xC0/0xC4 must be non-NULL
-- These are: texture mgr, render state mgr, shader mgr, geometry accumulator
-- Created by FUN_007d2230, FUN_007ccd10, FUN_007d11a0, FUN_007d4950
-- Each receives IDirect3DDevice7* and calls COM methods (SetRenderState, GetCaps, etc.)
-- If proxy returns D3D_OK for all, pipeline objects construct successfully
-- PatchDeviceCapsRawCopy already handles the raw 236-byte memcpy problem
-- Need to audit all 4 constructors for missing proxy method implementations
+## Current Approach: Proxy COM with Targeted Patches
+- Pipeline objects at renderer+0xB8/0xBC/0xC0/0xC4 build via proxy COM
+- PatchDeviceCapsRawCopy prevents the raw 236-byte memcpy from Device7
+- PatchRendererMethods stubs 3 specific vtable methods that access NULL state
+- Dev_EnumTextureFormats enumerates pixel formats for pipeline creation
+- Proxy returns D3D_OK for all COM calls, pipeline objects construct successfully
 
 ## Pipeline Constructor Audit TODO
 1. FUN_007d4950 (geometry accumulator -> this+0xC4)

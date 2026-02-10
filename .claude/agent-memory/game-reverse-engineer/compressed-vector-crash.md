@@ -25,17 +25,14 @@
 - vtable+0xB8 = 0x006d2c60 (DecodeVector variant 3, 6 params, callee-clean)
 - 0x006d2ba0 and 0x006d2c60 are NOT in Ghidra function database
 
-### Root Cause: VEH Cascading Stack Corruption
+### Root Cause: Corrupt Stream Reader Vtable
 1. Stream reader object's vtable pointer is corrupted (value = 1 or 0)
-2. FUN_006d2eb0 makes 4 vtable calls, all fail (EIP=0)
-3. VEH handler recovers from each: pops return address, sets EAX=0, resumes
-4. The 4th call (vtable+0xB8) had 6 PUSHED PARAMS that the callee was supposed to clean
-5. Callee never ran -> 24 bytes stranded on stack
-6. Function epilogue (POP ESI / ADD ESP,0xC / RET 0xC) uses wrong offsets
-7. RET pops garbage as return address -> EIP=0x04752402 (another VEH fix)
-8. VEH finds real return address deeper on stack but adjusts ESP incorrectly
-9. Caller's ESP is now 12 bytes off -> next LEA ECX,[ESP+0x58] gives wrong this ptr
-10. Second call to FUN_006d2eb0 reads [wrong_addr] = 1, CALL [1+0x50] -> fatal crash
+2. FUN_006d2eb0 makes 4 vtable calls, all dereference invalid addresses
+3. The 4th call (vtable+0xB8) has 6 PUSHED PARAMS (callee-clean convention)
+4. If the callee never executes, 24 bytes are stranded on the stack
+5. Function epilogue (POP ESI / ADD ESP,0xC / RET 0xC) uses wrong offsets
+6. RET pops garbage as return address -> cascading crash through caller chain
+7. Caller's ESP offset -> next LEA ECX,[ESP+0x58] gives wrong this ptr -> fatal
 
 ### Fix: PatchCompressedVectorRead
 - Code caves at FUN_006d2eb0 and FUN_006d2fd0 entry points
@@ -43,11 +40,11 @@
 - Also NULL-check ECX (this pointer)
 - If invalid: zero-fill output float params, RET cleanly (no vtable calls)
 - If valid: execute original prologue, JMP back to function body
-- Prevents the cascading VEH failure that corrupts the caller's stack
+- Prevents the cascading failure that corrupts the caller's stack
 
-### Key Lesson: VEH Cannot Safely Recover from Callee-Clean Vtable Calls
+### Key Lesson: Generic Crash Recovery Cannot Handle Callee-Clean Vtable Calls
 When a vtable call uses __thiscall/stdcall convention (callee cleans stack params),
-and the callee never executes (EIP=0 crash), the VEH handler only pops the return
-address but NOT the stack params. This leaves the stack misaligned for the epilogue.
-Generic VEH recovery is UNSAFE for functions with callee-clean vtable calls.
-The only safe approach is to prevent the crash from reaching the vtable call.
+and the callee never executes (EIP=0 from corrupt vtable), generic exception recovery
+cannot restore the correct stack state -- the pushed params are stranded. This leaves
+the stack misaligned for the epilogue, causing cascading crashes through the call chain.
+The only safe approach is to validate the vtable BEFORE the call (PatchCompressedVectorRead).

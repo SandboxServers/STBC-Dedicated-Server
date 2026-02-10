@@ -3,7 +3,7 @@
 ## State After Ship Select
 Client creates ship locally, sends creation packet to server.
 Server SHOULD: instantiate server-side ship, start sending 0x1C state updates.
-Server ACTUALLY: VEH crashes on bounding box calc (0x004360CB), ship partially created.
+Server ACTUALLY: bounding box calc (0x004360CB) crashes if objects lack geometry (addressed by renderer pipeline restoration), ship partially created.
 
 ## Opcode 0x1C: Object State Updates (FUN_005b17f0)
 - Called every tick for every game object with network representation

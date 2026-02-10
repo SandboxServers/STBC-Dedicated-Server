@@ -2,17 +2,9 @@
 
 ## Architecture Decision: Let NiDX7Renderer Pipeline Build Fully
 
-### Problem
-PatchSkipRendererSetup (JMP at 0x007C39CF -> 0x007C3D75) skips pipeline object creation.
-This leaves this+0xb8, 0xbc, 0xc0, 0xc4 NULL in the renderer, which cascades into:
-- NIF loading producing incomplete geometry (no NiTriShapeData / no vertices)
-- NiAVObject::Update() never computes valid NiBound from vertex data
-- GetWorldBound() returning zero/NULL -> GetBoundingBox crash at FUN_004360c0
-- FUN_005b17f0 state update packets with garbage data -> client sees ship as dead
-- Subsystem/weapon linked lists empty -> VEH loop skips needed at 0x005b1edb/0x005b1f82
-
-### Solution
-Remove PatchSkipRendererSetup. Let FUN_007c3480 run fully. Fix proxy to support it.
+### Problem (RESOLVED)
+PatchSkipRendererSetup was removed. Pipeline objects now build via proxy COM.
+PatchDeviceCapsRawCopy prevents the raw 236-byte memcpy crash in FUN_007d1ff0.
 
 ### Required Proxy Changes
 1. **Dev_EnumTextureFormats** - Must enumerate real pixel formats (R5G6B5, A1R5G5B5, A8R8G8B8, X8R8G8B8)
@@ -21,17 +13,14 @@ Remove PatchSkipRendererSetup. Let FUN_007c3480 run fully. Fix proxy to support 
 2. **Dev_GetCaps** - Already implemented, but verify bits 0x1 (bStack_41c) and 0x8 (bStack_418) pass
 3. Keep all draw calls as no-ops (already done)
 
-### Patches to REMOVE after fix
-- PatchSkipRendererSetup (0x007C39CF JMP)
-- PatchNetworkUpdateNullLists (code cave at 0x005b1d57) - IF subsys/weapon lists populate
-- VEH 0x005b1edb / 0x005b1f82 subsystem/weapon loop skips
-- VEH 0x004360c0 GetBoundingBox crash handler
-
-### Patches to KEEP
-- PatchSkipDeviceLost (device-lost recreation path still dangerous)
-- PatchTGLFindEntry (TGL UI data unrelated to renderer)
-- PatchHeadlessCrashSites (UI crash sites unrelated)
-- PatchRendererMethods (specific method stubs may still be needed)
+### Active Renderer Patches
+- PatchDeviceCapsRawCopy - prevents raw 236-byte memcpy from Device7
+- PatchRendererMethods - stubs 3 vtable methods that access NULL state
+- PatchSkipDeviceLost - always skip device-lost recreation path
+- PatchRenderTick - JMP skip render work (no GPU cost)
+- PatchTGLFindEntry - safety net for missing TGL files (unrelated to renderer)
+- PatchHeadlessCrashSites - RET at entry of UI functions (unrelated to renderer)
+- PatchNetworkUpdateNullLists - clears SUB/WPN flags when lists NULL
 
 ### Key Engine Architecture Facts
 - NIF loading (NiStream::Load) is DECOUPLED from renderer - creates scene graph from file data

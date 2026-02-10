@@ -4,7 +4,6 @@
 
 ### Timeline
 - Tick 293: Client connects (players 0->1)
-- Tick 364: VEH crashes start (GetBoundingBox at 0x004360c0 + 0x00419963)
 - Tick 383: NewPlayerInGame called, scoring dict fix rc=-1
 - Tick 705: Client disconnects (players 1->0)
 
@@ -16,19 +15,12 @@ This could be triggered by:
 3. MultiplayerWindow.IsGameOver() returns true (native C++ flag)
 4. Client Python exception in BuildMission1Menus -> falls through to end-game path
 
-### Likely Root Cause: Malformed State Update Packets
-When server builds state update packets (FUN_005b17f0), the vtable+0xe4 call
-(GetWorldBound) returns NULL because headless ships have no geometry bounds.
-This causes:
-- ~100x/sec crashes at 0x004360c0 (VEH-redirected to dummy memory)
-- Dummy memory has all-zeros, so bounding sphere center=(0,0,0) radius=0
-- State update packets contain position (0,0,0) and velocity 0
-- The subsystem/weapon flags may be wrong (PatchNetworkUpdateNullLists)
-
-The client receives these malformed state updates and interprets the ship as
-invalid/destroyed, triggering ObjectDestroyedHandler -> ShowShipSelectScreen.
-If the client's ship never properly spawns (no valid position/velocity data
-from server), the ship may be immediately treated as dead.
+### Root Cause: Empty State Update Packets
+Server sends StateUpdate packets with flags=0x00 (empty) instead of flags=0x20
+(subsystem health data). This happens because NIF ship models don't fully load
+without GPU texture backing, so the subsystem list at ship+0x284 is NULL.
+PatchNetworkUpdateNullLists correctly clears the flags to prevent sending garbage,
+but the client expects subsystem data and disconnects after ~3 seconds without it.
 
 ### Alternative: Scoring Dict Fix rc=-1
 The PyRun_SimpleString for scoring dict fix returns -1, meaning it threw an

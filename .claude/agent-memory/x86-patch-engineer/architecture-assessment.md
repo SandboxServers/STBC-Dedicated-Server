@@ -1,21 +1,23 @@
 # Architecture Assessment: Headless Dedicated Server Approaches
 
-## Assessment Date: 2026-02-09
+## Assessment Date: 2026-02-09 (updated 2026-02-10)
 ## Assessed by: x86 Patch Engineer
 
 See MEMORY.md for summary. This file contains the full reasoning.
 
 ## Current State Summary
-- 18 active patches, VEH with 5 targeted skips + generic NULL redirect
-- VEH fires ~100/sec (vehR + vehW counters)
+- 14 active binary patches applied at runtime
+- CrashDumpHandler (SetUnhandledExceptionFilter) for unhandled exceptions
 - Client connects, passes checksums, reaches ship select, disconnects ~3s later
-- Root cause: game objects lack visual data (bounding volumes, scene graph nodes)
-  because renderer is a hollow shell
+- Root cause: NIF ship models don't load fully without GPU texture backing,
+  so subsystem lists at ship+0x284 are NULL -> empty StateUpdate packets
 
 ## Approach Ratings
 
-### 1. VEH (current) - FUNDAMENTALLY FLAWED for high-frequency crashes
-Feasibility: 7, Effort: 3 (already done), Stability: 2
+### 1. Targeted Binary Patches (current) - SOLID FOUNDATION
+Feasibility: 9, Effort: 5, Stability: 8
+Each crash site gets a specific fix (code cave, NOP, or JMP). No generic
+exception recovery. Clean failure via CrashDumpHandler if something new hits.
 
 ### 2. NOP-sled top-level functions
 Feasibility: 6, Effort: 6, Stability: 5

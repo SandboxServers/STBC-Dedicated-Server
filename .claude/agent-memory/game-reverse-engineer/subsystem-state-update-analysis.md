@@ -56,14 +56,13 @@ the server has NO game objects at all.
 ## Current Server State (from logs)
 
 ### What Happens
-1. Server boots, renderer constructor runs (NOT stubbed), but PatchSkipRendererSetup skips
-   the rendering pipeline. The renderer has basic data structures but no D3D device.
+1. Server boots, renderer constructor runs, pipeline builds (PatchSkipRendererSetup removed).
+   Renderer has basic data structures but actual D3D calls are proxied/stubbed.
 2. Client connects, checksums pass, NewPlayerInGame fires
 3. Server sends opcode 0x00 (settings) + 0x01 (start game) + Python messages
 4. Client enters ship selection screen (this works now!)
 5. **Server has NO game objects** -- no ships exist on the server
-6. 0x004360CB (bounding box) crashes at 100+ per second -- VEH redirects to dummy
-7. No 0x1C state updates are ever sent (confirmed by packet trace)
+6. No 0x1C state updates are ever sent (confirmed by packet trace)
 
 ### Why No Game Objects
 - Ship creation is CLIENT-SIDE in STBC multiplayer
@@ -81,7 +80,7 @@ the server has NO game objects at all.
 - The code cave at 0x005b1d57 checks `[ESI+0x284]` (subsystem list head)
 - If NULL, it clears bits 0x20 and 0x80 from the flags byte
 - This PREVENTS the subsystem/weapon iteration loops from executing
-- The VEH EIP-SKIP entries (005b1edb, 005b1f82) are NOT being hit -- the cave works
+- The code cave prevents the crash entirely -- no exception handling needed
 - Result: if a ship existed with no subsystems, its 0x1C packet would be well-formed
   but contain NO subsystem/weapon data (just position/orientation)
 

@@ -26,10 +26,10 @@ Appc.TGBufferStream_OpenBuffer(kStream, 256)  # Direct C call with raw pointer
 - Old: App.TGMessage_Create returned raw string (shadow wrap failed) -> AttributeError -> caught by except:
 - New: Appc functions parse raw pointer string, dereference C++ object directly -> if object invalid -> native crash (uncatchable)
 
-## Threading Model (NOT the cause)
+## Threading Model
 - GameLoopTimerProc: main thread, 33ms timer, calls RunPyCode for InitNetwork
 - DedicatedServerTimerProc: main thread, 500ms timer, bootstrap only (done by InitNetwork time)
-- HeartbeatThread: background thread, Python calls only in first 30s, then read-only C API
+- HeartbeatThread: background thread, no Python API calls (removed to prevent GIL violations)
 - WM_TIMER dispatched sequentially on main thread - no overlap between timer procs
 - No Python re-entrancy possible between GameLoopTimerProc invocations
 

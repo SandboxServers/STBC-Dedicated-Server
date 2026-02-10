@@ -4,46 +4,27 @@ Analysis of state dumps, tick traces, message traces, and packet traces from a w
 stock Bridge Commander dedicated host session (2026-02-08), compared against our custom
 dedicated server behavior.
 
-## FINDING #1 (CRITICAL): IsHost Flag is INVERTED
+## FINDING #1 (CRITICAL): 0x0097FA88 is IsClient, NOT IsHost
 
 ### Evidence
 | Field | Stock Host | Stock Client | Our Server |
 |-------|-----------|-------------|------------|
-| 0x0097FA88 (IsHost) | **0** | **1** | **1 (WRONG)** |
+| 0x0097FA88 (IsClient) | **0** | **1** | **0 (CORRECT)** |
+| 0x0097FA89 (IsHost) | **1** | **0** | **1 (CORRECT)** |
 | 0x0097FA8A (IsMp) | 1 | 0 | 1 |
 | WSN ConnState | 2 (host) | 2 (becomes 2) | 2 |
 
-**Stock host has IsHost=0 throughout entire session (508 ticks).**
-**Stock client has IsHost=1 throughout entire session (503 ticks).**
+**Stock host has IsClient=0 and IsHost=1 throughout entire session (508 ticks).**
+**Stock client has IsClient=1 and IsHost=0 throughout entire session (503 ticks).**
 
-This is **backwards from what we assumed**. The byte at 0x0097FA88 does NOT mean
-"I am the host" - it likely means "I have a host" (i.e., "I am connected to a host")
-or it's an "IsClient" flag that we misidentified. The stock host NEVER sets this to 1.
-
-### Our Error
-In `ddraw_main.c` line 2607:
-```c
-*(BYTE*)0x0097FA88 = 1;  /* IsHost */
-```
-And line 2618:
-```python
-App.g_kUtopiaModule.SetIsHost(1)
-```
-
-We are setting IsHost=1, but the stock host keeps it at 0. Our server should set it to 0,
-not 1. The semantics are likely:
+The correct semantics:
 - **0x0097FA88 = "IsClient"** (1 = I am a joining client, 0 = I am the host)
+- **0x0097FA89 = "IsHost"** (1 = I am the host, 0 = I am a client)
 - **0x0097FA8A = "IsMultiplayer"** (1 = multiplayer active)
 
-### Impact Assessment
-Setting IsHost=1 on the server could cause the C++ message dispatcher to take the
-CLIENT code path instead of the HOST code path. This could explain many downstream
-issues including the game-over screen.
+Our server correctly sets IsClient=0, IsHost=1, IsMp=1.
 
-The matching WSN field at offset +0x10E is also labeled "isHost" in our code but
-its meaning may also be inverted.
-
-## FINDING #2: IsMultiplayer is Also Inverted
+## FINDING #2: IsMultiplayer is Host-Only
 
 The stock CLIENT has isMp=0, while the stock HOST has isMp=1.
 
@@ -51,9 +32,9 @@ The stock CLIENT has isMp=0, while the stock HOST has isMp=1.
 |-------|-----------|-------------|------------|
 | 0x0097FA8A (IsMp) | 1 | **0** | 1 |
 
-So "IsMultiplayer" is only set on the HOST side, not the client side. The client
-proceeds with isMp=0, yet still functions correctly in multiplayer. This confirms
-these flags have different semantics than their names suggest.
+IsMultiplayer is only set on the HOST side, not the client side. The client
+proceeds with isMp=0, yet still functions correctly in multiplayer. Our server
+correctly sets isMp=1.
 
 ## FINDING #3: MPG+0xB0 (Object Gate) is Always 0
 
@@ -164,8 +145,7 @@ sending 0x1C state update messages approximately every 100ms. These are 13-42 by
 The 0x80 byte at the end of small updates likely means "no change" for subsystems.
 The client also sends 0x1C updates back (showing its ship state).
 
-This confirms our earlier analysis that the VEH-skipped write loop was producing
-truncated 0x1C packets. In the stock host, these are properly formed.
+In the stock host, these are properly formed with full subsystem/weapon data.
 
 ## FINDING #9: Tick Timing and Game Clock
 
@@ -222,31 +202,16 @@ This confirms the stock host fully processes game logic including:
 - Frag limit checking
 - Collision effects
 
-## SUMMARY OF ACTIONABLE FIXES
+## SUMMARY
 
-### Priority 1: Fix IsHost Flag (CRITICAL)
-Change `ddraw_main.c` line 2607 from:
-```c
-*(BYTE*)0x0097FA88 = 1;  /* IsHost */
-```
-to:
-```c
-*(BYTE*)0x0097FA88 = 0;  /* IsHost=0 for host (counterintuitive!) */
-```
+### IsClient/IsHost/IsMp Flags (RESOLVED)
+Our server correctly sets: IsClient=0, IsHost=1, IsMp=1 — matching stock host behavior.
 
-And change the Python call from `SetIsHost(1)` to `SetIsHost(0)`.
-
-This single change could fix the entire game-over/disconnect issue if the C++
-message dispatcher uses this flag to choose between host and client code paths.
-
-### Priority 2: Verify IsMultiplayer Semantics
-The stock host has isMp=1 which matches our server. No change needed here.
-The client having isMp=0 is natural since the client doesn't "own" the MP session.
-
-### Priority 3: Verify State Update (0x1C) Messages
-Our VEH patch for truncated 0x1C messages should now work correctly if the IsHost
-flag is fixed, since the server will take the correct code path for building
-state update packets.
+### State Update (0x1C) Messages
+Stock server sends flags=0x20 with subsystem health data cycling through startIdx 0,2,6,8,10.
+Our server sends flags=0x00 because subsystem lists at ship+0x284 are NULL (NIF models don't
+fully load without GPU). PatchNetworkUpdateNullLists correctly clears the flags to prevent
+sending garbage, but the result is the client never gets subsystem acknowledgment.
 
 ## Raw Data References
 - Stock host tick trace: `game/stock-dedi/tick_trace.log` (508 samples)

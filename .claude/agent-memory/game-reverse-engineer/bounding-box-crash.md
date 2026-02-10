@@ -36,8 +36,8 @@
 - Scene graph update loop runs every frame
 - NiNode::Update propagates transforms + recomputes world bounds
 - Calls GetBoundingBox on every child node
-- In headless mode, objects have NULL/invalid geometry
-- VEH catches crash, injects dummy data, repeats next frame
+- In headless mode, objects may have NULL/invalid geometry
+- Without a targeted patch, this crashes on every frame for every affected object
 
 ## Fix: Code Cave at 0x004360c0
 - Patch 5 bytes at function entry (SUB ESP,0x18 / MOV EAX,[ECX])
@@ -47,4 +47,4 @@
   3. Tests EAX (return) for NULL -> zero bounding box
   4. Otherwise continues to original code at 0x004360CB
 - Eliminates BOTH crash sites with one patch
-- Saves ~200 VEH invocations/sec
+- Currently addressed by renderer pipeline restoration (objects get valid geometry)

@@ -64,20 +64,20 @@ safety. Concurrent malloc/free corrupts free lists -> cascading crashes.
 - **Best fix**: patch at source in FUN_00504F10 to null-check TGL load result
 - TGL = "Totally Games Layout" - UI descriptor format loaded from data/TGL/*.tgl
 
-### CURRENT: Game-Over Screen After Ship Selection
-- See [game-over-analysis.md](game-over-analysis.md) for full details
-- Likely root cause: GetBoundingBox crash (vtable+0xe4 returns NULL) -> malformed state packets
-- FUN_004360c0 = GetBoundingBox: vtable[57]=GetWorldBound() returns NiBound* (center[3]+radius)
-- NULL return -> 0+0xC crash, VEH redirects to zeroed dummy -> ship appears at (0,0,0) with radius=0
+### CURRENT: Client Disconnect After Ship Selection
+- See [game-over-analysis.md](game-over-analysis.md) for analysis
+- Root cause: server sends empty StateUpdate packets (flags=0x00 instead of 0x20)
+- NIF ship models don't fully load without GPU -> subsystem list at ship+0x284 NULL
+- PatchNetworkUpdateNullLists correctly clears flags to prevent garbage, but client
+  expects subsystem data and disconnects after ~3 seconds without it
 - FUN_005b17f0 = NetworkObjectStateUpdate: builds per-tick state packets for each ship
-- Client interprets zero-bound/zero-position ship as dead -> ObjectDestroyedHandler -> end-game
-- 0x00419963 crash: vtable slot at base+0xe0 (slot 56), fires 3x on connect, adjacent to GetWorldBound
-- Scoring dict fix rc=-1 means Python exception in PyRun_SimpleString (dict init may fail)
+- FUN_004360c0 = GetBoundingBox: vtable[57]=GetWorldBound() returns NiBound*
 
-### PROPOSED FIX: Renderer Pipeline Restoration
+### Renderer Pipeline
 - See [renderer-restoration-analysis.md](renderer-restoration-analysis.md) for full analysis
-- Remove PatchSkipRendererSetup, let FUN_007c3480 build pipeline objects fully
-- Requires Dev_EnumTextureFormats to enumerate real pixel formats (critical gate)
+- Pipeline runs fully (PatchSkipRendererSetup removed)
+- PatchDeviceCapsRawCopy prevents the 236-byte raw memcpy from Device7
+- Dev_EnumTextureFormats enumerates pixel formats for pipeline object creation
 - NIF loading is DECOUPLED from renderer for geometry/transforms/bounds
 - NiBound computed CPU-side from vertex data in NiAVObject::UpdateWorldBound()
 - Subsystems/weapons come from Python hardpoint files, NOT NIF scene graph

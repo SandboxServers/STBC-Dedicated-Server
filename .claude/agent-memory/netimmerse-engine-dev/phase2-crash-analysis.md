@@ -20,18 +20,11 @@
 - A missing or corrupt data/TGL/Multiplayer.tgl causes NULL return
 
 ### Crash Sites (all from same 0x1C sentinel)
-1. **0x006F4DA1** (already handled) - `MOV ECX,[EBP+8]` in FUN_006F4D90 (wstring assign)
-   - EBP=0x1C, reads 0x24 -> AV
-   - Current VEH skip jumps to 0x006F4ED5
-
+1. **0x006F4DA1** - `MOV ECX,[EBP+8]` in FUN_006F4D90 (wstring assign) - EBP=0x1C, reads 0x24 -> AV
 2. **0x006F4EEC** - `MOV EAX,[EBX+8]` in FUN_006F4EE0 (wstring assign, non-null-checking variant)
-   - EBX=0x1C, reads 0x24 -> AV
-   - NOT currently handled
-
 3. **0x00731D43** - `MOV EAX,[EDI+8]` in FUN_00731D20 (TGAnimAction init)
-   - EDI=0x1C, reads 0x24 -> AV
-   - After VEH skip of #1, returns here and hits same bad ptr
-   - NOT currently handled
+
+All three are eliminated by PatchTGLFindEntry which returns NULL instead of 0x1C sentinel.
 
 ### Class Hierarchy at 0x00731D20
 - `FUN_00731D20` = TGAnimAction::Init (init method, not constructor)
@@ -53,11 +46,8 @@ int __thiscall FUN_006d1e10(void *this, char *name) {
 - `this + 0x1C` is a "null/empty" TGL entry embedded in the TGL object header
 - When this==NULL, it becomes 0x1C -- a non-NULL but invalid pointer
 
-### Recommended Fix: Patch FUN_00504F10 to Skip on NULL TGL
-Best approach: patch FUN_006D1E10 call result check, or patch the TGL load.
-Alternative: add VEH handlers for all three crash sites.
-
-### Optimal Solution: Binary Patch at 0x00504FCF
-After `CALL FUN_006D1E10` at 0x00504FD8, result in EAX.
-Add check: if EAX < 0x10000, skip the string copy and window setup.
-Or: patch the null check in FUN_00731D20 to reject small pointers.
+### Fix Applied: PatchTGLFindEntry
+Code cave at 0x006D1E10 adds `TEST ECX,ECX / JZ return_null` at function entry.
+When this==NULL (TGL database failed to load), returns NULL instead of garbage
+pointer this+0x1C. This single-point fix eliminates ALL downstream 0x1C crashes
+across dozens of callers.

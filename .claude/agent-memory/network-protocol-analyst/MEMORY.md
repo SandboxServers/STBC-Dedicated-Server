@@ -52,12 +52,12 @@
 - Keep scoring dict fix as deferred action, verify InitNetwork runs via engine path
 - See [session-comparison-20260210.md](session-comparison-20260210.md) for full stock-vs-proxy comparison
 
-### Crash at 0x006CF1DC (2026-02-10)
+### Crash at 0x006CF1DC (2026-02-10, RESOLVED)
 - FUN_006cf1c0: message buffer cleanup, double-clear of stack buffer
 - If +0x1C already NULL, reads vtable from +0x04, writes 0xFFFFFFFE to .rdata
 - Caller: FUN_006a1b10 (Settings send) clears buffer then destructor clears again
 - Trigger: Second NewPlayerInGame call during active state update exchange
-- Fix: Remove the double FUN_006a1e70 call (root cause), VEH skip at 0x006CF1DC as safety net
+- Fix: Removing the double FUN_006a1e70 call eliminates the trigger
 
 ### Server Clock vs Client Clock
 - Server clock always AHEAD of client by 0.8-2.0 seconds (NORMAL)

@@ -28,15 +28,11 @@ In FUN_007ccd10 at 007ccdbe-007ccdca:
 - Both showed D3D7::AddRef because ProxyDevice7's lpVtbl was OVERWRITTEN by the
   FUN_007d1ff0 over-read propagating back through heap corruption or aliasing
 
-## Fix: Enlarge ProxyDevice7 to 256 bytes (0x100)
-- Minimum: 236 bytes (59 DWORDs) to cover the FUN_007d1ff0 copy
-- Recommended: 256 bytes (64 DWORDs) for safety margin
-- Must be ZERO-INITIALIZED (HEAP_ZERO_MEMORY) -- zeroed data is safe as NULL pointers
-  and zero capability flags
-- Keep vtable at offset 0, refCount at offset 4, our custom fields at known positions
-- All other bytes remain zero, which means:
-  - NULL vtable pointers in copied data -> never dereferenced (guarded by NULL checks)
-  - Zero capability flags -> NI skips unsupported features gracefully
+## Fix Applied: PatchDeviceCapsRawCopy
+Instead of enlarging ProxyDevice7, we zero the REP MOVSD count at 0x007d2119.
+This prevents the 236-byte raw copy entirely. NI gets zeroed caps data which
+means "no features supported" — safe for headless operation where we don't
+actually render anything.
 
 ## Affected Functions
 - FUN_007d1ff0 (texture format manager init): copies 59 DWORDs from Device7

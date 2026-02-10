@@ -30,10 +30,9 @@
 7. Crash 2 (ESP=0x001AF70C, main thread): pyfree reads freed/corrupted pointer
 
 ## Three Crash Sites Explained
-- **0x00784182** (VEH caught): Parser shift/push writing to NULL EAX
+- **0x00784182**: Parser shift/push writing to NULL EAX
   - FUN_007840f0 line `*puVar3 = param_2` where puVar3=NULL
   - pymalloc returned NULL due to corruption -> parser got NULL buffer -> write to NULL
-  - VEH redirected EAX to dummy, allowing "recovery" but damage was done
 
 - **0x007179FB**: pyrealloc `MOV EDI, [EBX-4]` reading size header
   - EBX=0x003F003F (corrupted pointer, 0x3F = '?' = garbage)

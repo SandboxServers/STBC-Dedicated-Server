@@ -2,7 +2,7 @@
 
 ## FUN_007c3480 (NiDX7Renderer Setup)
 - Called from renderer wrapper constructor (FUN_007e7af0 creates the 0x224-byte object first)
-- PatchSkipRendererSetup jumps from 0x007C39CF to 0x007C3D75, skipping pipeline creation
+- Pipeline now builds fully (PatchSkipRendererSetup was removed)
 
 ### What the Pipeline Creates
 | Offset | Created By | Purpose |
@@ -40,11 +40,10 @@ These come from Dev_GetCaps output. Current proxy sets these caps.
 6. Stock host has NO player ships (GetPlayer()=None)
 7. Server never loads NIF models for remote players' ships
 
-## Assessment: Removing PatchSkipRendererSetup
-- Would create valid pipeline objects (0xB8/BC/C0/C4)
-- Would NOT give ships subsystems (wrong causal chain)
-- Would NOT fix client disconnect (that's missing object replication)
-- MIGHT reduce BoundingBox VEH crashes (only if some objects get valid NiBound)
+## Assessment: Pipeline Status
+- Pipeline now builds fully, creating valid objects at 0xB8/BC/C0/C4
+- Does NOT give ships subsystems (wrong causal chain -- see subsystem analysis)
+- Does NOT fix client disconnect (that's missing object replication)
 - PatchSkipDeviceLost still needed (device-lost checker always triggers)
+- PatchDeviceCapsRawCopy zeroes REP MOVSD count to prevent Device7 overread
 - All other patches still needed (UI, TGL, Python, etc.)
-- Net benefit: marginal. Risk: low-moderate.

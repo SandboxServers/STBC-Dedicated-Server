@@ -55,6 +55,6 @@ All subsystems at 0xFF (full health) initially
 | ObjCreate -> StateUpdate SUB | 88ms | NEVER (flags=0x00) |
 
 ## Fix Priority
-1. Remove manual FUN_006a1e70 from GameLoopTimerProc
-2. Synthesize SUB state updates (flags=0x20) with default health
+1. Remove manual FUN_006a1e70 from GameLoopTimerProc (root cause of duplicate packets)
+2. Solve empty StateUpdates: NIF models need to load for subsystem lists to populate
 3. Fix totalSlots in 0x35 (lower priority)

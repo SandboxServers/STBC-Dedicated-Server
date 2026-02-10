@@ -5,10 +5,14 @@
 ### Why the scene graph cannot be separated from the renderer
 NetImmerse 3.1 does not distinguish between "spatial hierarchy" and "renderable hierarchy." NiNode serves both purposes. NiBound is computed from child geometry. Hardpoints are NiNode children found by name. The NIF file format encodes everything in one structure.
 
-When PatchSkipRendererSetup jumps past the pipeline construction at 0x007C39CF, it doesn't just skip pixel-pushing -- it breaks internal state that NIF loading depends on for complete scene graphs. This manifests as:
+Skipping renderer pipeline construction breaks internal state that NIF loading depends on for complete scene graphs. This manifests as:
 - NULL subsystem/weapon linked lists (hardpoints can't be resolved)
 - Zero bounding volumes (NiBound not computed from geometry)
 - Missing transforms (NiAVObject world transforms not propagated)
+
+The pipeline now runs fully (PatchSkipRendererSetup removed, PatchDeviceCapsRawCopy prevents
+the raw memcpy crash). NIF models still don't fully load because GPU texture backing is
+needed, but the pipeline infrastructure is in place.
 
 ### FUN_005b17f0 Network State Update - Invariants
 The function (05_game_mission.c:53990) assumes:
@@ -55,8 +59,8 @@ The stock dedicated server toggle at line 1632 reads "Multiplayer Options" > "De
 ## Recommended Headless Architecture
 
 ### What to let run natively
-- NiDX7Renderer constructor (already un-stubbed in current code)
-- Renderer setup pipeline (REMOVE PatchSkipRendererSetup)
+- NiDX7Renderer constructor (un-stubbed, runs fully)
+- Renderer setup pipeline (PatchSkipRendererSetup removed, pipeline builds)
 - NIF loading (NiStream, geometry, transforms)
 - Scene graph construction (NiNode hierarchy, NiAVObject)
 - SetupProperties (hardpoint resolution, subsystem creation)

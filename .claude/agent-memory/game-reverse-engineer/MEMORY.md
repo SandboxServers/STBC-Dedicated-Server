@@ -20,13 +20,12 @@
 - Root cause: TGMessage_Create() returns raw SWIG pointer, not shadow class
 - Client now sees ship selection screen and can fly in-game
 
-## CRITICAL DISCOVERY: IsHost Flag is INVERTED (2026-02-08)
+## CRITICAL DISCOVERY: 0x0097FA88 is IsClient, NOT IsHost (2026-02-08)
 - See [stock-baseline-analysis.md](stock-baseline-analysis.md) for full evidence
-- 0x0097FA88 ("IsHost") = **0 on stock host**, **1 on stock client**
-- Semantics: 0 = "I am the host", 1 = "I have a host" (i.e., IsClient)
-- Our server INCORRECTLY sets this to 1 (ddraw_main.c line 2607 + SetIsHost(1))
-- FIX: Set to 0 -- could resolve game-over/disconnect if C++ dispatcher uses this flag
-- 0x0097FA8A ("IsMultiplayer") = 1 on host, 0 on client (our server=1, CORRECT)
+- 0x0097FA88 = **IsClient**: 0 on host, 1 on client
+- 0x0097FA89 = **IsHost**: 1 on host, 0 on client
+- 0x0097FA8A = **IsMultiplayer**: 1 on host, 0 on client (our server=1, CORRECT)
+- Our server correctly sets IsClient=0, IsHost=1, IsMp=1
 - Stock host: GetPlayer()=None (no player ship), ReadyForNewPlayers=1, conn=2
 - Stock client: conn transitions 3->2, gameTime syncs with server at join
 - 0x1C state updates flow at ~10Hz after client joins in working sessions
@@ -40,10 +39,7 @@
 - Subsystems come from: hardpoint .py -> RegisterLocalTemplate -> AddToSet("Scene Root")
 - AddToSet requires NIF model loaded (NiNode "Scene Root" in scene graph)
 - PatchNetworkUpdateNullLists WORKS: clears 0x20/0x80 when lists NULL, prevents malformed packets
-- VEH EIP-SKIP entries (005b1edb, 005b1f82) NOT being hit = cave is effective
 - **Server has NO game objects** -> FUN_005b17f0 never called -> no 0x1C packets sent
-- 0x004360CB + 0x00419963 crash pair (100s/sec, VEH-fixed) = see [bounding-box-crash.md](bounding-box-crash.md)
-- Fix: code cave at 0x004360c0 entry, NULL-check ECX (this) + EAX (GetModelBound return)
 - Ship creation is client-side; server only receives replication via FUN_0069f620
 
 ## Client Join Message Sequence (CRITICAL ORDER)
@@ -65,12 +61,6 @@
 - Small allocs (<= 0x80) use pool; large allocs use CRT malloc
 - 4-byte size header at [ptr-4] is critical -- corruption here = fatal
 
-## VEH Handler Behavior & Risks
-- NULL write: redirects register to g_pNullDummy (64KB zeroed buffer)
-- NULL read: injects dummy surface/buffer for NULL registers
-- DANGER: VEH write fixes to g_pNullDummy can corrupt shared allocator state
-- EBX=0x003F003F ("??") crash = garbage from corrupted Python parse tree
-
 ## Key Functions
 | Address | Name | Role |
 |---------|------|------|
@@ -89,7 +79,7 @@
 | 0x00731bb0 | NiTexture::ctor | Constructor; calls Init at 0x00731d20 |
 | 0x006f4d90 | NiString::Assign(src) | String copy; has NULL check (TEST EBP/JZ) |
 | 0x00504890 | MW::StartGameHandler | ET_START handler; creates WSN or forwards to MultiplayerGame |
-| 0x005b17f0 | Ship network state writer | Writes pos/orient/subsys/weapons to stream; VEH skips loops |
+| 0x005b17f0 | Ship network state writer | Writes pos/orient/subsys/weapons to stream |
 | 0x004360c0 | GetBoundingBox | vtable[0xE8], computes AABB from NiBound; see [bounding-box-crash.md](bounding-box-crash.md) |
 | 0x00419960 | GetModelBound | vtable[0xE4], returns NiBound*; NOT in Ghidra func DB (tiny function) |
 | 0x006d2eb0 | ReadCompressedVector3 | 3 vtable calls + decode; see [compressed-vector-crash.md] |
@@ -107,10 +97,10 @@
 
 ## Bug Analysis: InitNetwork Duplicates (2026-02)
 - See [initnet-duplicates.md](initnet-duplicates.md) for full analysis
-- C-side scheduling (ddraw_main.c:1581-1687) is REDUNDANT
-- Native C++ NewPlayerInGameHandler (FUN_006a1e70) already calls InitNetwork
-- C-side `already` check only looks at PENDING entries; fired entries get re-scheduled
-- FIX: Remove C-side InitNetwork scheduling entirely
+- Engine's native C++ NewPlayerInGameHandler (FUN_006a1e70) already calls InitNetwork
+- Our GameLoopTimerProc was ALSO calling FUN_006a1e70 manually, causing duplicates
+- Double call caused: duplicate 0x35/0x37/0x17 packets, ACK storms, double ObjNotFound
+- FIX: Remove manual FUN_006a1e70 call from GameLoopTimerProc
 
 ## Bug Analysis: Collision Damage Missing (2026-02)
 - See [collision-damage.md](collision-damage.md) for full analysis
@@ -164,42 +154,34 @@
 - See [renderer-pipeline-analysis.md](renderer-pipeline-analysis.md) for initial analysis
 - See [renderer-pipeline-trace.md](renderer-pipeline-trace.md) for FULL Ghidra disasm trace
 - See [renderer-device7-overread.md](renderer-device7-overread.md) for Device7 copy crash
-- PatchSkipRendererSetup REMOVED; PatchRendererMethods ACTIVE (stubs 3 methods)
-- Crash: FUN_007d1ff0 copies 59 DWORDs from Device7 into texture fmt mgr
-- Our vtable ptr at Device7+0 misinterpreted as caps data -> EIP=0 in FUN_007ccd10
+- PatchRendererMethods ACTIVE (stubs 3 renderer vtable methods)
+- PatchDeviceCapsRawCopy zeroes the MOV ECX count in FUN_007d1ff0 (prevents raw copy)
 - FUN_007c4850 (at 0x007C4879) = logging helper, NOT crash source
-- FIX: Fill _niPadding with D3DCAPS7 data, OR re-enable PatchSkipRendererSetup
 
 ### SOLVED: Dev_GetDirect3D Returns NULL (Previous Pipeline Crash)
 - Fixed by adding ProxyD3D7* back-ref to ProxyDevice7
 
-### SOLVED: ProxyDevice7 Heap Over-Read (Current Pipeline Crash, 2026-02-09)
+### SOLVED: ProxyDevice7 Raw Copy Crash (2026-02-09)
 - See [renderer-device7-overread.md](renderer-device7-overread.md) for full analysis
 - FUN_007d1ff0 copies 59 DWORDs (236 bytes) FROM Device7 into texture format manager
-- Our ProxyDevice7 is only 20 bytes -> reads 216 bytes of heap garbage
-- Garbage propagates as corrupted vtable ptrs -> EIP=0x0 crash in FUN_007ce9c0
-- **FIX: Enlarge ProxyDevice7 to >= 256 bytes, zero-initialized**
-- Zero-init is safe: NI treats zero as NULL ptrs / disabled features
+- FIX: PatchDeviceCapsRawCopy zeroes the REP MOVSD count at 0x007d2119
+- This prevents the raw memcpy entirely; NI gets zeroed caps (safe, means "no features")
 
-### Patch Removal Recommendations (for full pipeline restoration)
-- **REMOVE PatchSkipRendererSetup** - SAFE after Device7 size fix (confidence: HIGH)
-- **REMOVE PatchSkipDeviceLost** - SAFE: Surf_IsLost returns DD_OK, never "lost" (HIGH)
-- **KEEP PatchRendererMethods (FUN_007e8780)** - frustum calc reads this+0x190 (NULL) (HIGH)
-- **KEEP PatchRendererMethods (FUN_007c16f0)** - SetCameraData called in ctor, before pipeline (MED)
-- **EVALUATE PatchRendererMethods (FUN_007c2a10)** - accesses 0xC4 pipeline, may work (MED)
-- **EVALUATE PatchRenderTick** - may work with pipeline, but unnecessary CPU cost (LOW)
+### Active Renderer Patches
+- **PatchRendererMethods** - stubs 3 vtable methods: FUN_007e8780 (RET), FUN_007c2a10 (RET 4), FUN_007c16f0 (RET 0x18)
+- **PatchSkipDeviceLost** - always skip device-lost recreation path
+- **PatchRenderTick** - JMP skip render work (no GPU cost)
+- **PatchDeviceCapsRawCopy** - zero the 236-byte raw copy count
 
 ## Subsystem Creation Chain (2026-02-09)
 - See [subsystem-creation-analysis.md](subsystem-creation-analysis.md) for full analysis
 - PatchSubsystemHashCheck ALREADY bypasses hash when subsystem list is NULL
 
-## SOLVED: Compressed Vector Read Cascade Crash (2026-02-09)
+## SOLVED: Compressed Vector Read Crash (2026-02-09)
 - See [compressed-vector-crash.md](compressed-vector-crash.md) for full analysis
 - FUN_006d2eb0 / FUN_006d2fd0: read compressed vectors via 4 vtable calls
-- If vtable corrupted: VEH recovers from each call but CANNOT clean callee-clean stack params
-- 24 bytes stranded on stack -> misaligned ESP -> second call uses wrong this ptr -> fatal crash
+- If vtable corrupted, callee-clean stack params strand 24 bytes -> misaligned ESP -> crash
 - FIX: PatchCompressedVectorRead validates vtable in .rdata range before entering function
-- KEY LESSON: VEH cannot safely recover from callee-clean vtable calls (stdcall/thiscall)
 
 ## CRITICAL: Wire Format Opcode Table CORRECTED (2026-02-09)
 - See [torpedo-beam-network.md](torpedo-beam-network.md) for full corrected table

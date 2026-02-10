@@ -1,9 +1,9 @@
-# Black Screen Analysis - Python Angle
+# Black Screen Analysis - Python Angle (RESOLVED)
 
-## Root Cause Hypothesis
-`InitNetwork` crashes because `App.g_kUtopiaModule` is a raw SWIG pointer string,
-not a shadow class wrapper. The original game code in InitNetwork calls
-`App.g_kUtopiaModule.GetNetwork()` using shadow class method syntax.
+## Root Cause (confirmed and fixed)
+`InitNetwork` was crashing because `App.g_kUtopiaModule` is a raw SWIG pointer string,
+not a shadow class wrapper. The fix was to replace Mission1.InitNetwork with a version
+that uses Appc functional API (raw SWIG calls) instead of shadow class method syntax.
 
 ## Key Diagnostic
 Check `dedicated_init.log` for `">>> InitNetwork called"`:

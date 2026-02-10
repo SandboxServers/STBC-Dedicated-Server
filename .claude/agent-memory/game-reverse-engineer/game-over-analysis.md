@@ -3,29 +3,24 @@
 ## Symptom
 Client selects ship, server sends 73-byte response, client shows "game over" screen.
 
-## Server-Side VEH Fixes During Ship Selection
-- 0x00419963: Unknown function (not in Ghidra function DB)
-- 0x004360CB: FUN_004360c0 - bounding box calc (reads ship geometry, NULL in headless)
-- 0x005b1edb: FUN_005b17f0 - network object state update, subsystem loop skip
-  - First loop (subsys): 0x005b1edb -> 0x005b1f1f
-  - Second loop (weapons): 0x005b1f82 -> 0x005b2105
+## Server-Side Crash Sites During Ship Selection
+- 0x00419963: AsteroidField ctor (not in Ghidra function DB) - addressed by renderer pipeline
+- 0x004360CB: FUN_004360c0 - bounding box calc (reads ship geometry) - addressed by renderer pipeline
+- 0x005b1d57: FUN_005b17f0 - network object state update - PatchNetworkUpdateNullLists clears flags
 
 ## Root Cause Analysis
 
-### Hypothesis 1: Truncated network state packet (MOST LIKELY)
+### Empty StateUpdate Packets (CONFIRMED)
 FUN_005b17f0 writes ship state to a buffer stream. The data includes:
 - Header: opcode 0x1c, object ID, timestamp, flags byte (bVar6)
 - Position/orientation data (if bVar6 bits 1-4)
 - Shield throttle (if bVar6 & 0x40)
-- **Subsystem data (if bVar6 & 0x20)** - SKIPPED by VEH
-- **Weapon data (if bVar6 & 0x80)** - SKIPPED by VEH
+- Subsystem data (if bVar6 & 0x20)
+- Weapon data (if bVar6 & 0x80)
 
-The flags byte (bVar6) is written BEFORE the loop data. When VEH skips
-the loops, the stream claims data follows (bits set in flags) but the
-actual bytes are missing. Client reads garbage or underflows the stream.
-
-73 bytes = header + position/orient + flags - but missing subsystem/weapon data
-that the flags byte promises should be there.
+PatchNetworkUpdateNullLists clears bits 0x20/0x80 when subsystem/weapon lists are NULL,
+preventing the server from promising data that doesn't exist. The result is flags=0x00
+(empty updates) which the client interprets as no server acknowledgment.
 
 ### Hypothesis 2: g_bGameStarted=1 before player connects (LESS LIKELY)
 Server sets MissionMenusShared.g_bGameStarted=1 during init. In the

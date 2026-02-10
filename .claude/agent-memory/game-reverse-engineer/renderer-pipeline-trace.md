@@ -1,10 +1,10 @@
 # Renderer Pipeline Trace: Full Ghidra Analysis (2026-02-09)
 
-## Crash Context
+## Crash Context (historical, fixed by PatchDeviceCapsRawCopy)
 - EIP=0x0, EAX=ECX=0x02F33A04, EBP=0x02F22ABC (renderer wrapper)
 - Stack return candidate: 0x007C4879 (FUN_007c4850 = logging helper, NOT crash site)
-- PatchSkipRendererSetup is REMOVED; PatchRendererMethods is ACTIVE
-- PatchRendererMethods stubs: FUN_007e8780 (RET), FUN_007c2a10 (RET 4), FUN_007c16f0 (RET 0x18)
+- PatchRendererMethods ACTIVE, stubs: FUN_007e8780 (RET), FUN_007c2a10 (RET 4), FUN_007c16f0 (RET 0x18)
+- PatchDeviceCapsRawCopy zeroes the REP MOVSD count at 0x007d2119 to prevent raw copy
 
 ## FUN_007c4850 (at 0x007C4879) = Logging Helper
 - Just formats "NI_D3D_Renderer: <msg>" and outputs it
@@ -78,17 +78,11 @@ Confirmed: 0x00898984 + 0xa4 = 0x00898A28 -> 0x007C16F0 (patched)
 - Set by FUN_007c3480 via `D3D7::CreateDevice` (vtable offset 0x10)
 - Our ProxyDevice7 created by D3D7_CreateDevice
 
-## Root Cause
-ProxyDevice7 _niPadding is zero-initialized, but NI expects D3DCAPS7 + related
-device descriptor data at those offsets. The 236-byte copy in FUN_007d1ff0 copies:
-- Offset 0: our vtable ptr (NI expects caps flags)
-- Offset 4: refCount (NI expects device caps DWORD)
-- Offset 8: renderTarget ptr (NI expects caps data)
-- Offset 0x14+: all zeros
+## Root Cause (FIXED)
+FUN_007d1ff0 copies 59 DWORDs (236 bytes) from Device7 as raw memcpy (REP MOVSD).
+Our ProxyDevice7 has vtable ptr at offset 0 which NI misinterprets as caps data.
 
-Zero is MOSTLY safe but the vtable ptr at offset 0 gets misinterpreted.
-
-## Fix Options
-1. Fill _niPadding with correct D3DCAPS7 data matching Dev_GetCaps output
-2. Re-enable PatchSkipRendererSetup to skip pipeline entirely
-3. Patch FUN_007d1ff0 copy to use Device7::GetCaps instead of raw memcpy
+## Fix Applied
+PatchDeviceCapsRawCopy zeroes the MOV ECX count at 0x007d2119, preventing the
+raw copy entirely. NI gets zeroed caps data which means "no features supported"
+— safe for headless operation.
