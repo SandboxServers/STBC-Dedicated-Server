@@ -7,7 +7,7 @@ See [patch-inventory.md](patch-inventory.md) for details.
 See [architecture-assessment.md](architecture-assessment.md) for the full approach comparison.
 
 ## Key Findings
-- 14 active binary patches applied at runtime via VirtualProtect + memcpy
+- 15 active binary patches applied at runtime via VirtualProtect + memcpy
 - CrashDumpHandler via SetUnhandledExceptionFilter logs diagnostics on unhandled exceptions
 - Proxy DDraw7/D3D7/Device7/Surface7 stubs exist with full COM vtables
 - Renderer pipeline runs fully (PatchSkipRendererSetup removed, pipeline objects build)
@@ -24,3 +24,8 @@ See [architecture-assessment.md](architecture-assessment.md) for the full approa
 - 0x004433EA: Render tick (JNZ -> JMP skip render)
 - 0x0043ADB6: Renderer alloc check (JZ -> JMP skip ctor)
 - 0x0043B1D2: Init abort (NOP out JMP)
+- 0x00419960: Vtable thunk (8 bytes, MOV ECX,[ECX+1C]/MOV EAX,[ECX]/JMP [EAX+34]) - full replacement cave
+
+## Lessons Learned
+- JZ/JNZ rel8 displacement = target_offset - (jz_offset + 2), NOT target_offset - (jz_offset + 1). The +2 accounts for the full 2-byte JZ instruction (opcode + displacement byte). Initial draft had off-by-one on both JZ branches.
+- When a code cave reproduces ALL original instructions (full function replacement), no JMP-back fixup is needed. This simplifies the cave and eliminates a rel32 calculation.

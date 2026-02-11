@@ -1567,6 +1567,37 @@ static void PatchSkipDeviceLost(void) {
 }
 
 /* ================================================================
+ * PatchSkipDisplayModeSearch - Skip display mode list search
+ *
+ * FUN_007c9020 (NiDX7Renderer SetDisplayMode) checks this+0x190 for
+ * a display mode enumeration list. If non-NULL, it searches for the
+ * requested resolution+depth. On modern displays the enumerated modes
+ * may not include old modes (e.g. 640x480x16bpp), failing with
+ * "Desired fullscreen display mode not supported".
+ *
+ * The alternative path (this+0x190 == NULL) calls
+ * IDirectDraw7::SetDisplayMode directly (our hook returns DD_OK).
+ *
+ * Patch: 007C90EE JE +0x2E (74 2E) -> JMP +0x2E (EB 2E)
+ * ================================================================ */
+static void PatchSkipDisplayModeSearch(void) {
+    BYTE* target = (BYTE*)0x007C90EE;
+    DWORD oldProt;
+
+    if (IsBadReadPtr(target, 2) || target[0] != 0x74 || target[1] != 0x2E) {
+        ProxyLog("  PatchSkipDisplayModeSearch: unexpected bytes at 0x007C90EE (%02X %02X), skipped",
+                 target[0], target[1]);
+        return;
+    }
+
+    VirtualProtect(target, 1, PAGE_EXECUTE_READWRITE, &oldProt);
+    target[0] = 0xEB; /* JE -> JMP short */
+    VirtualProtect(target, 1, oldProt, &oldProt);
+
+    ProxyLog("  PatchSkipDisplayModeSearch: 007C90EE JE->JMP (skip mode list, use direct SetDisplayMode)");
+}
+
+/* ================================================================
  * PatchRendererMethods - Patch individual renderer methods
  *
  * Some vtable methods blindly dereference pointer fields that are NULL
@@ -1674,6 +1705,10 @@ static void PatchHeadlessCrashSites(void) {
          * Looks up pane via FUN_0050e1b0, calls FUN_00508120 on result -> NULL crash.
          * __fastcall, no stack params -> safe to RET. */
         { 0x0055c860, 0x56, "FUN_0055c860 (mission UI pane lookup)" },
+        /* FUN_0055c890: subtitle remove callback - same pattern as 0x0055c810.
+         * Looks up pane #5 via FUN_0050e1b0, passes NULL to FUN_00508120 -> crash.
+         * __fastcall, PUSH ESI -> safe to RET. */
+        { 0x0055c890, 0x56, "FUN_0055c890 (subtitle remove callback)" },
     };
     int i;
     for (i = 0; i < (int)(sizeof(sites) / sizeof(sites[0])); i++) {
@@ -1709,6 +1744,218 @@ static void PatchHeadlessCrashSites(void) {
 /* PatchDisableDebugConsole - REPLACED by PatchDebugConsoleToFile above.
  * Previously: patched FUN_006f9470 to RET and set flag to 0.
  * Now: PatchDebugConsoleToFile redirects to our file-logging replacement. */
+
+/* ================================================================
+ * PatchNullThunk_00419960 - Fix NULL dereference in vtable thunk
+ *
+ * The 8-byte thunk at 0x00419960 does:
+ *   MOV ECX, [ECX+0x1C]   ; get sub-object pointer
+ *   MOV EAX, [ECX]         ; get vtable
+ *   JMP [EAX+0x34]         ; call vtable slot 13
+ *
+ * When [ECX+0x1C] is NULL (e.g. AsteroidField with uninitialized
+ * NiAVObject member), the second instruction crashes reading [0x00000000].
+ * This fires after a client connects and game objects are iterated.
+ *
+ * Fix: Redirect to a code cave that checks [ECX+0x1C] for NULL.
+ * If NULL, return pointer to a static zeroed bounding struct so
+ * callers that read floats from the return value don't crash.
+ * ================================================================ */
+static void PatchNullThunk_00419960(void) {
+    /* Code cave layout (48 bytes total):
+     * [0..23]:  6 zeroed DWORDs = dummy bounding box (min/max vectors)
+     * [24]:     MOV ECX, [ECX+0x1C]    ; 8B 49 1C
+     * [27]:     TEST ECX, ECX           ; 85 C9
+     * [29]:     JZ .null                ; 74 05
+     * [31]:     MOV EAX, [ECX]          ; 8B 01
+     * [33]:     JMP [EAX+0x34]          ; FF 60 34
+     * .null: [36]
+     * [36]:     MOV EAX, <cave_base>    ; B8 XX XX XX XX
+     * [41]:     RET                     ; C3
+     */
+    static BYTE cave[] = {
+        /* 24 bytes of zeros = dummy bounding box (6 floats) */
+        0x00, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00,
+        /* code starts at offset 24 */
+        0x8B, 0x49, 0x1C,       /* MOV ECX, [ECX+0x1C] */
+        0x85, 0xC9,             /* TEST ECX, ECX       */
+        0x74, 0x05,             /* JZ  +5 (.null)      */
+        0x8B, 0x01,             /* MOV EAX, [ECX]      */
+        0xFF, 0x60, 0x34,       /* JMP [EAX+0x34]      */
+        /* .null: */
+        0xB8, 0x00, 0x00, 0x00, 0x00,  /* MOV EAX, <cave_base> (fixup) */
+        0xC3                    /* RET                  */
+    };
+    BYTE* pCave;
+    BYTE* target = (BYTE*)0x00419960;
+    DWORD oldProt;
+
+    /* Verify expected bytes: 8B 49 1C 8B 01 FF 60 34 */
+    if (IsBadReadPtr(target, 8) ||
+        target[0] != 0x8B || target[1] != 0x49 || target[2] != 0x1C ||
+        target[3] != 0x8B || target[4] != 0x01) {
+        ProxyLog("  PatchNullThunk_00419960: unexpected bytes at 0x00419960, skipped");
+        return;
+    }
+
+    pCave = (BYTE*)VirtualAlloc(NULL, sizeof(cave),
+                                MEM_COMMIT | MEM_RESERVE,
+                                PAGE_EXECUTE_READWRITE);
+    if (!pCave) {
+        ProxyLog("  PatchNullThunk_00419960: VirtualAlloc failed");
+        return;
+    }
+    memcpy(pCave, cave, sizeof(cave));
+
+    /* Fix up MOV EAX, <cave_base>: point to the zeroed data at start of cave */
+    *(DWORD*)(pCave + 37) = (DWORD)pCave;  /* cave[0..23] = zeroed bounding box */
+
+    /* Overwrite thunk entry: JMP to cave CODE (offset 24), 5 bytes + 3 NOPs */
+    VirtualProtect(target, 8, PAGE_EXECUTE_READWRITE, &oldProt);
+    target[0] = 0xE9;  /* JMP rel32 */
+    *(DWORD*)(target + 1) = (DWORD)(pCave + 24) - (0x00419960 + 5);
+    target[5] = 0x90;  /* NOP */
+    target[6] = 0x90;  /* NOP */
+    target[7] = 0x90;  /* NOP */
+    VirtualProtect(target, 8, oldProt, &oldProt);
+
+    ProxyLog("  PatchNullThunk_00419960: 0x00419960 -> cave at %p (NULL returns zeroed bound at %p)",
+             pCave + 24, pCave);
+}
+
+/* ================================================================
+ * PatchStreamReadNullBuffer - Fix NULL buffer in stream read function
+ *
+ * FUN_006CF625 is a small stream read function:
+ *   MOV ESI, [ECX+0x1C]    ; get buffer pointer
+ *   MOV AX, [ESI+EAX]      ; read 16-bit value at offset EAX
+ *   MOV [ECX+0x24], EDX    ; store read position
+ *   POP ESI
+ *   RET
+ *
+ * Called during network state update deserialization (from 0x005B2619).
+ * When the stream buffer at [ECX+0x1C] is NULL (no subsystem/weapon
+ * data to deserialize), ESI=0 and the read crashes.
+ *
+ * Fix: Code cave checks [ECX+0x1C] for NULL, returns AX=0 if so.
+ * ================================================================ */
+static void PatchStreamReadNullBuffer(void) {
+    /* Code cave: complete replacement of the 12-byte function
+     * MOV ESI, [ECX+0x1C]  ; get buffer ptr
+     * TEST ESI, ESI         ; NULL check
+     * JZ .null
+     * MOV AX, [ESI+EAX]    ; read 16-bit (original)
+     * MOV [ECX+0x24], EDX  ; update position (original)
+     * POP ESI
+     * RET
+     * .null:
+     * XOR AX, AX            ; return 0
+     * POP ESI
+     * RET
+     */
+    static BYTE cave[] = {
+        0x8B, 0x71, 0x1C,             /* MOV ESI, [ECX+0x1C] */
+        0x85, 0xF6,                   /* TEST ESI, ESI       */
+        0x74, 0x09,                   /* JZ  +9 (.null)      */
+        0x66, 0x8B, 0x04, 0x06,       /* MOV AX, [ESI+EAX]  */
+        0x89, 0x51, 0x24,             /* MOV [ECX+0x24], EDX */
+        0x5E,                         /* POP ESI             */
+        0xC3,                         /* RET                 */
+        /* .null: */
+        0x66, 0x33, 0xC0,             /* XOR AX, AX          */
+        0x5E,                         /* POP ESI             */
+        0xC3                          /* RET                 */
+    };
+    BYTE* pCave;
+    BYTE* target = (BYTE*)0x006CF625;
+    DWORD oldProt;
+
+    /* Verify expected bytes: 8B 71 1C 66 8B 04 06 */
+    if (IsBadReadPtr(target, 7) ||
+        target[0] != 0x8B || target[1] != 0x71 || target[2] != 0x1C ||
+        target[3] != 0x66 || target[4] != 0x8B) {
+        ProxyLog("  PatchStreamReadNullBuffer: unexpected bytes at 0x006CF625, skipped");
+        return;
+    }
+
+    pCave = (BYTE*)VirtualAlloc(NULL, sizeof(cave),
+                                MEM_COMMIT | MEM_RESERVE,
+                                PAGE_EXECUTE_READWRITE);
+    if (!pCave) {
+        ProxyLog("  PatchStreamReadNullBuffer: VirtualAlloc failed");
+        return;
+    }
+    memcpy(pCave, cave, sizeof(cave));
+
+    /* Overwrite function entry: JMP to cave (5 bytes) + NOP remaining 7 */
+    VirtualProtect(target, 12, PAGE_EXECUTE_READWRITE, &oldProt);
+    target[0] = 0xE9;  /* JMP rel32 */
+    *(DWORD*)(target + 1) = (DWORD)pCave - (0x006CF625 + 5);
+    memset(target + 5, 0x90, 7);  /* NOP remaining bytes */
+    VirtualProtect(target, 12, oldProt, &oldProt);
+
+    ProxyLog("  PatchStreamReadNullBuffer: 0x006CF625 -> cave at %p (NULL buffer returns AX=0)",
+             pCave);
+
+    /* Patch error path in FUN_006cf1c0 (stream cleanup/reset):
+     * When buffer at [this+0x1C] is NULL, it tries to write 0xFFFFFFFE to
+     * *[this+4]. If [this+4] points to read-only .rdata, this crashes.
+     *
+     * Original 10 bytes: 8B 41 04 C7 00 FE FF FF FF C3
+     *   MOV EAX, [ECX+4]; MOV [EAX], 0xFFFFFFFE; RET
+     *
+     * Replacement: Also zero this+0x08 (FILE* field) to prevent fclose on
+     * stale pointer in the base class destructor (STATUS_INVALID_HANDLE crash).
+     *   C7 41 08 00 00 00 00 C3 90 90
+     *   MOV DWORD PTR [ECX+0x8], 0; RET; NOP; NOP
+     */
+    {
+        BYTE* target2 = (BYTE*)0x006CF1DC;
+        DWORD oldProt2;
+        /* Replacement: zero FILE* at this+0x08 then RET (10 bytes) */
+        static const BYTE replacement[] = {
+            0xC7, 0x41, 0x08, 0x00, 0x00, 0x00, 0x00,  /* MOV DWORD PTR [ECX+8], 0 */
+            0xC3,                                         /* RET */
+            0x90, 0x90                                    /* NOP NOP */
+        };
+        if (!IsBadReadPtr(target2, 3)) {
+            ProxyLog("  PatchStreamReadNullBuffer: bytes at 006CF1DC: %02X %02X %02X",
+                     target2[0], target2[1], target2[2]);
+            /* Check if already patched from previous run (0xC3 or 0xC7) */
+            if (target2[0] == 0xC3 || target2[0] == 0xC7) {
+                VirtualProtect(target2, 10, PAGE_EXECUTE_READWRITE, &oldProt2);
+                memcpy(target2, replacement, 10);
+                VirtualProtect(target2, 10, oldProt2, &oldProt2);
+                ProxyLog("  PatchStreamReadNullBuffer: 006CF1DC -> zero FILE* + RET");
+            } else if (target2[0] == 0x8B && target2[1] == 0x41 && target2[2] == 0x04) {
+                VirtualProtect(target2, 10, PAGE_EXECUTE_READWRITE, &oldProt2);
+                memcpy(target2, replacement, 10);
+                VirtualProtect(target2, 10, oldProt2, &oldProt2);
+                ProxyLog("  PatchStreamReadNullBuffer: 006CF1DC -> zero FILE* + RET");
+            } else {
+                ProxyLog("  PatchStreamReadNullBuffer: 006CF1DC unexpected bytes, trying scan...");
+                /* Scan for the error pattern: 8B 41 04 C7 00 FE FF FF FF C3 */
+                int off;
+                for (off = -16; off <= 16; off++) {
+                    BYTE* scan = target2 + off;
+                    if (!IsBadReadPtr(scan, 10) &&
+                        scan[0] == 0x8B && scan[1] == 0x41 && scan[2] == 0x04 &&
+                        scan[3] == 0xC7 && scan[4] == 0x00 &&
+                        scan[5] == 0xFE && scan[6] == 0xFF) {
+                        VirtualProtect(scan, 10, PAGE_EXECUTE_READWRITE, &oldProt2);
+                        memcpy(scan, replacement, 10);
+                        VirtualProtect(scan, 10, oldProt2, &oldProt2);
+                        ProxyLog("  PatchStreamReadNullBuffer: found error pattern at 0x%08X -> zero FILE* + RET",
+                                 (unsigned)(scan));
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
 
 /* ================================================================
  * PatchTGLFindEntry - Fix NULL+0x1C sentinel from TGL lookup
@@ -3156,13 +3403,35 @@ static VOID CALLBACK DedicatedServerTimerProc(HWND hwnd, UINT msg,
          * FUN_00504f10 allocates a MultiplayerGame object and calls
          * FUN_0069e590 (constructor) which calls FUN_00405c10 (TopWindow
          * constructor), setting DAT_0097e238 = game object pointer.
-         * It also runs AI_Setup.GameInit and loads Multiplayer.tgl. */
+         * It also runs AI_Setup.GameInit and loads Multiplayer.tgl.
+         *
+         * NOTE: pCreate() enters an internal message loop, so our timer
+         * fires recursively inside it. Guard against re-entrancy. */
         typedef void (__cdecl *pfn_CreateMPGame)(void);
         pfn_CreateMPGame pCreate = (pfn_CreateMPGame)0x00504f10;
         DWORD twPtr;
+        static BOOL inCreate = FALSE;
 
+        if (inCreate) {
+            /* Re-entrant timer tick inside pCreate()'s message loop.
+               Check if TopWindow was created while pCreate() is running. */
+            twPtr = 0;
+            if (!IsBadReadPtr((void*)0x0097e238, 4))
+                twPtr = *(DWORD*)0x0097e238;
+            if (twPtr != 0) {
+                static int logOnce = 0;
+                if (!logOnce) {
+                    ProxyLog("  DS_TIMER[2]: TopWindow created inside pCreate(): 0x%08X", twPtr);
+                    logOnce = 1;
+                }
+                g_iDedState = 3;
+            }
+            break;
+        }
         ProxyLog("  DS_TIMER[2]: Creating MultiplayerGame (poll %d, nest=%d)", polls, nestLvl);
+        inCreate = TRUE;
         pCreate();
+        inCreate = FALSE;
 
         twPtr = 0;
         if (!IsBadReadPtr((void*)0x0097e238, 4))
@@ -3426,6 +3695,14 @@ static VOID CALLBACK DedicatedServerTimerProc(HWND hwnd, UINT msg,
          * Timer ID 0xBCBC chosen to avoid conflicts. */
         SetTimer(hwnd, 0xBCBC, 33, GameLoopTimerProc);
         ProxyLog("  DS_TIMER: Bootstrap done, game loop timer started (33ms)");
+
+        /* Minimize the game window now that init is complete.
+         * This releases the fullscreen exclusive display, freeing the GPU.
+         * The game loop continues via WM_TIMER regardless of window state. */
+        if (g_hGameWindow) {
+            ShowWindow(g_hGameWindow, SW_MINIMIZE);
+            ProxyLog("  DS_TIMER: Minimized game window (release GPU display)");
+        }
         break;
     }
     default:
@@ -3974,6 +4251,7 @@ static void ObserverHookIAT(void) {
  * Globals
  * ================================================================ */
 BOOL           g_bStubMode = FALSE;
+BOOL           g_bHybridMode = FALSE;  /* TRUE = use real DDraw/D3D, keep server patches */
 HWND           g_hGameWindow = NULL;
 static HMODULE g_hRealDDraw = NULL;
 static FILE*   g_pLog = NULL;
@@ -4185,6 +4463,71 @@ static void ResolveAddr(DWORD addr, char* out, int outLen) {
         }
     }
     wsprintfA(out, "0x%08X", addr);
+}
+
+/* ================================================================
+ * VEHCrashLogger - Minimal first-chance exception logger
+ *
+ * Catches exceptions in ALL threads (including NVIDIA driver threads)
+ * that bypass SetUnhandledExceptionFilter. Only logs fatal exceptions
+ * (access violations, stack overflows). Returns EXCEPTION_CONTINUE_SEARCH
+ * to let normal handling proceed.
+ * ================================================================ */
+static LONG WINAPI VEHCrashLogger(EXCEPTION_POINTERS* ep) {
+    DWORD excCode = ep->ExceptionRecord->ExceptionCode;
+    static volatile LONG vehCount = 0;
+    LONG count;
+    /* Log ALL exception types to find the original crash that triggers cascade */
+    /* Suppress cascade: only log first 10 exceptions to prevent log/stack overflow */
+    count = InterlockedIncrement(&vehCount);
+    if (count > 10) return EXCEPTION_CONTINUE_SEARCH;
+    /* Skip benign exceptions that waste our counter */
+    if (excCode == 0xE06D7363 ||  /* MSVC C++ throw */
+        excCode == 0x40010006 ||  /* OutputDebugString */
+        excCode == 0x406D1388) {  /* MS_VC_EXCEPTION (thread naming) */
+        InterlockedDecrement(&vehCount);
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    /* Log minimal crash info */
+    ProxyLog("!!! VEH[%ld]: exception 0x%08X at EIP=0x%08X thread=%lu ECX=0x%08X EAX=0x%08X ESP=0x%08X",
+             count, excCode, (DWORD)ep->ContextRecord->Eip,
+             GetCurrentThreadId(),
+             (DWORD)ep->ContextRecord->Ecx,
+             (DWORD)ep->ContextRecord->Eax,
+             (DWORD)ep->ContextRecord->Esp);
+    /* Dump stack around ESP to find return addresses */
+    if (count <= 5) {
+        DWORD esp = ep->ContextRecord->Esp;
+        DWORD ebp = ep->ContextRecord->Ebp;
+        ProxyLog("!!! VEH[%ld]: EBP=0x%08X EDX=0x%08X ESI=0x%08X EDI=0x%08X",
+                 count, ebp, (DWORD)ep->ContextRecord->Edx,
+                 (DWORD)ep->ContextRecord->Esi, (DWORD)ep->ContextRecord->Edi);
+        /* Dump 32 DWORDs from ESP (return addresses, saved regs, etc.) */
+        if (!IsBadReadPtr((void*)esp, 128)) {
+            DWORD* stk = (DWORD*)esp;
+            ProxyLog("!!! VEH[%ld]: STACK[ESP+00..+3C]: %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X",
+                     count, stk[0], stk[1], stk[2], stk[3], stk[4], stk[5], stk[6], stk[7],
+                     stk[8], stk[9], stk[10], stk[11], stk[12], stk[13], stk[14], stk[15]);
+            ProxyLog("!!! VEH[%ld]: STACK[ESP+40..+7C]: %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X",
+                     count, stk[16], stk[17], stk[18], stk[19], stk[20], stk[21], stk[22], stk[23],
+                     stk[24], stk[25], stk[26], stk[27], stk[28], stk[29], stk[30], stk[31]);
+        }
+        /* Walk EBP chain looking for stbc.exe return addresses */
+        {
+            DWORD frame = ebp;
+            int i;
+            for (i = 0; i < 8 && frame > 0x10000 && frame < 0x7FFFFFFF; i++) {
+                if (IsBadReadPtr((void*)frame, 8)) break;
+                DWORD savedEbp = *(DWORD*)frame;
+                DWORD retAddr = *(DWORD*)(frame + 4);
+                ProxyLog("!!! VEH[%ld]: FRAME[%d] EBP=0x%08X RET=0x%08X", count, i, frame, retAddr);
+                if (savedEbp <= frame) break; /* stack grows down, EBP should increase */
+                frame = savedEbp;
+            }
+        }
+    }
+    if (g_pLog) fflush(g_pLog);
+    return EXCEPTION_CONTINUE_SEARCH;
 }
 
 /* ================================================================
@@ -4443,6 +4786,10 @@ BOOL WINAPI DllMain(HINSTANCE hInstDLL, DWORD reason, LPVOID reserved) {
 #ifndef OBSERVE_ONLY
         /* Install crash dump handler (logs diagnostics, lets process die) */
         SetUnhandledExceptionFilter(CrashDumpHandler);
+        /* Also install VEH first-chance handler to catch driver-thread crashes
+         * that bypass SetUnhandledExceptionFilter. This is MINIMAL - log only,
+         * no recovery, only fires for fatal exceptions. */
+        AddVectoredExceptionHandler(1, VEHCrashLogger);
 
         g_dwMainThreadId = GetCurrentThreadId();
         DuplicateHandle(GetCurrentProcess(), GetCurrentThread(),
@@ -4526,7 +4873,8 @@ BOOL WINAPI DllMain(HINSTANCE hInstDLL, DWORD reason, LPVOID reserved) {
         if (hCfg != INVALID_HANDLE_VALUE) {
             CloseHandle(hCfg);
             g_bStubMode = TRUE;
-            ProxyLog("dedicated.cfg found - STUB MODE (dedicated server)");
+            g_bHybridMode = TRUE;  /* Use real renderer with server patches */
+            ProxyLog("dedicated.cfg found - HYBRID MODE (real renderer + server patches)");
 
             /* Redirect stdout/stderr for Python print capture.
                SetStdHandle only changes Win32 console handles, but Python 1.5
@@ -4620,27 +4968,28 @@ BOOL WINAPI DllMain(HINSTANCE hInstDLL, DWORD reason, LPVOID reserved) {
                 }
             }
 
-            /* Apply patches for stub mode */
+            /* Apply patches for hybrid mode */
             HookGameIAT();
             InlineHookMessageBoxA();
-            PatchRenderTick();        /* Skip per-frame render work (no-op draw calls) */
+            /* PatchRenderTick REMOVED again - objects need scene graph updates to initialize properly */
             /* PatchRendererCtorEntry REMOVED - let the real NiDX7Renderer constructor
                run so the renderer has valid internal state (arrays, matrices, frustum). */
             PatchInitAbort();         /* Prevent abort when init check fails */
             PatchPyFatalError();      /* Make Py_FatalError return instead of tail-calling abort */
             PatchCreateAppModule();   /* Create SWIG "App" module before init imports it */
-            PatchDirectDrawCreateExCache(); /* Pre-fill DDCreateEx cache to bypass apphelp shim */
-            /* PatchSkipRendererSetup REMOVED - let the full pipeline run. Dev_GetDirect3D
-               now returns a valid ProxyD3D7, so the pipeline ctors get valid COM objects.
-               All D3D calls go through our proxy (no real GPU needed). */
-            PatchSkipDeviceLost();    /* Skip device-lost recreation path */
-            PatchRendererMethods();   /* Stub SetCameraData/frustum during pipeline setup */
-            PatchDeviceCapsRawCopy(); /* Skip 236-byte raw Device7 memory copy in NI pipeline */
-            PatchHeadlessCrashSites(); /* NOP mission UI functions that crash headless */
+            /* PatchDirectDrawCreateExCache REMOVED (hybrid) - real DDCreateEx fills cache naturally */
+            /* PatchSkipRendererSetup REMOVED - let the full pipeline run. */
+            PatchSkipDeviceLost();    /* Skip device-lost recreation path (safety) */
+            PatchSkipDisplayModeSearch(); /* Skip mode enumeration, use direct SetDisplayMode */
+            /* PatchRendererMethods REMOVED (hybrid) - real renderer handles camera/frustum */
+            /* PatchDeviceCapsRawCopy REMOVED (hybrid) - real Device7 has valid caps */
+            PatchHeadlessCrashSites(); /* NOP subtitle/notification pane lookups (pane #5 not created in dedi boot) */
             PatchTGLFindEntry();      /* TGL FindEntry: return NULL when this==NULL */
-            PatchNetworkUpdateNullLists(); /* Clear subsys/weapon flags when lists NULL */
-            PatchSubsystemHashCheck(); /* Fix false-positive anti-cheat when subsystems NULL */
-            PatchCompressedVectorRead(); /* Validate vtable in compressed vector read to prevent cascade crash */
+            PatchNetworkUpdateNullLists(); /* Clear subsys/weapon flags when lists NULL (safety) */
+            PatchSubsystemHashCheck(); /* Fix false-positive anti-cheat when subsystems NULL (safety) */
+            PatchCompressedVectorRead(); /* Validate vtable in compressed vector read (safety) */
+            PatchNullThunk_00419960(); /* NULL-check [ECX+0x1C] vtable thunk (AsteroidField tick) */
+            PatchStreamReadNullBuffer(); /* NULL buffer check in stream read (network deserialization) */
             PatchDebugConsoleToFile(); /* Redirect Python exceptions to state_dump.log */
             /* PatchChecksumAlwaysPass REMOVED - flag=0 means "no mismatches"
              * which is CORRECT for first player (no peers to compare against).
@@ -4709,11 +5058,69 @@ BOOL WINAPI DllMain(HINSTANCE hInstDLL, DWORD reason, LPVOID reserved) {
 }
 
 /* ================================================================
+ * Hybrid mode: DDraw7 vtable intercepts
+ *
+ * When hybrid mode is active, we patch the real IDirectDraw7 vtable to:
+ * - SetCooperativeLevel (slot 20): Passthrough, capture HWND, minimize
+ * - SetDisplayMode (slot 21): Force 32bpp (16bpp not supported on modern GPUs)
+ *
+ * Combined with PatchSkipDisplayModeSearch (which bypasses mode enumeration),
+ * this lets the engine go fullscreen exclusive at a GPU-supported bit depth.
+ * ================================================================ */
+typedef HRESULT (WINAPI *PFN_SetCooperativeLevel)(void*, HWND, DWORD);
+typedef HRESULT (WINAPI *PFN_SetDisplayMode)(void*, DWORD, DWORD, DWORD, DWORD, DWORD);
+static PFN_SetCooperativeLevel g_pfnRealSetCoopLevel = NULL;
+static PFN_SetDisplayMode g_pfnRealSetDisplayMode = NULL;
+
+static HRESULT WINAPI HybridSetCooperativeLevel(void* pThis, HWND hwnd, DWORD flags) {
+    HRESULT hr;
+    static int logCount = 0;
+    static BOOL exclusiveSet = FALSE;
+
+    g_hGameWindow = hwnd;
+    if (logCount < 10)
+        ProxyLog("HYBRID SetCooperativeLevel hwnd=%p flags=0x%08X%s", hwnd, flags,
+                 (exclusiveSet && !(flags & DDSCL_EXCLUSIVE)) ? " -> BLOCKED (keep exclusive)" : "");
+    logCount++;
+
+    /* Once we're in exclusive mode, block any attempt to drop to DDSCL_NORMAL.
+       The engine's "fallback to windowed" path would destroy our exclusive surface chain. */
+    if (exclusiveSet && !(flags & DDSCL_EXCLUSIVE)) {
+        return DD_OK;  /* Pretend it succeeded, stay in exclusive mode */
+    }
+
+    hr = g_pfnRealSetCoopLevel(pThis, hwnd, flags);
+    if (logCount <= 10)
+        ProxyLog("  SetCooperativeLevel result=0x%08X", hr);
+
+    if (SUCCEEDED(hr) && (flags & DDSCL_EXCLUSIVE)) {
+        exclusiveSet = TRUE;
+    }
+
+    return hr;
+}
+
+static HRESULT WINAPI HybridSetDisplayMode(void* pThis, DWORD w, DWORD h, DWORD bpp,
+                                           DWORD refreshRate, DWORD flags) {
+    HRESULT hr;
+    DWORD origBpp = bpp;
+    static int logCount = 0;
+    /* Force 32bpp — 16bpp fullscreen not supported on modern displays */
+    if (bpp == 16) bpp = 32;
+    hr = g_pfnRealSetDisplayMode(pThis, w, h, bpp, refreshRate, flags);
+    if (logCount < 5)
+        ProxyLog("HYBRID SetDisplayMode %lux%lu@%lu (was %lu) result=0x%08X",
+                 w, h, bpp, origBpp, hr);
+    logCount++;
+    return hr;
+}
+
+/* ================================================================
  * Exported functions
  * ================================================================ */
 HRESULT WINAPI DirectDrawCreate(GUID* lpGUID, void** lplpDD, void* pUnkOuter) {
     ProxyLog("DirectDrawCreate called");
-    if (g_bStubMode) {
+    if (g_bStubMode && !g_bHybridMode) {
         *lplpDD = CreateProxyDDraw7();
         return *lplpDD ? DD_OK : DDERR_GENERIC;
     }
@@ -4723,18 +5130,38 @@ HRESULT WINAPI DirectDrawCreate(GUID* lpGUID, void** lplpDD, void* pUnkOuter) {
 
 HRESULT WINAPI DirectDrawCreateEx(GUID* lpGUID, void** lplpDD,
                                                          const GUID* iid, void* pUnkOuter) {
-    ProxyLog("DirectDrawCreateEx called");
-    if (g_bStubMode) {
+    ProxyLog("DirectDrawCreateEx called (hybrid=%d)", g_bHybridMode);
+    if (g_bStubMode && !g_bHybridMode) {
         *lplpDD = CreateProxyDDraw7();
         return *lplpDD ? DD_OK : DDERR_GENERIC;
     }
-    if (g_pfnDDCreateEx) return g_pfnDDCreateEx(lpGUID, lplpDD, iid, pUnkOuter);
+    if (g_pfnDDCreateEx) {
+        HRESULT hr = g_pfnDDCreateEx(lpGUID, lplpDD, iid, pUnkOuter);
+        ProxyLog("  DirectDrawCreateEx result=0x%08X obj=%p", hr, *lplpDD);
+        /* In hybrid mode, patch the real DDraw7 vtable for windowed operation */
+        if (g_bHybridMode && SUCCEEDED(hr) && *lplpDD) {
+            void** vtbl = *(void***)(*lplpDD);  /* IDirectDraw7 vtable */
+            DWORD oldProt;
+            /* Patch slots 20 (SetCooperativeLevel) and 21 (SetDisplayMode) */
+            if (VirtualProtect(&vtbl[20], 2 * sizeof(void*), PAGE_READWRITE, &oldProt)) {
+                if (!g_pfnRealSetCoopLevel) {
+                    g_pfnRealSetCoopLevel = (PFN_SetCooperativeLevel)vtbl[20];
+                    g_pfnRealSetDisplayMode = (PFN_SetDisplayMode)vtbl[21];
+                }
+                vtbl[20] = (void*)HybridSetCooperativeLevel;
+                vtbl[21] = (void*)HybridSetDisplayMode;
+                VirtualProtect(&vtbl[20], 2 * sizeof(void*), oldProt, &oldProt);
+                ProxyLog("HYBRID: Patched DDraw7 vtable[20,21] (SetCoopLevel + SetDisplayMode)");
+            }
+        }
+        return hr;
+    }
     return DDERR_GENERIC;
 }
 
 HRESULT WINAPI DirectDrawEnumerateA(void* lpCallback, void* lpContext) {
     ProxyLog("DirectDrawEnumerateA called");
-    if (g_bStubMode) {
+    if (g_bStubMode && !g_bHybridMode) {
         typedef BOOL (CALLBACK *LPDDENUMCALLBACKA)(GUID*, char*, char*, void*);
         LPDDENUMCALLBACKA cb = (LPDDENUMCALLBACKA)lpCallback;
         if (cb) cb(NULL, g_szDeviceName, "display", lpContext);
@@ -4746,7 +5173,7 @@ HRESULT WINAPI DirectDrawEnumerateA(void* lpCallback, void* lpContext) {
 
 HRESULT WINAPI DirectDrawEnumerateExA(void* lpCallback, void* lpContext, DWORD dwFlags) {
     ProxyLog("DirectDrawEnumerateExA called");
-    if (g_bStubMode) {
+    if (g_bStubMode && !g_bHybridMode) {
         typedef BOOL (CALLBACK *LPDDENUMCALLBACKEXA)(GUID*, char*, char*, void*, HMONITOR);
         LPDDENUMCALLBACKEXA cb = (LPDDENUMCALLBACKEXA)lpCallback;
         if (cb) cb(NULL, g_szDeviceName, "display", lpContext, NULL);

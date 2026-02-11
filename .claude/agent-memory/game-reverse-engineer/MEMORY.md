@@ -175,7 +175,18 @@
 
 ## Subsystem Creation Chain (2026-02-09)
 - See [subsystem-creation-analysis.md](subsystem-creation-analysis.md) for full analysis
+- See [nif-loading-pipeline.md](nif-loading-pipeline.md) for full NIF->subsystem trace (2026-02-10)
 - PatchSubsystemHashCheck ALREADY bypasses hash when subsystem list is NULL
+
+## NIF Loading Pipeline Analysis (2026-02-10)
+- See [nif-loading-pipeline.md](nif-loading-pipeline.md) for full call chain
+- Ship NIF loading: FUN_006c9100 -> FUN_00817a40 (NiStream::Load) -> FUN_006c9520 (AddToSet)
+- NiStream::Load is FILE I/O (fopen), NOT renderer-dependent
+- AddToSet (0x006c9520) searches NIF for NiNode "Scene Root" - fails if NIF not loaded
+- SetupProperties (0x005b3fb0) called via vtable, not directly - can't find xrefs in decompiled
+- Python InitObject calls: LoadModel -> SetupModel(C++) -> LoadPropertySet -> SetupProperties(C++)
+- FUN_006f8ab0 = Python module.function dispatcher (imports module, gets attr, calls)
+- **DIAGNOSTIC GAP**: C++ DIAG hook fires but Python monkey-patch produces no log output
 
 ## SOLVED: Compressed Vector Read Crash (2026-02-09)
 - See [compressed-vector-crash.md](compressed-vector-crash.md) for full analysis

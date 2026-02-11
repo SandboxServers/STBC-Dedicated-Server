@@ -13,7 +13,8 @@ See also: [message-trace-vs-packet-trace.md](message-trace-vs-packet-trace.md) f
 6. [State Update (0x1C) - The Big One](#state-update-0x1c---the-big-one)
 7. [Object Replication](#object-replication)
 8. [Python Message Dispatch](#python-message-dispatch)
-9. [Subsystem Hash (Anti-Cheat)](#subsystem-hash-anti-cheat)
+9. [Ship Subsystem Type Catalog](#ship-subsystem-type-catalog)
+10. [Subsystem Hash (Anti-Cheat)](#subsystem-hash-anti-cheat)
 
 ---
 
@@ -945,6 +946,70 @@ Remaining: event-specific payload
 `FUN_0069fda0`: These are NOT Python messages. They forward engine-level events (weapon fire state, cloak, warp) to all peers in the "Forward" distribution list. The handler creates a TGEvent with a hardcoded event code (different per opcode), then posts it locally and to all other clients.
 
 These are sent by `FUN_006a17c0` which registers handlers for local engine events and serializes them into network messages.
+
+---
+
+## Ship Subsystem Type Catalog
+
+**Validated by JMP detour trace** (2026-02-10, stock dedicated server, 223K lines).
+See [subsystem-trace-analysis.md](subsystem-trace-analysis.md) for full trace data.
+
+### Vtable-to-Type Map
+
+| vtable | Type | Named Slot | Offset | Instances (Sovereign) |
+|--------|------|-----------|--------|----------------------|
+| 0x0088A1F0 | PoweredSubsystem | Powered | +2B0 | 1 |
+| 0x00892C98 | PowerReactor | Power | +2C4 | 1 (+1 secondary in list) |
+| 0x00892D10 | LifeSupport | Unk_C | +2CC | 1 |
+| 0x00892E24 | WarpDrive | Unk_E | +2D8 | 1 |
+| 0x00892EAC | CloakingDevice | Cloak | +2C8 | 1 |
+| 0x00892F34 | RepairSubsystem | Repair | +2C0 | 1 |
+| 0x00892FC4 | ImpulseEngine | -- | -- | 4 |
+| 0x00893040 | SensorArray | Unk_B | +2D0 | 1 |
+| 0x00893194 | PhaserEmitter | -- | -- | 8 |
+| 0x00893240 | PhaserController | Phaser | +2B8 | 1 |
+| 0x00893598 | ShieldGenerator | Shield | +2B4 | 1 |
+| 0x00893630 | TorpedoTube | -- | -- | 6 (4 fwd, 2 aft) |
+| 0x008936F0 | TractorBeam | -- | -- | 4 |
+| 0x00893794 | PulseWeapon | Pulse | +2D4 | 1 |
+| 0x00895340 | ShipRefNiNode | ShipRef | +2E0 | 1 (set separately) |
+
+### Named Slot Layout (ship+0x2B0 to ship+0x2E4)
+
+```
++2B0  Powered      0x0088A1F0   Master powered subsystem
++2B4  Shield       0x00893598   Shield generator
++2B8  Phaser       0x00893240   Phaser controller
++2BC  (unused)     NULL         Always NULL
++2C0  Repair       0x00892F34   Auto-repair
++2C4  Power        0x00892C98   Power reactor
++2C8  Cloak        0x00892EAC   Cloaking device (present on all ships)
++2CC  LifeSupport  0x00892D10   Structural/life support
++2D0  SensorArray  0x00893040   Sensors
++2D4  Pulse        0x00893794   Pulse weapons (present on all ships)
++2D8  WarpDrive    0x00892E24   Warp drive
++2DC  (unused)     NULL         Always NULL
++2E0  ShipRef      0x00895340   NiNode scene graph backpointer
+```
+
+### Anti-Cheat Hash Field Offsets (from ship+0x27C)
+
+These offsets are used by FUN_005b5eb0 to locate subsystem pointers for hash computation:
+
+| Offset from +0x27C | Subsystem | Hashed Fields |
+|---------------------|-----------|---------------|
+| +0x34 | Sensors | health + properties |
+| +0x38 | Unknown1 | via FUN_005b6330 |
+| +0x3C | Unknown2 | via FUN_005b6330 |
+| +0x40 | Unknown3 | via FUN_005b6330 |
+| +0x44 | Hull | health + 6 shield facings |
+| +0x48 | Shield | overall health |
+| +0x4C | Engine | health + property |
+| +0x50 | Weapons | health + 4 properties |
+| +0x54 | Cloak | health only |
+| +0x58 | Power | via FUN_005b6330 |
+| +0x5C | Repair | health + property |
+| +0x60 | Crew | health only |
 
 ---
 

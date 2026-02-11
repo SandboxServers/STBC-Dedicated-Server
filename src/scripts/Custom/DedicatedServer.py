@@ -1264,7 +1264,11 @@ def TopWindowInitialized(pTopWindow):
             return 1
 
         _sts_mod.InitObject = _wrapped_InitObject
-        _log("  Monkey-patched SpeciesToShip.InitObject with tracing")
+        # Set __dummy__ so the C++ dispatcher (FUN_006f7d90) uses
+        # this cached module directly instead of reimporting via
+        # PyImport_ImportModule (which returns the top-level package).
+        _sts_mod.__dummy__ = 1
+        _log("  Monkey-patched SpeciesToShip.InitObject with tracing (+ __dummy__)")
     except:
         ei = sys.exc_info()
         _log("  SpeciesToShip monkey-patch FAILED: %s: %s" %

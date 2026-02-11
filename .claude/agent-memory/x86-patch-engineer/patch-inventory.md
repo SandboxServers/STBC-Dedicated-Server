@@ -12,9 +12,10 @@
 9. PatchNetworkUpdateNullLists - code cave at 0x005b1d57 (clear SUB/WPN flags when lists NULL)
 10. PatchSubsystemHashCheck - code cave at 0x005b22b5 (fix anti-cheat false positive)
 11. PatchCompressedVectorRead - vtable validation at 0x006d2eb0/0x006d2fd0
-12. PatchDebugConsoleToFile - redirect Python debug console output to log file
-13. PatchDirectDrawCreateExCache - cache DirectDrawCreateEx result for engine reuse
-14. SigAbrtHandler - SIGABRT signal handler (signal(), not binary patch)
+12. PatchNullThunk_00419963 - code cave at 0x00419960 (NULL-check this+[this+0x1C] vtable thunk, AsteroidField tick)
+13. PatchDebugConsoleToFile - redirect Python debug console output to log file
+14. PatchDirectDrawCreateExCache - cache DirectDrawCreateEx result for engine reuse
+15. SigAbrtHandler - SIGABRT signal handler (signal(), not binary patch)
 
 ## Removed Patches (no longer needed)
 - PatchRendererCtorEntry - let real ctor run (was zeroing object)
