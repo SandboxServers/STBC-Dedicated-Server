@@ -9,8 +9,8 @@ Known issues, their symptoms, and how to diagnose them.
 | Server doesn't boot | `ddraw_proxy.log` stops mid-phase | Python error or crash during bootstrap | Check `dedicated_init.log` and `crash_dump.log` |
 | Client can't find server on LAN | No GameSpy queries in `packet_trace.log` | GameSpy heartbeat not started, or UDP port 22101 blocked | Check Phase 3 in `ddraw_proxy.log` |
 | Client connects then immediately disconnects | Checksum exchange starts but doesn't complete | Checksum mismatch (modified scripts in non-exempt directory) | Check `packet_trace.log` for opcode 0x20/0x21 flow |
-| First connection always times out | Client must reconnect once | Unknown — pre-existing issue | **Not fixed** |
-| Client reaches ship select, disconnects ~3 sec later | `packet_trace.log` shows flags=0x00 in StateUpdate | Empty StateUpdates: ship subsystem list is NULL because NIF models don't load headlessly | **Current investigation** — see [black-screen-investigation.md](black-screen-investigation.md) |
+| First connection always times out | Client must reconnect once | Unknown — stock-dedi does NOT have this issue | **Not fixed** |
+| Client reaches ship select, disconnects ~3 sec later | `packet_trace.log` shows flags=0x00 in StateUpdate | Empty StateUpdates: ship subsystem list was NULL | **FIXED** — DeferredInitObject + InitNetwork timing |
 | `scoring dict fix rc=-1` in log | `dedicated_init.log` | Python exception in score dictionary registration | Deferred — non-blocking |
 | Crash at specific address | `crash_dump.log` with register dump | Unpatched crash site in headless mode | Add a new binary patch for the address |
 | `ObjNotFound for 0x3FFFFFFF` in packet trace | Opcode 0x1D in decoded packets | **Normal** — stock server does this too. It's a sentinel query. | Not a bug |
@@ -18,21 +18,35 @@ Known issues, their symptoms, and how to diagnose them.
 
 ## Detailed Issue Descriptions
 
-### Empty StateUpdates (Current Issue)
+### Empty StateUpdates (FIXED)
 
-**What happens**: Server sends StateUpdate packets with `flags=0x00` (empty) instead of `flags=0x20` (subsystem health data). Client interprets this as connection failure after ~3 seconds.
+**What happened**: Server sent StateUpdate packets with `flags=0x00` (empty) instead of `flags=0x20` (subsystem health data). Client interpreted this as connection failure after ~3 seconds.
 
-**Why**: NIF ship models require the D3D7 renderer pipeline to load textures and geometry. Our stub renderer satisfies the COM interface but doesn't actually load model data. Without loaded models, the subsystem property list at `ship+0x284` is NULL. Our `PatchNetworkUpdateNullLists` correctly prevents sending garbage by clearing the flags, but the result is that no subsystem data reaches the client.
+**Root cause**: NIF ship models didn't load in headless mode, leaving the subsystem linked list at `ship+0x284` NULL. PatchNetworkUpdateNullLists correctly cleared flags to prevent malformed packets, but the result was empty state updates.
 
-**Evidence**: Stock server sends `flags=0x20` with `startIdx` cycling through `0, 2, 6, 8, 10` every ~100ms. Our server sends `flags=0x00` every tick.
+**Fix**: DeferredInitObject (Python-driven ship creation) now loads NIF models after the client selects a ship. The full subsystem creation pipeline runs, populating ship+0x284 with 33 subsystems. Combined with the InitNetwork timing fix (see below), the server now sends flags=0x20 with real health data.
 
-**Fix approaches**: See [empty-stateupdate-root-cause.md](empty-stateupdate-root-cause.md).
+See [empty-stateupdate-root-cause.md](empty-stateupdate-root-cause.md) for the full 5-step causal chain and resolution.
+
+### InitNetwork Timing (FIXED)
+
+**What happened**: MISSION_INIT_MESSAGE arrived 13+ seconds after client connect instead of ~2 seconds (stock timing). By then, the client had already stopped responding.
+
+**Root cause**: The `bc` flag at `peer+0xBC` in the TGWinsockNetwork peer structure was used to detect checksum completion. This flag takes 200+ ticks to transition from 0→1, or in some cases never flips at all. The actual checksum exchange completes within 1-2 ticks.
+
+**Fix**: Detect new peers by scanning the WSN peer array directly. When a new peer ID appears, schedule InitNetwork for 30 ticks later. This fires at connect time (~1.4s), matching stock timing (~2s).
+
+### PatchNetworkUpdateNullLists Safety Cave (DO NOT DISABLE)
+
+**Trap**: Creating a `legacy-null-list-safety-disable.cfg` file disables the safety cave at 0x005B1D57. This causes a **fatal crash** at 0x005B1EDB when the state update loop iterates the server's own ship (player 0) which has NULL subsystem lists. The crash is unrecoverable — MOV EAX,[ECX] → CALL [EAX+0x70] chains through a zeroed vtable. The safety cave MUST remain enabled even with DeferredInitObject, because the server's own ship (player 0) still has NULL subsystems.
 
 ### First Connection Timeout
 
 **What happens**: The first client to connect always times out and must reconnect. Second attempt works.
 
-**Why**: Not fully diagnosed. Likely related to timing of the NewPlayerHandler callback and initial packet exchange.
+**Why**: Not fully diagnosed. Stock dedicated server does NOT have this issue — the stock checksum exchange completes in ~1.1 seconds and the client stays connected on the first attempt. This is our bug, not an inherent game limitation.
+
+**Known data**: Stock packet trace shows client connects at 19:44:56, checksums done by 19:44:58 (1.1s), no timeout. Our server likely has a timing issue in the initial connection establishment, possibly related to the peek-based UDP router or GameSpy initialization timing.
 
 **Workaround**: Connect, wait for timeout, reconnect.
 
@@ -53,6 +67,20 @@ See [veh-cascade-triage.md](veh-cascade-triage.md) for the full analysis.
 **Reality**: Flag=0 means "no mismatches" (correct for the first player, who has no peers to compare against). Flag=1 means "mismatches detected" and triggers `FUN_006f3f30` which appends mismatch correction data to the Settings packet — corrupting it.
 
 **Lesson**: Always verify what 0 and 1 mean in context. "Pass" and "fail" are assumptions.
+
+### Crash at 0x005054C7 (MultiplayerGame vtable call)
+
+**What happens**: Fatal crash with `ECX=0x00000000`, `EIP=0x005054C7`. The instruction is
+`MOV EAX,[ECX]; CALL [EAX+0x11C]` — a vtable call on a NULL object pointer.
+
+**When**: During MultiplayerGame creation or early game setup. The function reads the global
+at `0x009878CC` and makes a vtable call. If the global is NULL at that point, it crashes.
+
+**Impact**: The CrashDumpHandler logs the crash to `crash_dump.log` and the process terminates.
+The server must be restarted.
+
+**Status**: Observed but not consistently reproducible. May be a race condition during bootstrap.
+The server usually starts fine — this crash is intermittent.
 
 ## How to Diagnose a New Crash
 

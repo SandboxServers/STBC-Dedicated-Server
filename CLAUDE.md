@@ -3,7 +3,15 @@
 Headless dedicated server for Star Trek: Bridge Commander multiplayer, implemented as a DDraw proxy DLL. Cross-compiled from WSL2, drives the game engine via C code + embedded Python 1.5.
 
 ## Repo Layout
-- `src/proxy/ddraw_main.c` - **THE main file**. All C-side changes go here (~3800 lines)
+- `src/proxy/ddraw_main.c` - Entry point, includes 7 split files (~6260 lines total)
+- `src/proxy/ddraw_main/` - Split implementation files:
+  - `binary_patches_and_python_bridge.inc.c` - All binary patches, Python bridge (RunPyCode)
+  - `game_loop_and_bootstrap.inc.c` - GameLoopTimerProc, bootstrap phases, DeferredInitObject
+  - `core_runtime_and_exports.inc.c` - DllMain, COM proxy setup, exports
+  - `packet_trace_and_decode.inc.c` - Packet tracing, AlbyRules cipher, opcode decoding
+  - `socket_and_input_hooks.inc.c` - sendto/recvfrom hooks, input handling
+  - `runtime_hooks_and_iat.inc.c` - IAT hooking, runtime patches
+  - `message_factory_hooks.inc.c` - TGMessage factory interception
 - `src/proxy/` - Other proxy DLL sources (ddraw7, surface7, d3d7, header, def)
 - `src/scripts/Custom/DedicatedServer.py` - Python server config (checksum exempt)
 - `src/scripts/Custom/ClientLogger.py` - Client-side diagnostic hooks (checksum exempt)
@@ -29,9 +37,9 @@ make logs-client    # View client debug log
 make clean          # Remove build artifacts
 ```
 
-## Current Status: CLIENT DISCONNECT AFTER SHIP SELECT
-Client connects, checksums pass, reaches ship selection, sees ship, but disconnects ~3 sec later.
-Message: "You have been disconnected from the host computer"
+## Current Status: FUNCTIONAL MULTIPLAYER (COLLISION + SUBSYSTEM DAMAGE WORKING)
+Client connects, checksums pass, reaches ship selection, picks ship, and plays with working
+collision damage and subsystem damage. The main multiplayer loop is functional.
 
 ### What Works
 - Headless boot (all 4 bootstrap phases), Python DedicatedServer.TopWindowInitialized() runs
@@ -39,17 +47,23 @@ Message: "You have been disconnected from the host computer"
 - GameSpy LAN discovery, checksum exchange (4 rounds), keepalive
 - Import hook patches mission handlers for headless mode (func_code replacement)
 - Client reaches ship selection screen, player appears on scoreboard
+- **DeferredInitObject**: Python-driven ship creation with real NIF models and subsystems
+- **InitNetwork timing**: Peer-array detection fires within ~1.4s (matches stock ~2s timing)
+- **Collision damage**: Ships take hull and subsystem damage from collisions
+- **Subsystem damage**: Individual subsystems (shields, weapons, engines) take and report damage
+- **StateUpdate flags=0x20**: Server sends real subsystem health data (was 0x00/empty)
 - Packet trace system: full hex dumps to `game/server/packet_trace.log`
 - Client-side logging: `game/client/client_debug.log`
 - CrashDumpHandler (SetUnhandledExceptionFilter) logs full diagnostics on any crash
 
 ### Known Issues
-- Client disconnects ~3 sec after ship selection (empty StateUpdates - flags=0x00 instead of 0x20)
-- Root cause: NIF models don't load headlessly -> subsystem list at ship+0x284 is NULL
-- First connection always times out (client must reconnect)
+- First connection always times out (client must reconnect) — stock-dedi does NOT have this issue
 - `scoring dict fix rc=-1` - Python code for SCORE_MESSAGE send has an error
+- Server's own ship object (player 0) still sends flags=0x00 (harmless — host's dummy ship)
+- 0x35 GameState byte[1]: we send 0x01, stock sends 0x09 (lobby slot count)
+- Double NewPlayerInGame: engine handler + our GameLoopTimerProc both fire
 
-### Key Fixes Applied (in ddraw_main.c)
+### Key Fixes Applied (in ddraw_main.c split files)
 1. **TGL FindEntry NULL fix** - code cave at 0x006D1E10, returns NULL when ECX is NULL
 2. **Network NULL list guard** - code cave at 0x005B1D57, clears SUB/WPN flags when ship+0x284 NULL
 3. **Subsystem hash check fix** - code cave at 0x005B22B5, prevents false anti-cheat kicks
@@ -58,6 +72,8 @@ Message: "You have been disconnected from the host computer"
 6. **NewPlayerInGame handshake** - GameLoopTimerProc calls FUN_006a1e70 when player count increases
 7. **Scoring dict registration** - adds player to scoring dictionaries after NewPlayerInGame
 8. **Renderer pipeline proxy** - D3D7/DDraw7/Surface7 COM proxies provide valid objects to engine
+9. **DeferredInitObject** - Python-driven ship creation: loads NIF, creates subsystems, populates ship+0x284
+10. **InitNetwork peer-array detection** - detects new peers from WSN peer array (replaces broken bc-flag)
 
 ### Diagnostic Logs
 - `game/server/ddraw_proxy.log` - Main proxy log (boot, game loop, patches)
@@ -124,18 +140,21 @@ Then opcode 0x01 (single byte).
 - `11_tgnetwork.c` - TGWinsockNetwork, packet I/O
 
 ## Documentation Index
-- [docs/black-screen-investigation.md](docs/black-screen-investigation.md) - Current status: client disconnect investigation
 - [docs/dedicated-server.md](docs/dedicated-server.md) - Bootstrap sequence, patches, crash handling
+- [docs/architecture-overview.md](docs/architecture-overview.md) - How the proxy DLL works, COM chain, bootstrap phases
+- [docs/multiplayer-flow.md](docs/multiplayer-flow.md) - Complete client/server join flow (connect → play)
 - [docs/wire-format-spec.md](docs/wire-format-spec.md) - Complete wire format: opcodes, StateUpdate, compressed types
 - [docs/network-protocol.md](docs/network-protocol.md) - Protocol architecture, event system, handler tables
 - [docs/message-trace-vs-packet-trace.md](docs/message-trace-vs-packet-trace.md) - Stock-dedi opcode cross-reference
-- [docs/empty-stateupdate-root-cause.md](docs/empty-stateupdate-root-cause.md) - Why flags=0x00 (5-step causal chain)
-- [docs/veh-cascade-triage.md](docs/veh-cascade-triage.md) - Why VEH was removed (4-stage crash chain)
-- [docs/multiplayer-flow.md](docs/multiplayer-flow.md) - Complete client/server join flow
+- [docs/subsystem-trace-analysis.md](docs/subsystem-trace-analysis.md) - Ship subsystem creation pipeline (from stock trace)
+- [docs/empty-stateupdate-root-cause.md](docs/empty-stateupdate-root-cause.md) - Why flags=0x00 happened (RESOLVED)
+- [docs/black-screen-investigation.md](docs/black-screen-investigation.md) - Client disconnect investigation (RESOLVED)
+- [docs/veh-cascade-triage.md](docs/veh-cascade-triage.md) - Why VEH was removed (historical)
+- [docs/lessons-learned.md](docs/lessons-learned.md) - Debugging techniques, pitfalls, protocol discoveries
+- [docs/troubleshooting.md](docs/troubleshooting.md) - Symptom-to-cause quick reference
 - [docs/swig-api.md](docs/swig-api.md) - SWIG function reference
 - [docs/decompiled-functions.md](docs/decompiled-functions.md) - Key function analysis
 - [docs/function-map.md](docs/function-map.md) - 18K-function organized map
-- [docs/lessons-learned.md](docs/lessons-learned.md) - Debugging techniques, pitfalls, protocol discoveries
 
 ## Agent Team
 

@@ -5,6 +5,24 @@
 - NetImmerse 3.1 engine, Winsock UDP, embedded Python 1.5.2 (SWIG 1.x)
 - stbc.exe: 32-bit Windows, base 0x400000, ~5.9MB
 
+## State Dump Baseline (2026-02-12, no custom client connected)
+- Stock-dedi `state_dump.log` shows lifecycle:
+  - Dumps #1-#3: `CurrentGame: None`
+  - Dumps #4-#17: `CurrentGame: <C Game instance ...>` (in-game)
+  - Dumps #18-#19: `CurrentGame: None`
+- In stock in-game dumps, `CurrentGame` is a real SWIG object with `this/thisown`;
+  `.GetPlayer() = None` for dedicated host role.
+- `g_pStartingSet` flips from `None` to `<C SetClass ...>` beginning at dump #6.
+- Custom dedicated dump #1 is already in-game but reports raw-pointer
+  `CurrentGame: _<addr>_p_Game` (`0 attributes`), indicating wrapper mismatch
+  versus stock object exposure.
+
+## App Wrapper Parity Fix (2026-02-12)
+- `reference/scripts/App.py` shows stock pattern:
+  `Game_GetCurrentGame -> Appc.Game_GetCurrentGame -> GamePtr(...)`.
+- Added dedicated compat wrappers in `src/scripts/Custom/DedicatedServer.py`
+  to wrap raw builtin App returns into Ptr objects for key APIs.
+
 ## Key Architecture Discoveries
 - See [architecture.md](architecture.md) for detailed notes
 - See [crash-analysis.md](crash-analysis.md) for InitNetwork crash chain analysis
@@ -180,13 +198,16 @@
 
 ## NIF Loading Pipeline Analysis (2026-02-10)
 - See [nif-loading-pipeline.md](nif-loading-pipeline.md) for full call chain
-- Ship NIF loading: FUN_006c9100 -> FUN_00817a40 (NiStream::Load) -> FUN_006c9520 (AddToSet)
-- NiStream::Load is FILE I/O (fopen), NOT renderer-dependent
-- AddToSet (0x006c9520) searches NIF for NiNode "Scene Root" - fails if NIF not loaded
-- SetupProperties (0x005b3fb0) called via vtable, not directly - can't find xrefs in decompiled
-- Python InitObject calls: LoadModel -> SetupModel(C++) -> LoadPropertySet -> SetupProperties(C++)
-- FUN_006f8ab0 = Python module.function dispatcher (imports module, gets attr, calls)
-- **DIAGNOSTIC GAP**: C++ DIAG hook fires but Python monkey-patch produces no log output
+- See [ship-creation-callchain.md](ship-creation-callchain.md) for full HOST-side analysis (2026-02-13)
+
+## Ship Creation Call Chain (2026-02-13)
+- FUN_0069f620 (ObjCreateTeam handler) -> FUN_005a1f50 (deserialize) -> FUN_005b0e80 (InitObject)
+- FUN_005b0e80 is a VTABLE ENTRY (never called directly) in Ship ReadStream chain
+- FUN_006f8ab0 (TG_CallPythonFunction) does NOT use PyRun_SimpleString
+  - Uses: FUN_006f7d90 (__import__) + FUN_0074c140 (getattr) + FUN_00776cf0 (PyObject_CallObject)
+  - SHOULD work in TIMERPROC context (different code path)
+- FUN_006f7d90 converts dots to underscores for sys.modules key
+- Possible InitObject failure: import fails, Python exception, or deserialization never reaches vtable
 
 ## SOLVED: Compressed Vector Read Crash (2026-02-09)
 - See [compressed-vector-crash.md](compressed-vector-crash.md) for full analysis
@@ -203,3 +224,18 @@
 - ACTUAL BeamFire = opcode 0x1A, sent by FUN_00575480 (PhaserSystem::SendFireMessage)
 - Opcodes 0x07-0x0B, 0x0E-0x10, 0x1B all go through FUN_0069FDA0 (generic event forward)
 - Torpedoes are game OBJECTS: fire creates projectile, replicated via 0x02/0x03 (ObjectCreate)
+
+## Dump Baseline Delta (2026-02-12)
+- Stock dedicated `state_dump.log` shows canonical host-start path in dump #2:
+  `HandleHostStartClicked -> HandleStartGame -> ProcessMessageHandler -> MissionShared.Initialize -> MissionShared.SetupEventHandlers -> SpeciesToSystem.CreateSystemFromSpecies`.
+- Stock transitions from menu baseline to valid game state in one run:
+  `CurrentGame: None` at dump #1, then `CurrentGame: <C Game instance>` at dump #2.
+- Custom server dump currently captures only 3 code paths (`_ds_safe_import`, `PatchLoadedMissionModules`, `<string>:?`), indicating bootstrap bypass of the canonical menu/start path.
+- This bypass is a primary suspect when behavior diverges despite `CurrentGame` existing.
+
+## Stock 4-Stage Startup Baseline (2026-02-12, new capture)
+- Dump #1 (main menu): `CurrentGame=None`, `sys.modules=142`, `g_pDatabase=None`, `g_pStartingSet=None`.
+- Dump #2 (host game screen): still `CurrentGame=None`, `sys.modules=158` after `BuildMultiplayerPreGameMenus/BuildHostPane/BuildMissionMenu`.
+- Dump #3 (system select lobby): `CurrentGame` created, `sys.modules=334`, `g_pDatabase!=None`, but `g_pStartingSet=None`.
+- Dump #4 (scoreboard): `StartMission -> SpeciesToSystem.CreateSystemFromSpecies -> App.InitializeAllSets -> Systems.Multi1.Initialize`, `sys.modules=348`, `g_pStartingSet!=None`.
+- Therefore `CurrentGame` appears one stage BEFORE starting set/system creation.

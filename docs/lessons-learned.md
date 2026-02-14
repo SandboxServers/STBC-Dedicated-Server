@@ -12,6 +12,43 @@
   Process terminates cleanly on any unhandled exception. Each crash site is then fixed with a
   targeted binary patch (code cave or instruction patch).
 
+## Critical Timing Discovery: bc Flag is Unreliable
+The `bc` flag at `peer+0xBC` in the TGWinsockNetwork peer structure was used to detect when
+a peer's checksum exchange completed. **This flag is unreliable**:
+- Takes 200+ ticks (~7 seconds) to transition from 0 to 1
+- In some test runs, **never flips at all** (remained 0 after 1000+ ticks)
+- Is set deep in the checksum pipeline, NOT at actual completion time
+- The actual checksum exchange completes within 1-2 ticks of connection
+
+**Correct approach**: Detect new peers by scanning the WSN peer array directly (`WSN+0x2C` =
+array pointer, `WSN+0x30` = count, each peer at `pp+0x18` = peer ID). This fires at connect
+time and matches stock server timing.
+
+## DeferredInitObject: How Headless NIF Loading Works
+NIF model loading is **not renderer-dependent** — it's file I/O via NiStream::Load. The problem
+was that the game only creates ship objects in response to network deserialization (ObjCreateTeam),
+and the initial object has no NIF model loaded. The solution:
+
+1. C-side GameLoopTimerProc detects new ship objects (polls after InitNetwork fires)
+2. Python `DeferredInitObject(playerID)` determines ship class from species index
+3. Calls `ship.LoadModel(nifPath)` on the ship object
+4. Engine's AddToSet/SetupProperties pipeline creates 33 subsystem objects
+5. ship+0x284 linked list is now populated, StateUpdate sends real health data
+
+This is called "deferred" because it happens after the ship already exists on the network.
+
+## PatchNetworkUpdateNullLists MUST Stay Enabled
+Even with DeferredInitObject creating subsystems for client ships, the server's own player-0
+ship still has NULL subsystems (it's a dummy ship that never gets a NIF model). The safety cave
+at 0x005B1D57 clears SUB/WPN flags for objects with NULL ship+0x284. **Disabling this causes a
+fatal crash** at 0x005B1EDB. Tested and confirmed.
+
+## MISSION_INIT_MESSAGE Timing is Critical
+Stock server sends MISSION_INIT_MESSAGE ~2 seconds after client connects. If it arrives too
+late (our broken path: ~13 seconds), the client has already stopped responding to packets.
+The timing fix (peer-array detection instead of bc-flag) brought this down to ~1.4 seconds,
+which is within the stock's expected window.
+
 ## Common Pitfalls
 - **WSN+0x30 is NOT player count**: It's a monotonically increasing counter (packet/connection counter). Don't use it to track active players.
 - **connState naming is inverted**: State 2 = HOST (not client), State 3 = CLIENT (not host).
@@ -39,9 +76,9 @@
   0x20 (SUB). These are mutually exclusive by direction. The decompiled code at FUN_005b17f0
   checks `DAT_0097fa8a` (IsMultiplayer) which may have different values on client vs host side.
   See [docs/message-trace-vs-packet-trace.md](message-trace-vs-packet-trace.md).
-- **Empty StateUpdates cause disconnect**: Our server sends flags=0x00 because ship+0x284
-  (subsystem linked list) is NULL. Stock server sends flags=0x20 with real subsystem health
-  ~10x/sec. Client likely interprets prolonged absence of subsystem data as connection failure.
+- **Empty StateUpdates caused disconnect (FIXED)**: Server was sending flags=0x00 because
+  ship+0x284 was NULL. Fixed by DeferredInitObject (loads NIF model → creates subsystems).
+  Combined with InitNetwork timing fix, client now stays connected with working damage.
   See [docs/empty-stateupdate-root-cause.md](empty-stateupdate-root-cause.md).
 - **message_trace.log captures RECEIVE path only**: It hooks the TGMessage factory at
   deserialization. Every C->S opcode in packet_trace matches message_trace exactly.

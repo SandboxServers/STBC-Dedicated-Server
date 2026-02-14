@@ -1,6 +1,6 @@
-# Root Cause Analysis: Empty StateUpdates (flags=0x00 vs 0x20)
+# Root Cause Analysis: Empty StateUpdates (flags=0x00 vs 0x20) — RESOLVED
 
-Date: 2026-02-10
+Date: 2026-02-10 (analysis), 2026-02-14 (resolved)
 Source: Agent analysis of FUN_005b17f0 code path + stock-dedi comparison
 
 ## The Problem
@@ -91,3 +91,26 @@ But client likely treats missing SUB data as connection failure.
 
 **Recommended: Option 1** - get NIF models to load on the headless server.
 The subsystem chain is entirely file-I/O-based once the NiStream is functional.
+
+## Resolution (2026-02-14)
+
+**Option 1 was implemented** via DeferredInitObject — a Python-driven ship creation path:
+
+1. C-side `GameLoopTimerProc` detects new ship objects (polls after InitNetwork fires)
+2. Python `DeferredInitObject(playerID)` determines ship class from SpeciesToShip mapping
+3. Calls `ship.LoadModel(nifPath)` on the ship object via SWIG API
+4. Engine's AddToSet/SetupProperties pipeline runs, creating 33 runtime subsystem objects
+5. Ship+0x284 linked list is now populated
+6. StateUpdate sends `flags=0x20` with real subsystem health data
+
+**Key insight**: NIF loading works on the headless server because the full NiDX7Renderer
+pipeline was restored (PatchNullSurface JNZ fix). The renderer doesn't draw frames (render
+tick is patched), but the pipeline objects exist, so NIF loading and scene graph construction
+succeed.
+
+**Combined with InitNetwork timing fix**: The `bc` flag at peer+0xBC was unreliable (200+
+ticks to flip, or never). Replaced with peer-array appearance detection, bringing InitNetwork
+timing from ~13s to ~1.4s (stock is ~2s).
+
+**Result**: Collision damage and subsystem damage both work. Client stays connected for
+extended sessions.

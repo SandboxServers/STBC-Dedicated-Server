@@ -1,7 +1,43 @@
-# Client Disconnect Investigation
+# Client Disconnect Investigation (RESOLVED)
 
-## Current Status: CLIENT DISCONNECTS ~3 SEC AFTER SHIP SELECTION
+## Resolution Summary
 
+The client disconnect issue has been **resolved**. Two independent fixes were required:
+
+### Fix 1: DeferredInitObject (NIF Model Loading)
+The headless server now creates ship objects with real NIF models and subsystems via a
+Python-driven deferred initialization path. When a client selects a ship and an ObjCreateTeam
+packet arrives, the C-side `GameLoopTimerProc` detects the new ship object and calls Python
+to load the NIF model, triggering the full subsystem creation pipeline:
+
+```
+ObjCreateTeam received → ship object exists at ship+0x2E0 (ShipRef) = NULL
+→ DeferredInitObject(playerID) called from GameLoopTimerProc
+→ Python: ship.LoadModel(nifPath) loads the NIF file
+→ Engine: AddToSet links properties to "Scene Root" NiNode
+→ Engine: SetupProperties creates 33 runtime subsystem objects
+→ ship+0x284 now populated → StateUpdate sends flags=0x20 with real health data
+```
+
+### Fix 2: InitNetwork Peer-Array Detection
+The `MISSION_INIT_MESSAGE` was arriving 13+ seconds after connect instead of ~2 seconds.
+Root cause: the `bc` flag at `peer+0xBC` was used to detect checksum completion, but it
+takes 200+ ticks to transition (or never transitions at all). Replaced with peer-array
+appearance detection — detects new peers within 1-2 ticks of connection.
+
+| Metric | Before Fix | After Fix | Stock Server |
+|--------|-----------|-----------|-------------|
+| Peer detection | tick ~417 | tick ~51 | tick ~50 |
+| InitNetwork call | ~13s after connect | ~1.4s after connect | ~2s after connect |
+| MISSION_INIT_MESSAGE | Too late (client silent) | On time | On time |
+| Collision damage | Not working | **Working** | Working |
+| Subsystem damage | Not working | **Working** | Working |
+
+---
+
+## Original Problem (Historical)
+
+### Symptom
 Client connects to dedicated server, checksums pass (4 rounds), reaches ship selection screen,
 player appears on scoreboard, ship model is visible. Then ~3 seconds later:
 **"You have been disconnected from the host computer"**
@@ -12,87 +48,55 @@ Fixed by GameLoopTimerProc calling FUN_006a1e70 (opcode 0x2A handler) when playe
 increases. Client now receives Settings (0x00), GameInit (0x01), ObjCreateTeam (0x03),
 and transitions to ship selection UI.
 
-## Root Cause Analysis
+## Root Cause Analysis (Two Independent Issues)
 
-The disconnect is caused by **empty StateUpdate packets** from the server.
+### Issue 1: Empty StateUpdate packets (flags=0x00)
+The server sent StateUpdate packets with `flags=0x00` (empty) instead of `flags=0x20`
+(subsystem health data). This was caused by a 5-step causal chain:
 
-### The Causal Chain (verified against stock-dedi comparison)
+1. NIF models didn't load headlessly (stubbed renderer)
+2. AddToSet("Scene Root", prop) failed (no NiNode in scene graph)
+3. Subsystem linked list at ship+0x284 was NULL
+4. PatchNetworkUpdateNullLists correctly cleared flags to prevent malformed packets
+5. Client received no subsystem health data
 
-1. **NIF models don't load headlessly** - the proxy DLL stubs the D3D7 renderer, so
-   NIF model loading (which depends on renderer pipeline for texture/geometry) produces
-   objects without valid scene graph nodes.
+**Fix**: DeferredInitObject loads NIF models via Python API, breaking the chain at step 1.
+See [empty-stateupdate-root-cause.md](empty-stateupdate-root-cause.md) for full analysis.
 
-2. **AddToSet("Scene Root", prop) fails** - SubsystemProperty objects can't link to
-   NiNode "Scene Root" in the NIF model because the node doesn't exist.
+### Issue 2: MISSION_INIT_MESSAGE timing (13s instead of 2s)
+The `bc` flag at `peer+0xBC` in the TGWinsockNetwork peer structure was used to detect when
+checksum exchange completed. This flag:
+- Takes 200+ ticks (~7 seconds) to transition from 0 to 1
+- In some cases, **never transitions at all** (remained 0 after 1000+ ticks)
+- Is set deep in the checksum pipeline, NOT at completion time
 
-3. **Subsystem linked list at ship+0x284 is NULL** - no properties linked means
-   FUN_005b3fb0 finds nothing to create, so the runtime subsystem list stays empty.
+The actual checksum exchange completes within 1-2 ticks of connection. By the time our code
+detected "checksum complete" via the bc flag, the client had already gone silent.
 
-4. **PatchNetworkUpdateNullLists clears the 0x20 flag** - our binary patch at 0x005b1d57
-   correctly prevents sending malformed subsystem data by clearing flags when +0x284 is NULL.
-   Result: flags byte = 0x00 (empty) instead of 0x20 (SUB).
+**Fix**: Detect new peers by scanning the WSN peer array (`WSN+0x2C` = array pointer,
+`WSN+0x30` = count). When a new peer ID appears, schedule InitNetwork immediately (30 tick
+delay for safety). This fires at connect time, matching stock timing.
 
-5. **Client expects regular subsystem health updates** - stock server sends flags=0x20
-   (SUB) with real health values ~10x per second per object, cycling through subsystem
-   groups at startIdx 0, 2, 6, 8, 10. Our server sends flags=0x00 (nothing).
+## What Works Now (Confirmed)
 
-### Evidence: Stock Server vs Our Server
+- Headless boot through all 4 phases
+- GameSpy LAN discovery, checksum exchange (4 rounds)
+- Settings + GameInit sent within ~1.4s of connect
+- Client reaches ship selection, picks ship
+- DeferredInitObject creates ship with 33 subsystems
+- StateUpdate flags=0x20 with real subsystem health cycling
+- Collision damage between ships
+- Individual subsystem damage (shields, weapons, engines, etc.)
+- Client stays connected for extended sessions
 
-| Aspect | Stock Server | Our Server |
-|--------|-------------|------------|
-| NIF model loading | Works (real D3D7) | Fails (stubbed renderer) |
-| Ship subsystem list (+0x284) | Populated (10+ subsystems) | NULL |
-| StateUpdate flags sent (S->C) | 0x20 (SUB) or 0x3E (full) | 0x00 (empty) |
-| Subsystem cycling | startIdx 0,2,6,8,10 at ~100ms | None |
-| Client behavior | Stays connected | Disconnects after ~3 sec |
+## Remaining Issues (Not Related to Disconnect)
 
-See: [docs/empty-stateupdate-root-cause.md](empty-stateupdate-root-cause.md) for full 5-step analysis.
-
-## What Works (Confirmed)
-
-- Headless boot through all 4 phases, Python DedicatedServer.TopWindowInitialized() runs
-- MultiplayerGame: ReadyForNewPlayers=1, MaxPlayers=8, ProcessingPackets=1
-- GameSpy LAN discovery, peek-based UDP router
-- Checksum exchange (4 rounds) completes successfully
-- Settings packet (opcode 0x00) sent with correct map name and player slot
-- GameInit (0x01) triggers client-side setup
-- ObjCreateTeam (0x03) creates player ship on client
-- Client reaches ship selection, player on scoreboard, ship model visible
-- First connection timeout issue exists (client must reconnect once)
-
-## Packet Flow (from stock-dedi comparison)
-
-### Working flow (stock server):
-1. Client connects -> NewPlayerHandler fires
-2. Checksum exchange: 4 rounds of 0x20/0x21
-3. Server sends Settings (0x00) + GameInit (0x01)
-4. Client sends NewPlayerInGame (0x2A)
-5. Server sends ObjCreateTeam (0x03) + GameState (0x35) + PlayerRoster (0x37)
-6. Server begins StateUpdate cycling: flags=0x20, startIdx rotating
-7. Client stays connected, game session active
-
-### Our flow (disconnects):
-1-5: Same as stock (all working)
-6. Server sends StateUpdate with flags=0x00 (empty) - no subsystem data
-7. Client disconnects after ~3 sec
-
-## Fix Approaches (from root cause analysis)
-
-### 1. Enable NIF model loading on headless server (RECOMMENDED)
-NIF loading (NiStream::Load) is file I/O, not renderer-dependent. If the renderer
-pipeline can be restored enough to not crash during NIF loading, the entire subsystem
-chain works automatically. This would produce flags=0x20 with real subsystem data.
-
-### 2. Synthesize subsystem data in StateUpdate packet
-Binary patch to intercept flags byte write and inject synthetic subsystem data
-(all 0xFF = full health). Requires understanding exact wire format for subsystem updates.
-
-### 3. Accept flags=0x00 and fix client-side consequences
-If client can tolerate missing SUB data, session may function.
-But client likely treats prolonged absence of subsystem updates as connection failure.
+- First connection always times out (client must reconnect once)
+- Server's own ship (player 0) still sends flags=0x00 (harmless)
+- 0x35 GameState byte wrong: 0x01 vs stock's 0x09
+- Double NewPlayerInGame (engine + our timer both fire)
 
 ## Key Addresses
-
 | Address | Function | Role |
 |---------|----------|------|
 | 0x005b17f0 | FUN_005b17f0 | StateUpdate serializer (per-ship per-tick) |
@@ -100,3 +104,6 @@ But client likely treats prolonged absence of subsystem updates as connection fa
 | 0x005b1d57 | (patch site) | PatchNetworkUpdateNullLists - clears flags when +0x284 NULL |
 | 0x006a1e70 | FUN_006a1e70 | NewPlayerInGame handler (opcode 0x2A) |
 | 0x006a1b10 | FUN_006a1b10 | ChecksumCompleteHandler (sends 0x00 + 0x01) |
+| 0x005b0e80 | FUN_005b0e80 | InitObject (ship deserialization from network) |
+| 0x006c9520 | FUN_006c9520 | AddToSet (links properties to NiNode scene graph) |
+| 0x005b3fb0 | FUN_005b3fb0 | SetupProperties (creates runtime subsystem objects) |

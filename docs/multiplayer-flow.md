@@ -137,6 +137,47 @@ When +0x1F8 = 0 (not ready):
 | 0x0071f270 | ComputeChecksum | Scans directory, computes file hashes |
 | 0x007202e0 | HashString | Computes hash of a file/string |
 
+## Phase 5: Post-Settings (InitNetwork + DeferredInitObject)
+
+### Server: InitNetwork Scheduling (GameLoopTimerProc)
+After checksums pass and Settings/GameInit are sent, the server must call
+`Mission1.InitNetwork(peerID)` to send `MISSION_INIT_MESSAGE` to the client.
+
+**Detection mechanism**: GameLoopTimerProc scans the WSN peer array (`WSN+0x2C` pointer,
+`WSN+0x30` count). Each peer at `pp+0x18` has a peer ID. When a new ID appears:
+1. Schedule InitNetwork for 30 ticks later (~1 second)
+2. Call `Mission1.InitNetwork(peerID)` via RunPyCode
+3. This sends `MISSION_INIT_MESSAGE` to the client
+
+**Timing**: ~1.4 seconds after connect (stock is ~2 seconds).
+
+**Historical bug**: Previously used the `bc` flag at `peer+0xBC` which took 200+ ticks
+(or never flipped), causing MISSION_INIT_MESSAGE to arrive 13+ seconds late.
+
+### Server: DeferredInitObject (Ship Creation)
+After InitNetwork, the client selects a ship and sends ObjCreateTeam. The engine creates
+a ship object on the server, but without a NIF model (subsystems are NULL). GameLoopTimerProc
+detects this and triggers Python to complete initialization:
+
+1. Poll every 30 ticks: check for ships owned by the new player
+2. If ship exists with NULL ShipRef (+0x2E0): call `DeferredInitObject(playerID)`
+3. Python determines ship class → calls `ship.LoadModel(nifPath)`
+4. Engine creates 33 subsystem objects, populates ship+0x284 linked list
+5. StateUpdate now sends `flags=0x20` with real subsystem health data
+6. Collision damage and subsystem damage work
+
+### Timing Summary (Dedicated Server)
+
+| Event | Stock-Dedi | Our Server (Fixed) | Our Server (Broken) |
+|-------|-----------|-------------------|-------------------|
+| Client connects | T+0.0s | T+0.0s | T+0.0s |
+| Checksums complete | T+1.1s | T+1.0s | T+1.0s |
+| Settings + GameInit sent | T+1.1s | T+1.0s | T+1.0s |
+| InitNetwork / MISSION_INIT | T+2.0s | T+1.4s | **T+13.0s** |
+| Client selects ship | T+5.5s | T+5.0s | Client already silent |
+| DeferredInitObject | N/A (real renderer) | T+8.0s | Never reached |
+| Collision damage works | T+5.7s | T+8.0s | Never |
+
 ## Potential Failure Points in Our Server
 1. **FUN_0071f270 on server side** - if it can't find/scan script directories, verification fails
 2. **Reference string hash** (PTR_DAT_008d9af4) - checked only for index 0, mismatch = immediate fail

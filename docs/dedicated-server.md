@@ -25,7 +25,7 @@
 - Transitions to Phase 4 (game loop)
 
 ### Phase 4: Game Loop (33ms timer = ~30fps)
-GameLoopTimerProc runs:
+GameLoopTimerProc runs (in `game_loop_and_bootstrap.inc.c`):
 1. Get game time from clock object
 2. Call UtopiaApp_MainTick (0x0043b4f0)
    - TimerManager updates
@@ -35,7 +35,29 @@ GameLoopTimerProc runs:
 3. Call TGNetwork::Update (0x006B4560) on WSN
 4. Peek-based UDP router for GameSpy queries
 5. Call GAMESPY_TICK for internal state
-6. Monitoring/diagnostics
+6. **Peer detection**: Scan WSN peer array for new peer IDs → schedule InitNetwork
+7. **InitNetwork**: After 30-tick delay, call `Mission1.InitNetwork(peerID)` via RunPyCode
+8. **DeferredInitObject**: After InitNetwork, poll for new ship objects → call Python to load NIF model and create subsystems
+9. Monitoring/diagnostics
+
+#### Peer Detection (InitNetwork Scheduling)
+The game loop detects new peers by scanning the WSN peer array (`WSN+0x2C` pointer,
+`WSN+0x30` count). Each peer at `pp+0x18` has a peer ID. When a new ID appears that
+hasn't been seen before, InitNetwork is scheduled for 30 ticks later.
+
+**Why not use peer+0xBC (bc flag)?** The `bc` flag was originally used to detect checksum
+completion, but it takes 200+ ticks to transition (or never flips). The actual checksum
+exchange completes within 1-2 ticks. Peer-array detection fires at connect time, matching
+stock server timing (~1.4s vs stock's ~2s).
+
+#### DeferredInitObject (Ship Creation)
+After InitNetwork fires, the game loop polls for new ship objects owned by the connecting
+player. When found (ship+0x2E0 ShipRef is NULL = not yet initialized):
+1. Python determines ship class from species index
+2. Calls `ship.LoadModel(nifPath)` to load the NIF file
+3. Engine creates subsystem objects (33 for Sovereign class)
+4. Ship+0x284 linked list is populated
+5. StateUpdate now sends flags=0x20 with real subsystem health data
 
 ## Crash Handling
 
@@ -79,6 +101,14 @@ Registered via msvcrt `signal()` in DllMain.
 | PatchSubsystemHashCheck | 0x005B22B5 | Code cave: prevent false anti-cheat kicks when subsystems NULL |
 | PatchCompressedVectorRead | 0x006D2EB0, 0x006D2FD0 | Code cave: validate vtable before compressed vector read |
 | PatchDebugConsoleToFile | FUN_006f9470 | Redirect Python debug console output to state_dump.log |
+| PatchNullSurface | 0x007CB322 | JNZ fix (displacement 0x05 not 0x06) in GGM ctor |
+
+### Critical: PatchNetworkUpdateNullLists MUST Stay Enabled
+This patch at 0x005B1D57 clears SUB/WPN flags when ship+0x284 (subsystem linked list) is
+NULL. **Disabling this patch causes a fatal crash** at 0x005B1EDB when the state update loop
+tries to iterate a NULL linked list. The crash is unrecoverable (MOV EAX,[ECX] → CALL
+[EAX+0x70] chain through zeroed vtable). Even with DeferredInitObject creating subsystems
+for client ships, the server's own player-0 ship still has NULL subsystems.
 
 ### Removed Patches (no longer in codebase)
 | Patch | Reason Removed |

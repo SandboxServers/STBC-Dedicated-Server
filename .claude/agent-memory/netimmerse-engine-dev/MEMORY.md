@@ -5,6 +5,27 @@ Cross-compiled from WSL2, drives STBC headlessly via C code + embedded Python 1.
 
 ## Key Architecture Findings
 
+### Manual State Dump Bridge (2026-02-12)
+- Dedicated-server C trigger path can raise `AttributeError` when calling
+  `Custom.StateDumper.dump_state(...)` directly, even after module import.
+- Embedded Python 1.5.2 package attribute exposure is unreliable across contexts;
+  robust call pattern is `import sys` + `sys.modules['Custom.StateDumper']`.
+- Keep manual dump trigger in C using `PyRun_String`, but resolve module from
+  `sys.modules` before invoking `dump_state` to match stock behavior.
+
+### CurrentGame Wrapper Mismatch in Dumps (2026-02-12)
+- Stock-dedi in-game dumps expose `CurrentGame` as SWIG object:
+  `<C Game instance at ...>` with `this/thisown` and callable methods.
+- Custom dedicated dump shows `CurrentGame` as raw pointer string:
+  `_<addr>_p_Game` with `0 attributes` in StateDumper output.
+- Indicates Python wrapper surface differs by runtime path; object exists natively
+  but introspection parity with stock is reduced in custom bootstrap state.
+- Reference `reference/scripts/App.py` confirms stock wrapper behavior:
+  `Game_GetCurrentGame` wraps `Appc.Game_GetCurrentGame` into `GamePtr`.
+- Added dedicated-side compat shim in `Custom/DedicatedServer.py` to wrap key
+  raw builtin returns (`Game_GetCurrentGame`, `TopWindow_GetTopWindow`,
+  `MultiplayerGame_Cast`, `Game_GetCurrentPlayer`) to Ptr objects.
+
 ### Event Type Constants (from constructor at FUN_0069e590)
 - `0x60001` = ET_NETWORK_MESSAGE_EVENT (ReceiveMessageHandler)
 - `0x60003` = ET_NETWORK_DISCONNECT
@@ -66,12 +87,27 @@ safety. Concurrent malloc/free corrupts free lists -> cascading crashes.
 
 ### CURRENT: Client Disconnect After Ship Selection
 - See [game-over-analysis.md](game-over-analysis.md) for analysis
+- See [nif-loading-analysis.md](nif-loading-analysis.md) for NIF/subsystem pipeline
 - Root cause: server sends empty StateUpdate packets (flags=0x00 instead of 0x20)
 - NIF ship models don't fully load without GPU -> subsystem list at ship+0x284 NULL
 - PatchNetworkUpdateNullLists correctly clears flags to prevent garbage, but client
   expects subsystem data and disconnects after ~3 seconds without it
 - FUN_005b17f0 = NetworkObjectStateUpdate: builds per-tick state packets for each ship
 - FUN_004360c0 = GetBoundingBox: vtable[57]=GetWorldBound() returns NiBound*
+
+### NIF Loading & Subsystem Creation Pipeline (2026-02-13)
+- See [nif-loading-analysis.md](nif-loading-analysis.md) for full analysis
+- Network ship path: FUN_005b0e80 -> Python `SpeciesToShip.InitObject(self, iType)`
+- InitObject: GetShipFromSpecies -> LoadModel -> SetupModel -> LoadPropertySet -> SetupProperties
+- `LoadModel()` calls `g_kLODModelManager.Create()` + `AddLOD(nif_path)` + `Load()`
+- `Load()` triggers NiStream::Load (FUN_008176b0) - pure file I/O
+- `SetupModel(name)` associates LODModel with ship (provides "Scene Root" NiNode)
+- `AddToSet` (FUN_006c9520) searches for "Scene Root" node by name comparison
+- `SetupProperties()` (FUN_005b3fb0) creates subsystems from property set
+- Hardpoints are PURE PYTHON data (no NIF dependency)
+- Subsystem creation is PURE C++ allocation (no renderer dependency)
+- **ONLY dependency on NIF: "Scene Root" node name for AddToSet linking**
+- If NiStream::Load succeeds, entire subsystem chain follows automatically
 
 ### Renderer Pipeline
 - See [renderer-restoration-analysis.md](renderer-restoration-analysis.md) for full analysis
@@ -133,3 +169,14 @@ safety. Concurrent malloc/free corrupts free lists -> cascading crashes.
 - Object IDs: uint32, assigned by server, looked up via hash table
 - Bool packing: up to 5 bools per byte (3-bit count in high bits)
 - Subsystem/weapon state: round-robin serialization (N items per tick, wraps)
+
+## Dedicated State-Init Parity (2026-02-12)
+- Stock dump #2 module surface is much wider than custom server (349 vs 270 parsed modules in this capture).
+- Missing-on-server set includes `Systems.Multi1*`, `ships*`, and multiple episode/name modules; stock includes these after normal start flow.
+- Both stock and server report `CurrentGame` and non-null `g_pStartingSet`/`g_pDatabase` in post-start state, so object existence alone is not parity.
+- Custom server MissionShared has dedicated-only start globals (`g_bGameStarted`, `g_iPlayerLimit`, `g_iSystem`, `g_iTimeLimit`) consistent with forced/shortcut startup.
+
+## Stage Boundary for Valid Dedicated Runtime (2026-02-12)
+- Canonical stock transition to active dedicated world occurs between system-select and scoreboard.
+- Module delta d3->d4 is exactly system package load: `Systems.Multi1*`, `ships*`, `Multiplayer.Systems`, `Systems.Utils` (+14 modules).
+- If server has `g_pStartingSet` but lacks those modules, set creation likely did not follow stock species->system initialization path.

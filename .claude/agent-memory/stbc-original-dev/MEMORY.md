@@ -45,6 +45,23 @@ Line 909-917: `IsHost() and (not IsClient())` -> show options pane instead of ta
 Full renderer runs. No headless capability. This was a scope/priority decision, not
 a technical impossibility.
 
+### Collision Damage is HOST-Authoritative
+Physics response (bouncing) runs locally on all clients. Damage calculation runs ONLY on
+the host. Two collision events: 0x00800050 (client-detected, sent to host via opcode 0x0C)
+and 0x008000fc (host-validated, triggers damage). FUN_005afad0 (HostCollisionEffectHandler)
+applies damage on the host; on clients it only damages OTHER players' ships (not local ship).
+FUN_005ae140 invulnerability check: client returns true for own ship, host checks ship+0x2e4.
+Requires ProximityManager active + valid bounding volumes on server.
+See [design-intent.md](design-intent.md) "Collision Damage Authority Model".
+
+### InitObject Hook Safety
+`src/scripts/Custom/DedicatedServer.py` currently replaces `SpeciesToShip.InitObject`
+with a logging wrapper that reruns the same `GetShipFromSpecies/SetupModel/LoadPropertySet/SetupProperties/UpdateNodeOnly`
+sequence the stock Python script already performs. Because that patch reimplements the
+behavior instead of calling the original, any future adjustments or side effects of the
+native path can drift, so the safest pattern is to call `_orig_InitObject` inside the
+wrapper and only add instrumentation.
+
 ## File Index
 - [design-intent.md](design-intent.md) - Detailed architecture analysis and design intent
 - [load-bearing-bugs.md](load-bearing-bugs.md) - Bugs/behaviors that other code depends on

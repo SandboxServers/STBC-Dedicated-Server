@@ -29,3 +29,12 @@ See [architecture-assessment.md](architecture-assessment.md) for the full approa
 ## Lessons Learned
 - JZ/JNZ rel8 displacement = target_offset - (jz_offset + 2), NOT target_offset - (jz_offset + 1). The +2 accounts for the full 2-byte JZ instruction (opcode + displacement byte). Initial draft had off-by-one on both JZ branches.
 - When a code cave reproduces ALL original instructions (full function replacement), no JMP-back fixup is needed. This simplifies the cave and eliminates a rel32 calculation.
+
+## App-Wrap/State-Dump Signal (2026-02-12)
+- Stock dump shows `g_kUtopiaModule` consistently as instance.
+- Custom server dump shows mixed representation in same dump (`g_kUtopiaModule` as instance and as string pointer), suggesting namespace/global contamination from compat wrapping.
+- Custom server call-path capture is minimal (3 calls), so instrumentation currently cannot reconstruct canonical startup chain; treat this as observability gap before low-level patch conclusions.
+
+## Instrumentation Caveat from New Dumps (2026-02-12)
+- Stock stage progression shows high call-path variance (95 -> 528 -> 131) and meaningful transitions.
+- Server repeated dumps are byte-for-byte shape-equivalent with constant 3-call path surface; use this as a signal that startup path is forced/static or wrapper tracing coverage is incomplete.

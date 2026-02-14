@@ -183,6 +183,10 @@ is correct. `is not None` comparison is valid in 1.5.2.
 
 ---
 
+## Ongoing Note (2026-02-12)
+- While reviewing `SpeciesToShip.InitObject`, noted the dedicated-server wrapper reimplements `SetupModel`, `LoadPropertySet`, and related steps but never calls the preserved `_orig_InitObject`.
+- To avoid hijacking the engine, future wrappers should call `_orig_InitObject(self, iType)` (with logging around that call) so the native init path still runs before returning its result.
+
 ## Conclusion
 **No Python 1.5.2 compatibility issues found in any of the three files.**
 The codebase demonstrates excellent awareness of 1.5.2 limitations throughout.

@@ -2,6 +2,13 @@
 
 ## Key Findings
 
+### State-Only Baseline (2026-02-12)
+- Session had no custom-dedi client connection; packet correlation intentionally skipped.
+- Useful pre-protocol baseline from state dumps:
+  - Stock-dedi transitions `CurrentGame: None -> <C Game instance> -> None`
+  - Custom-dedi starts with non-NULL `CurrentGame` but as raw pointer string
+    (`_<addr>_p_Game`) rather than SWIG object wrapper.
+
 ### ENCRYPTION FULLY IMPLEMENTED AND VERIFIED (2026-02-09)
 - See [encryption-analysis.md](encryption-analysis.md) for algorithm details
 - See [cipher-implementation.md](cipher-implementation.md) for C reimplementation spec
@@ -126,3 +133,14 @@
 - `game/client/packet_trace.log` - Client-side trace (7592 lines)
 - [post-join-opcodes.md](post-join-opcodes.md) - Analysis of 0x35, 0x37, 0x17 post-join
 - [session-comparison-20260210.md](session-comparison-20260210.md) - Full stock-vs-proxy comparison
+
+## Dump-Driven Network Init Signal (2026-02-12)
+- In this state-dump pass, stock path evidence includes full Multiplayer menu -> mission start chain before scoreboard idle.
+- Custom server path evidence contains only `PatchLoadedMissionModules` path, not full menu/network init chain.
+- Interpretation: custom dedicated runtime likely enters post-start state through patch/bootstrap path rather than stock host-start message flow; this can affect lobby/session metadata and downstream packet behavior even when `CurrentGame` exists.
+
+## Startup State vs Protocol Readiness (2026-02-12)
+- Stock reaches protocol-relevant mission state in two steps after host screen:
+  1) lobby prep (`CurrentGame` exists, no starting set yet),
+  2) mission start (`CreateSystemFromSpecies`, `InitializeAllSets`, starting set non-null).
+- Treat lobby-level `CurrentGame` as insufficient evidence of full game-state readiness.

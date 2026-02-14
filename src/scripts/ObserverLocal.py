@@ -43,5 +43,6 @@ def TopWindowInitialized(pTopWindow):
         print "Observer hooks installed"
     except Exception, e:
         print "Observer hooks FAILED: " + str(e)
-    # F12 state dump is handled by C code (TryF12StateDump in ddraw proxy)
+    # Manual state dumps are handled by C code (TryManualStateDump in ddraw proxy)
+    # and trigger on F12 or left-click edge.
     # to avoid breaking the event system with Python raise propagation

@@ -19,6 +19,10 @@ SRCS     = $(SRC_DIR)/ddraw_main.c $(SRC_DIR)/ddraw_ddraw7.c \
            $(SRC_DIR)/ddraw_surface7.c $(SRC_DIR)/ddraw_d3d7.c
 OBJS     = $(SRCS:.c=.o)
 OBS_OBJS = $(SRCS:$(SRC_DIR)/%.c=$(SRC_DIR)/obs_%.o)
+# ddraw_main.c is split into include-components under src/proxy/ddraw_main/.
+# Keep these as explicit dependencies so incremental builds pick up .inc.c edits
+# (otherwise "make build" can incorrectly report "Nothing to be done").
+DDRAW_MAIN_PARTS = $(wildcard $(SRC_DIR)/ddraw_main/*.inc.c)
 DEF      = $(SRC_DIR)/ddraw.def
 HEADER   = $(SRC_DIR)/ddraw_proxy.h
 TARGET   = ddraw.dll
@@ -36,6 +40,9 @@ $(TARGET): $(OBJS) $(DEF)
 	$(CC) $(LDFLAGS) -o $@ $(OBJS) $(DEF) $(LIBS)
 	@echo "Built $(TARGET)"
 
+$(SRC_DIR)/ddraw_main.o: $(SRC_DIR)/ddraw_main.c $(HEADER) $(DDRAW_MAIN_PARTS)
+	$(CC) $(CFLAGS) -c $< -o $@
+
 $(SRC_DIR)/%.o: $(SRC_DIR)/%.c $(HEADER)
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -45,6 +52,9 @@ build-observe: $(OBS_TARGET)
 $(OBS_TARGET): $(OBS_OBJS) $(DEF)
 	$(CC) $(LDFLAGS) -o $@ $(OBS_OBJS) $(DEF) $(LIBS)
 	@echo "Built $(OBS_TARGET) (observe-only)"
+
+$(SRC_DIR)/obs_ddraw_main.o: $(SRC_DIR)/ddraw_main.c $(HEADER) $(DDRAW_MAIN_PARTS)
+	$(CC) $(CFLAGS) -DOBSERVE_ONLY -c $< -o $@
 
 $(SRC_DIR)/obs_%.o: $(SRC_DIR)/%.c $(HEADER)
 	$(CC) $(CFLAGS) -DOBSERVE_ONLY -c $< -o $@
@@ -114,6 +124,7 @@ kill:
 # Logs
 logs-server:
 	@echo "=== ddraw_proxy.log ===" && cat "$(SERVER_DIR)/ddraw_proxy.log" 2>/dev/null || echo "No server proxy log"
+	@echo "" && echo "=== pydebug.log ===" && cat "$(SERVER_DIR)/pydebug.log" 2>/dev/null || echo "No pydebug log"
 	@echo "" && echo "=== packet_trace.log ===" && cat "$(SERVER_DIR)/packet_trace.log" 2>/dev/null || echo "No packet trace"
 	@echo "" && echo "=== tick_trace.log ===" && cat "$(SERVER_DIR)/tick_trace.log" 2>/dev/null || echo "No tick trace"
 	@echo "" && echo "=== dedicated_init.log ===" && cat "$(SERVER_DIR)/dedicated_init.log" 2>/dev/null || echo "No dedicated init log"
@@ -121,6 +132,7 @@ logs-server:
 
 logs-client:
 	@echo "=== ddraw_proxy.log ===" && cat "$(CLIENT_DIR)/ddraw_proxy.log" 2>/dev/null || echo "No client proxy log"
+	@echo "" && echo "=== pydebug.log ===" && cat "$(CLIENT_DIR)/pydebug.log" 2>/dev/null || echo "No pydebug log"
 	@echo "" && echo "=== packet_trace.log ===" && cat "$(CLIENT_DIR)/packet_trace.log" 2>/dev/null || echo "No client packet trace"
 	@echo "" && echo "=== tick_trace.log ===" && cat "$(CLIENT_DIR)/tick_trace.log" 2>/dev/null || echo "No client tick trace"
 	@echo "" && echo "=== message_trace.log ===" && cat "$(CLIENT_DIR)/message_trace.log" 2>/dev/null || echo "No client message trace"
@@ -130,6 +142,7 @@ logs-client:
 
 logs-stockdedi:
 	@echo "=== ddraw_proxy.log ===" && cat "$(STOCKDEDI_DIR)/ddraw_proxy.log" 2>/dev/null || echo "No proxy log"
+	@echo "" && echo "=== pydebug.log ===" && cat "$(STOCKDEDI_DIR)/pydebug.log" 2>/dev/null || echo "No pydebug log"
 	@echo "" && echo "=== packet_trace.log ===" && cat "$(STOCKDEDI_DIR)/packet_trace.log" 2>/dev/null || echo "No packet trace"
 	@echo "" && echo "=== tick_trace.log ===" && cat "$(STOCKDEDI_DIR)/tick_trace.log" 2>/dev/null || echo "No stock-dedi tick trace"
 	@echo "" && echo "=== message_trace.log ===" && cat "$(STOCKDEDI_DIR)/message_trace.log" 2>/dev/null || echo "No message trace"

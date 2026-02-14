@@ -103,24 +103,35 @@ A 33ms Windows timer (~30 fps) runs `GameLoopTimerProc`:
 1. Call `UtopiaApp_MainTick` — event processing, simulation updates
 2. Call `TGNetwork::Update` — send/receive packets
 3. Run GameSpy query router — handle LAN discovery packets
-4. Monitoring and diagnostics
+4. Peer detection — scan WSN peer array for new connections
+5. InitNetwork scheduling — call `Mission1.InitNetwork(peerID)` 30 ticks after peer appears
+6. DeferredInitObject — poll for new ship objects, call Python to load NIF model + create subsystems
+7. Monitoring and diagnostics
 
 ## The Two Worlds: C and Python
 
 The server operates in two layers:
 
-### C layer (`ddraw_main.c`, ~4800 lines)
-- DLL lifecycle, binary patches, crash handling
-- Game loop timer driving the engine
-- Packet trace system (decrypt, decode, log all UDP traffic)
+### C layer (`ddraw_main.c` → 7 split `.inc.c` files, ~6260 lines total)
+- DLL lifecycle, binary patches, crash handling (`core_runtime_and_exports.inc.c`, `binary_patches_and_python_bridge.inc.c`)
+- Game loop timer driving the engine (`game_loop_and_bootstrap.inc.c`)
+- Peer detection and InitNetwork scheduling (`game_loop_and_bootstrap.inc.c`)
+- DeferredInitObject ship creation polling (`game_loop_and_bootstrap.inc.c`)
+- Packet trace system: decrypt, decode, log all UDP traffic (`packet_trace_and_decode.inc.c`)
 - Direct memory manipulation of game engine globals
-- IAT hooks for sendto/recvfrom interception
+- IAT hooks for sendto/recvfrom interception (`runtime_hooks_and_iat.inc.c`, `socket_and_input_hooks.inc.c`)
+- TGMessage factory hooks (`message_factory_hooks.inc.c`)
+
+The C source is split into 7 logical `.inc.c` files that are `#include`d into `ddraw_main.c`
+as a single translation unit. This preserves symbol visibility and link order while keeping
+each file focused on one concern.
 
 ### Python layer (`scripts/Custom/DedicatedServer.py`)
 - Server configuration (name, map, player count, game rules)
 - SWIG API calls to game engine (`App.TopWindow_Method(obj, args)`)
 - Import hooks to wrap mission scripts with error handling
 - Scoring dictionary registration for player tracking
+- DeferredInitObject: loads NIF models and creates subsystems for client ships
 
 Python 1.5 scripts run inside the game's embedded interpreter. They use the SWIG-generated `App` module to call C++ engine functions. The C layer sets up the engine state that Python then configures and drives.
 

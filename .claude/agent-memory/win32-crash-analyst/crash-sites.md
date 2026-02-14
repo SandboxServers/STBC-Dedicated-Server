@@ -110,6 +110,35 @@
 - **Fix**: Code cave at 0x006D20E0 to validate FILE* pointer before fclose (check range, skip close if pointer is in .text/.rdata). Or: find and fix the corruption that puts a non-NULL invalid value in +0x08.
 - **Status**: NEW - needs defensive fix at FUN_006d20e0
 
+## 0x005b22b5 - Subsystem hash check jump misalignment
+- **Function:** `PatchSubsystemHashCheck` code cave in `src/proxy/ddraw_main/binary_patches_and_python_bridge.inc.c`
+- **Instruction:** `JNE .call_real` (opcode `75 07` in the reported log, meant to skip the `MOV ECX,EDI` + `ADD ESP,4` + `JMP 0x005b22c7` block)
+- **Exception:** Access violation at `EIP=0x00000000` recorded by `game/server/ddraw_proxy.log` (00:24:22.079, VEH[2]) with `EDI=0x005B22BA`, `ESI=0x0D10F390`, `EDX=0xC000000D`.
+- **Root cause:** When `[ESI+0x284]` is non-NULL (valid subsystem list), the branch target should land at `.call_real` (the jump to `FUN_005b5eb0`). With the old `0x07` displacement the CPU jumps into the middle of the `ADD`/`JMP` sequence (offset 19 inside the cave) and begins executing garbage bytes, eventually attempting to execute `CALL [0x0]` and crashing with `EIP=0`. The decompiled context around `FUN_005b21c0` shows the hash comparison and the need for a stable hash return path.
+- **Fix:** Update the displacement to `0x0A` so the branch skips the entire `MOV ECX,EDI`, `ADD ESP,4`, and `JMP 0x005b22c7` and lands cleanly at `.call_real`. This change matches the documented cave and the current source tree.
+- **Validation:** Reproduce the scenario with real subsystem data (non-headless ship objects). Confirm no new VEH entry at `0x005b22b5`, and check `game/server/ddraw_proxy.log` for the “Valid subsystem list” debug line produced by `PatchSubsystemHashCheck`. Grep the built binary to ensure the `JNE` byte is `0x0A` and that the new branch executes instead of the crash path.
+
+## 0x005B1EDB - Null subsystem handler in state update loop
+- **Function**: Part of the state update subsystem iteration (inside `FUN_005b17f0`/`FUN_005b21c0` network update path). `EDI` points to the current ship object and `[EDI+0x30]` is the subsystem/weapon node being advanced.
+- **Instruction**: `MOV EAX,[ECX]` at 0x005B1EDB (vtable load before invoking the subsystem update handler at `CALL [EAX+0x70]`).
+- **Exception**: Read AV at `0x00000000` because `ECX` is zero; the preceding branch zeroes `ECX` when `[EDI+0x30] == NULL` but execution still hits the dereference instead of jumping past the call.
+- **Root cause**: Headless server ships have no subsystems/weapons, so the linked-list head at `[ship+0x30]` stays `NULL`. The loop does not skip the vtable call in this case and dereferences the null pointer when trying to advance to the next subsystem. This race only happens during the per-frame NET state serialization loop that sets bits `0x20`/`0x80`.
+- **Status**: Patch was previously documented (VEH/EIP skip at `0x005b1edb`/`0x005b1f82`) but is missing in this build. Crash occurs immediately after a client joins because the server is running without subsystem data.
+- **Fix plan**: Insert a VEH/EIP skip or direct jump over the vtable call when `[EDI+0x30] == NULL`, mirroring the previously approved patch addresses. This is a low-risk fix (no state changes) that restores the early-out guarding branch and prevents dereferencing null.
+
+## 0x005AF4E7 - FUN_005af4a0 null `param_2` dereference (`FLD [ESI+0x30]`)
+- **Function**: `FUN_005af4a0` (called from `FUN_005afd70` aggregation loop)
+- **Instruction**: `FLD DWORD PTR [ESI+0x30]` at `0x005AF4E7`
+- **Exception**: Read AV at `0x00000030` with `ESI=0` (`0x00000000 + 0x30`)
+- **Call chain evidence**:
+- `game/server/crash_dump.log` raw stack includes return addresses `0x005AFE49` and `0x005AFC84`
+- `0x005AFE44` is `CALL 0x005AF4A0` and `0x005AFE49` is post-call `FADD`
+- `FUN_005afd70` loop loads `pvVar4 = (void*)*piVar3` and calls `FUN_005af4a0(this, pvVar4, ...)` without checking `pvVar4`
+- **Root cause**: Candidate node list contains a NULL payload pointer (`*piVar3 == 0`), but `FUN_005af4a0` assumes non-NULL and dereferences immediately. Decompiler wrapper `FUN_005af5f0` already contains a NULL guard, confirming NULL should map to safe no-op return.
+- **Low-risk mitigation**:
+- Add null guard at `FUN_005afd70` call site (`0x005AFE36` path): if `EAX==0`, issue `FLDZ` then continue to `0x005AFE49` so FPU contract remains valid.
+- Alternative: add entry guard in `FUN_005af4a0` returning `_DAT_00888b54` when stack arg `param_2` is NULL.
+- **Status**: New crash site identified from 2026-02-12 01:10:40 logs; patch not yet implemented.
 ## Previously documented sites:
 - 0x006D1E10 - TGL::FindEntry NULL+0x1C (FIXED: code cave PatchTGLFindEntry)
 - 0x005b1d57 - Network update NULL lists (FIXED: code cave PatchNetworkUpdateNullLists)

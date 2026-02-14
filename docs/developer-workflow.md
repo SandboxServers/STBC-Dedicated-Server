@@ -78,6 +78,7 @@ make logs-server   # Dumps all server logs to terminal
 | `ddraw_proxy.log` | DLL lifecycle, patches applied, phase transitions, game loop events | Server won't boot, patches fail, phases don't complete |
 | `packet_trace.log` | Every UDP packet (decrypted, decoded, hex-dumped) | Client can't connect, checksums fail, packets malformed |
 | `tick_trace.log` | Per-tick CSV: players, packets, timers, memory usage | Performance issues, timing problems, memory leaks |
+| `pydebug.log` | `OutputDebugStringA` capture (includes `App.CPyDebug` output) | Python/engine debug prints, CPyDebug milestones |
 | `dedicated_init.log` | Python-side logging from DedicatedServer.py | Python crashes, configuration issues, SWIG call failures |
 | `crash_dump.log` | Full crash diagnostics (registers, stack, code bytes) | Server crashes or silently exits |
 | `dedicated_console.log` | Redirected stdout/stderr from the game engine | Python print output, engine warnings |
@@ -88,6 +89,7 @@ make logs-server   # Dumps all server logs to terminal
 | Log | What It Contains | Check When... |
 |-----|-----------------|---------------|
 | `ddraw_proxy.log` | Observer DLL lifecycle, IAT hooks | Client DLL loading issues |
+| `pydebug.log` | `OutputDebugStringA` capture (includes `App.CPyDebug` output) | CPyDebug output and engine debug lines |
 | `packet_trace.log` | Client's view of all packets | Compare with server trace to find divergence |
 | `client_debug.log` | Handler tracing from ClientLogger.py | Client-side handler errors |
 | `message_trace.log` | Deserialized message types (receive path only) | What messages the client actually processes |
