@@ -20,6 +20,10 @@ Headless dedicated server for Star Trek: Bridge Commander multiplayer, implement
 - `config/dedicated.cfg` - Empty trigger file (presence enables dedicated mode)
 - `game/server/` - Live server game install (gitignored except readme.md)
 - `game/client/` - Live client game install (gitignored except readme.md)
+- `tools/` - Ghidra annotation scripts and analysis utilities
+- `engine/gamebyro-1.2-source/` - Gamebryo 1.2 full source (reference for NI class implementations)
+- `engine/mwse/` - MWSE reverse-engineered NI 4.0.0.2 headers (identical struct sizes to NI 3.1)
+- `engine/nif.xml` - NIF format spec from niftools (V3.1 field definitions for 21 of 42 NI 3.1-only classes)
 - `docs/` - Reverse engineering notes, protocol docs, API reference
 - `reference/decompiled/` - Ghidra C output (19 files, ~15MB total)
 - `reference/scripts/` - Decompiled game Python (~1228 .py files)
@@ -203,6 +207,24 @@ Then opcode 0x01 (single byte).
 - [docs/decompiled-functions.md](docs/decompiled-functions.md) - Key function analysis
 - [docs/function-map.md](docs/function-map.md) - 18K-function organized map
 - [docs/damage-system.md](docs/damage-system.md) - Complete damage pipeline: collision, weapon, explosion paths, gate checks, subsystem distribution
+- [docs/rtti-class-catalog.md](docs/rtti-class-catalog.md) - Complete class catalog: 129 NI, 124 TG, ~420 game classes (RTTI extraction)
+- [docs/gamebryo-cross-reference.md](docs/gamebryo-cross-reference.md) - 129 NI classes cross-referenced against Gb 1.2, MWSE, and nif.xml (87 Gb match, 21/42 NI 3.1-only have nif.xml field defs)
+- [docs/nirtti-factory-catalog.md](docs/nirtti-factory-catalog.md) - All 117 NiRTTI factory registrations with addresses
+- [docs/netimmerse-vtables.md](docs/netimmerse-vtables.md) - Vtable maps for 6 core NI classes (NiObject through NiTriShape)
+- [docs/function-mapping-report.md](docs/function-mapping-report.md) - Function naming coverage: ~6,031 of 18K functions named (33%), script suite docs
+
+## Ghidra Annotation Scripts
+Bulk annotation scripts in `tools/`. Run from Ghidra Script Manager with stbc.exe loaded.
+Run order: globals → nirtti → swig → python_capi → pymodules → vtables → swig_targets → discover_strings
+- `tools/ghidra_annotate_globals.py` - Labels 13 globals, 62 key RE'd functions, 22 Python module tables (97 total)
+- `tools/ghidra_annotate_nirtti.py` - Labels 117 NiRTTI factory + 117 registration functions (234 total)
+- `tools/ghidra_annotate_swig.py` - Names 3,990 SWIG wrapper functions from PyMethodDef table
+- `tools/ghidra_annotate_python_capi.py` - Names 113 Python C API functions, 10 module inits, type objects, globals (137 total)
+- `tools/ghidra_annotate_pymodules.py` - Walks 21 Python module method tables, names 266 C implementations
+- `tools/ghidra_annotate_vtables.py` - Auto-discovers 97 vtables from NiRTTI factories: 1,090 virtuals + 96 ctors + 84 dtors (1,270 total)
+- `tools/ghidra_annotate_swig_targets.py` - Traces SWIG wrappers to C++ targets (4 named; 3,986 are inline field accessors)
+- `tools/ghidra_discover_strings.py` - Names 33 functions from debug strings + adds 515 comments (runs last)
+- See [docs/function-mapping-report.md](docs/function-mapping-report.md) for full coverage (~6,031 functions named, 33% of 18,247)
 
 ## Knowledge Preservation
 

@@ -71,6 +71,10 @@ push offset s_NiNode       ; "NiNode" string at 0x00978500
 call hash_insert           ; register in DAT_009a2b98
 ```
 
+For the complete factory registration mapping (all 117 entries with registration function,
+factory function, and guard flag addresses), see
+[nirtti-factory-catalog.md](nirtti-factory-catalog.md).
+
 ### Scene Graph / Node Hierarchy
 | Address | Class | Description |
 |---------|-------|-------------|

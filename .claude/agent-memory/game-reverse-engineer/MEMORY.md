@@ -18,6 +18,7 @@
 - See [stock-baseline-analysis.md](stock-baseline-analysis.md) for stock host vs our server comparison
 - See [encryption-analysis.md](encryption-analysis.md) for TGNetwork encryption/cipher analysis
 - See [torpedo-beam-network.md](torpedo-beam-network.md) for corrected opcode table
+- See [swig-method-tables.md](swig-method-tables.md) for App/Appc SWIG method table analysis (3990 entries at 0x008e6438)
 - See [complete-opcode-table.md](complete-opcode-table.md) for FULL verified opcode table (all 41 entries + Python msg types)
 
 ## RTTI / Type System (2026-02-15)
@@ -29,6 +30,32 @@
 - ~670 unique C++ classes identified; 129 Ni*, 124 TG*, ~420 game-specific
 - 114 TG classes have SWIG Python bindings (~1340 wrapper methods)
 - Full catalog: [docs/rtti-class-catalog.md](../../docs/rtti-class-catalog.md)
+
+## NiRTTI Factory Registration (COMPLETE, 2026-02-15)
+- **117 classes** registered in DAT_009a2b98 hash table (113 Ni* + 2 TG* + 2 DD*)
+- Full mapping: [docs/nirtti-factory-catalog.md](../../docs/nirtti-factory-catalog.md)
+- Hash table: 37 buckets, 0xC-byte linked-list nodes {className, factoryFn, next}
+- Vtable at PTR_FUN_0088b7c4: hash(+0x04), compare(+0x08), setEntry(+0x0C), deleteEntry(+0x10)
+- Temp vtable PTR_LAB_0088b7d8 used during construction, then swapped to final
+- ALL registrations use identical template code (100% consistent pattern)
+- TG classes (TGDimmerController, TGFuzzyTriShape) share the SAME hash table as Ni classes
+- Consumer: FUN_008176b0 (NiStream::LoadObject) reads NIF class names, looks up factory
+- Error on lookup failure: "NiStream: Unable to find loader for..."
+- Guard flags span 0x0098d298 - 0x009b32f0 (one byte per class, set to 1 after registration)
+
+## NetImmerse Vtable Map (2026-02-15)
+- See [docs/netimmerse-vtables.md](../../docs/netimmerse-vtables.md) for FULL analysis
+- **CRITICAL**: NI 3.1 vtable slot 0 = GetRTTI (NOT destructor like Gb 1.2)
+- Destructor (scalar_deleting_dtor) is at slot 10 (+0x28)
+- Slot 11 (+0x2C) = 0x0040da50 = never-overridden no-op across ALL classes
+- NiObject: 12 slots at 0x00898b94 | NiObjectNET: 12 slots at 0x00898c48
+- NiAVObject: 39 slots at 0x00898ca8 | NiNode: 43 slots at 0x00898f2c
+- NiGeometry: 64 slots at 0x00899164 | NiTriShape: 68 slots at 0x00899264
+- Constructor chain: NiObject(007d87a0) -> NiObjectNET(007dac80) -> NiAVObject(007dc0c0)
+- NiObjectNET adds ZERO new virtuals (same 12 as NiObject)
+- NiAVObject adds 27 virtuals (slots 12-38), much more than Gb 1.2's ~14
+- NiNode adds 4 (AttachChild/DetachChild/DetachChildAt/SetAt) at slots 39-42
+- Vtable+0x28 = dtor pattern: `if(param&1) free(this)` = scalar_deleting_destructor
 
 ## BREAKTHROUGH: Black Screen SOLVED
 - Fix: Replace Mission1.InitNetwork with functional Appc API version
