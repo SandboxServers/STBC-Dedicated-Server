@@ -148,9 +148,17 @@ static void TryFlushPyTrace(void) {
 
 static VOID CALLBACK ManualInputTimerProc(HWND hwnd, UINT msg,
                                           UINT_PTR id, DWORD time) {
+    static int obsTick = 0;
     (void)hwnd; (void)msg; (void)id; (void)time;
     TryManualStateDump();
     TryFlushPyTrace();
+    /* FTrace dump every ~10s (400 ticks * 25ms = 10s) */
+    obsTick++;
+    if (obsTick > 0 && (obsTick % 400 == 0)) {
+        char label[32];
+        wsprintfA(label, "obs_tick_%d", obsTick);
+        FTraceDump(label);
+    }
 }
 
 static void StartManualInputTimer(void) {

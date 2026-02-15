@@ -139,6 +139,41 @@
 - Add null guard at `FUN_005afd70` call site (`0x005AFE36` path): if `EAX==0`, issue `FLDZ` then continue to `0x005AFE49` so FPU contract remains valid.
 - Alternative: add entry guard in `FUN_005af4a0` returning `_DAT_00888b54` when stack arg `param_2` is NULL.
 - **Status**: New crash site identified from 2026-02-12 01:10:40 logs; patch not yet implemented.
+## 0x005054C7 - FUN_005054b0 MP Status Pane NULL child vtable call
+- **Function**: FUN_005054b0 (UI status update, updates MP chat/status pane)
+- **Instruction**: `MOV EAX,[ECX]` at 0x005054C7 — vtable load on NULL ECX
+- **Exception**: Read AV at 0x00000000 (ECX=0)
+- **Root cause**: FUN_0050e1b0(DAT_009878cc, 8) returns valid type-8 pane (vtable 0x0088E74C), but pane+0x60 (child sub-object) is NULL. No NULL check on +0x60 before vtable deref.
+- **Object type**: MP status/chat pane (vtable 0x0088E74C, written by FUN_00504390 ctor and FUN_005587f0 ctor)
+- **Why +0x60 is NULL**: Dedicated server never runs full UI initialization that populates child widgets
+- **Callers**: FUN_006a5df0 (0x006a6112, "Server Found"/ObjCreate handler), FUN_006a3ea0 (0x006a404e, file receive), FUN_00504890 (2 sites), FUN_00504d30, FUN_00504f10, FUN_006a4c10
+- **All callers use cdecl**: PUSH param / CALL / ADD ESP,4
+- **Frequency**: 2x per server boot (during checksum/file transfer phase), FATAL
+- **Fix**: RET patch (0xC3) at 0x005054b0 entry. Function is purely cosmetic (UI text update). No return value used by callers. cdecl clean, bare RET is safe.
+- **Status**: NEW - needs 1-byte RET patch at 0x005054b0
+
+## 0x006B569C - FUN_006b55b0 (TGNetwork::SendStateUpdates) corrupt peer array entry
+- **Function**: FUN_006b55b0 (__fastcall, ECX=WSN ptr) -- serializes pending messages for each peer
+- **Instruction**: `MOV DWORD PTR [ESI+0xAC], 0` (10 bytes: C7 86 AC 00 00 00 00 00 00 00)
+- **Exception**: Write AV at 0x75625D20 (kernel32.dll memory)
+- **Root cause**: Peer array (WSN+0x2C) element[0] contains 0x75625C74 (kernel32 address) instead of valid peer object. Corruption likely caused by VEH-recovered code execution at EIP=WSN+0x31 (0x0CCA8281) -- executing WSN data bytes as x86 code corrupts arbitrary memory.
+- **ESI load site**: 0x006B5619: `MOV ESI, [EDX + EDI*4]` loads peer ptr from array
+- **VEH precursor**: 9 repeating exceptions at EIP=0x0CCA8281 (WSN+0x31) with ECX=NULL every tick. This is a NULL-this vtable call that jumps into WSN data. VEH recovery allows data-as-code execution causing cascading corruption.
+- **WSN layout for peer iteration**: WSN+0x2C = peer array ptr (param_1[0xb]), WSN+0x30 = peer count (param_1[0xc]), WSN+0x34 = peer array capacity
+- **Peer object size**: 0xC0 bytes (allocated by FUN_006b7410). Key fields: +0x18=playerID, +0x1C=refID, +0x7C/+0x98/+0xB4=list counts, +0x9C/+0x80/+0x64=list head ptrs, +0xAC/+0x90/+0x74=iterator indices, +0xBC=flag byte
+- **Callers of FUN_006b55b0**: FUN_006b4060 (at 0x006b4115), FUN_006b4560/TGNetwork_Update (at 0x006b4669, 0x006b4766)
+- **Fix**: Find and fix the NULL-this vtable call that produces EIP=WSN+0x31. Also add defensive peer pointer validation at 0x006B5619.
+- **Status**: NEW - needs root cause fix for the NULL-this call + defensive validation
+
+## 0x0CCA8281 (dynamic, WSN+0x31) - Code execution inside WSN data object
+- **Not a function**: EIP is inside the WSN data object (WSN=0x0CCA8250, offset +0x31)
+- **Exception**: Read AV with ECX=0x00000000 (NULL this ptr dereference during data-as-code execution)
+- **Registers**: ECX=0, EAX=0xF0E78519, EBP=0, EDX=0, ESI=0x0CE92344, EDI=1
+- **Pattern**: Fires every tick (~50ms) after InitNetwork(2). 9 occurrences before fatal crash.
+- **Root cause**: A NULL-this vtable call resolves to WSN+0x31 and the CPU executes WSN data bytes as x86 instructions. The VEH handler recovers but allows corrupt execution to continue, eventually corrupting the peer array.
+- **Upstream cause**: Unknown -- need to identify which object has a NULL 'this' and which vtable offset maps to WSN+0x31. Likely in TGNetwork_Update call chain or a per-frame callback with a dangling/NULL object pointer.
+- **Status**: NEW - root cause of the 0x006B569C crash. Needs investigation to find the NULL-this caller.
+
 ## Previously documented sites:
 - 0x006D1E10 - TGL::FindEntry NULL+0x1C (FIXED: code cave PatchTGLFindEntry)
 - 0x005b1d57 - Network update NULL lists (FIXED: code cave PatchNetworkUpdateNullLists)

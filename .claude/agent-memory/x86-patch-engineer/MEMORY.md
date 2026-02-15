@@ -25,6 +25,7 @@ See [architecture-assessment.md](architecture-assessment.md) for the full approa
 - 0x0043ADB6: Renderer alloc check (JZ -> JMP skip ctor)
 - 0x0043B1D2: Init abort (NOP out JMP)
 - 0x00419960: Vtable thunk (8 bytes, MOV ECX,[ECX+1C]/MOV EAX,[ECX]/JMP [EAX+34]) - full replacement cave
+- 0x006B9F40: RemovePeerAddress (10 bytes, MOV EAX,[ECX+0x348]/MOV EDX,[ESP+4]) - NULL list head guard cave
 
 ## Lessons Learned
 - JZ/JNZ rel8 displacement = target_offset - (jz_offset + 2), NOT target_offset - (jz_offset + 1). The +2 accounts for the full 2-byte JZ instruction (opcode + displacement byte). Initial draft had off-by-one on both JZ branches.

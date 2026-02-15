@@ -54,6 +54,7 @@ static int g_peerInitNetDone[8] = {0};  /* shared: set by InitNetwork, read by s
 
 static VOID CALLBACK GameLoopTimerProc(HWND hwnd, UINT msg,
                                         UINT_PTR id, DWORD time) {
+    typedef DWORD (__cdecl *pfn_GetShipFromPlayerID)(int connID);
     static int tickCount = 0;
     static int lastPlayerCount = -1;
     static DWORD lastLogTime = 0;
@@ -496,7 +497,9 @@ static VOID CALLBACK GameLoopTimerProc(HWND hwnd, UINT msg,
      * --------------------------------------------------------------- */
     {
         static DWORD peerSeenID[8] = {0};
-        static int peerInitNetTick[8] = {0};  /* 0 = no pending call */
+        static BYTE peerNeedsInitNet[8] = {0}; /* 1 = waiting for FUN_006a1e70 trigger */
+        static BYTE peerInitNetCalledByID[16] = {0}; /* per-ID dedup (prevents array reshuffle dupes) */
+        static LONG lastNewPlayerCount = 0; /* track FUN_006a1e70 (hook #15) call count */
         int pCount = 0;
         DWORD pArray = 0;
         if (wsnPtr && !IsBadReadPtr((void*)(wsnPtr + 0x30), 4))
@@ -506,6 +509,21 @@ static VOID CALLBACK GameLoopTimerProc(HWND hwnd, UINT msg,
 
         if (pCount > 0 && pArray) {
             int pi;
+            /* Check if FUN_006a1e70 (NewPlayerInGame) fired since last tick.
+             * Hook #15 in function tracer tracks this. When the engine processes
+             * client's 0x2A, it calls FUN_006a1e70 which does C++ work but its
+             * Python InitNetwork call fails. We fire our Python InitNetwork
+             * immediately after detecting this, so MISSION_INIT_MESSAGE arrives
+             * in the same frame as the engine's NewPlayerHandler. */
+            LONG curNewPlayerCount = 0;
+            BOOL newPlayerFired = FALSE;
+            if (g_ftHookCount > 15)
+                curNewPlayerCount = g_ftHooks[15].callCount;
+            if (curNewPlayerCount > lastNewPlayerCount) {
+                newPlayerFired = TRUE;
+                lastNewPlayerCount = curNewPlayerCount;
+            }
+
             for (pi = 0; pi < pCount && pi < 8; pi++) {
                 DWORD pp = 0;
                 if (!IsBadReadPtr((void*)(pArray + pi*4), 4))
@@ -514,26 +532,37 @@ static VOID CALLBACK GameLoopTimerProc(HWND hwnd, UINT msg,
                     DWORD peerID = 0;
                     if (!IsBadReadPtr((void*)(pp + 0x18), 4))
                         peerID = *(DWORD*)(pp + 0x18);
-                    /* Detect new peer: ID not yet scheduled */
+                    /* Detect new peer: record in per-slot tracking */
                     if (peerID > 0 && peerSeenID[pi] != peerID) {
                         peerSeenID[pi] = peerID;
                         g_peerInitNetDone[pi] = 0;
-                        peerInitNetTick[pi] = tickCount + 30;
-                        ProxyLog("  GAMELOOP[%d]: Peer[%d] id=%u appeared, InitNetwork scheduled at tick %d",
-                                 tickCount, pi, peerID, peerInitNetTick[pi]);
+                        peerNeedsInitNet[pi] = 0;
+                        /* Skip host (ID=1) — only mark clients as needing InitNetwork.
+                         * Per-ID dedup prevents duplicate calls when peer array reshuffles. */
+                        if (peerID > 1 && peerID < 16 && !peerInitNetCalledByID[peerID]) {
+                            peerNeedsInitNet[pi] = 1;
+                            ProxyLog("  GAMELOOP[%d]: Peer[%d] id=%u appeared, InitNetwork pending (waiting for 0x2A)",
+                                     tickCount, pi, peerID);
+                        } else if (peerID == 1) {
+                            ProxyLog("  GAMELOOP[%d]: Peer[%d] id=%u is host, skipping InitNetwork",
+                                     tickCount, pi, peerID);
+                        }
                     }
-                    /* Execute deferred InitNetwork call */
-                    if (peerInitNetTick[pi] > 0 && tickCount >= peerInitNetTick[pi]) {
+                    /* Execute InitNetwork when FUN_006a1e70 fires (engine processed 0x2A).
+                     * This ensures MISSION_INIT_MESSAGE arrives right after the engine's
+                     * NewPlayerInGame handling, before client interacts with ship selection. */
+                    if (peerNeedsInitNet[pi] && newPlayerFired) {
                         char pyCmd[512];
-                        peerInitNetTick[pi] = 0;
+                        peerNeedsInitNet[pi] = 0;
                         g_peerInitNetDone[pi] = 1;
+                        if (peerID < 16) peerInitNetCalledByID[peerID] = 1;
                         wsprintfA(pyCmd,
                             "import sys\n"
                             "if sys.modules.has_key('Multiplayer.Episode.Mission1.Mission1'):\n"
                             "    _m1 = sys.modules['Multiplayer.Episode.Mission1.Mission1']\n"
                             "    _m1.InitNetwork(%u)\n",
                             peerID);
-                        ProxyLog("  GAMELOOP[%d]: Calling InitNetwork(%u) for peer[%d]",
+                        ProxyLog("  GAMELOOP[%d]: Calling InitNetwork(%u) for peer[%d] (triggered by 0x2A handler)",
                                  tickCount, peerID, pi);
                         RunPyCode(pyCmd);
                     }
@@ -544,8 +573,11 @@ static VOID CALLBACK GameLoopTimerProc(HWND hwnd, UINT msg,
         {
             int pi;
             for (pi = pCount; pi < 8; pi++) {
+                /* Clear per-ID dedup so peer can re-InitNetwork on reconnect */
+                if (peerSeenID[pi] > 0 && peerSeenID[pi] < 16)
+                    peerInitNetCalledByID[peerSeenID[pi]] = 0;
                 peerSeenID[pi] = 0;
-                peerInitNetTick[pi] = 0;
+                peerNeedsInitNet[pi] = 0;
                 g_peerInitNetDone[pi] = 0;
             }
         }
@@ -566,7 +598,6 @@ static VOID CALLBACK GameLoopTimerProc(HWND hwnd, UINT msg,
      * --------------------------------------------------------------- */
     {
         static int shipPollStart[8] = {0};  /* tick to begin polling */
-        static int shipPollDone[8]  = {0};  /* 1 = done (found or timeout) */
         int pCount = 0;
         DWORD pArray = 0;
         if (wsnPtr && !IsBadReadPtr((void*)(wsnPtr + 0x30), 4))
@@ -583,15 +614,18 @@ static VOID CALLBACK GameLoopTimerProc(HWND hwnd, UINT msg,
                 DWORD pp = 0;
                 if (!IsBadReadPtr((void*)(pArray + pi*4), 4))
                     pp = *(DWORD*)(pArray + pi*4);
-                if (g_peerInitNetDone[pi] && shipPollStart[pi] == 0 && !shipPollDone[pi]) {
+                if (g_peerInitNetDone[pi] && shipPollStart[pi] == 0) {
                     shipPollStart[pi] = tickCount + 90;
                     ProxyLog("  GAMELOOP[%d]: Ship init poll scheduled for peer[%d] starting tick %d",
                              tickCount, pi, shipPollStart[pi]);
                 }
-                /* Poll every 30 ticks (~1s) for up to 600 ticks (~20s) */
-                if (shipPollStart[pi] > 0 && !shipPollDone[pi] &&
-                    tickCount >= shipPollStart[pi]) {
-                    if (tickCount < shipPollStart[pi] + 600 && tickCount % 30 == 0) {
+                /* Poll for ship changes: fast (every 30 ticks) for first 600 ticks,
+                 * then slow (every 90 ticks) indefinitely. DeferredInitObject is
+                 * idempotent — returns 0 immediately if ship type unchanged.
+                 * Stagger per-peer with +pi*10 to avoid all peers polling same tick. */
+                if (shipPollStart[pi] > 0 && tickCount >= shipPollStart[pi]) {
+                    int rate = (tickCount < shipPollStart[pi] + 600) ? 30 : 90;
+                    if ((tickCount + pi * 10) % rate == 0) {
                         DWORD peerID = 0;
                         char pyCmd[512];
                         if (pp && !IsBadReadPtr((void*)(pp + 0x18), 4))
@@ -603,11 +637,6 @@ static VOID CALLBACK GameLoopTimerProc(HWND hwnd, UINT msg,
                             peerID);
                         RunPyCode(pyCmd);
                     }
-                    if (tickCount >= shipPollStart[pi] + 600) {
-                        shipPollDone[pi] = 1;
-                        ProxyLog("  GAMELOOP[%d]: Ship init poll timeout for peer[%d]",
-                                 tickCount, pi);
-                    }
                 }
             }
         }
@@ -616,7 +645,118 @@ static VOID CALLBACK GameLoopTimerProc(HWND hwnd, UINT msg,
             int pi;
             for (pi = pCount; pi < 8; pi++) {
                 shipPollStart[pi] = 0;
-                shipPollDone[pi] = 0;
+            }
+        }
+    }
+
+    /* ---------------------------------------------------------------
+     * Ship field diagnostics + DmgTarget fixup.
+     *
+     * After DeferredInitObject sets up a ship, ship+0x140 (DmgTarget)
+     * stays NULL because SetupModel takes Path 2 (registry miss) in
+     * headless mode.  DoDamage gates on +0x140 != NULL, so ALL damage
+     * is silently dropped without this fixup.
+     *
+     * Fix: copy +0x18 (NiNode) into +0x140.  This block also tracks
+     * ship pointer changes to re-fire on respawn (engine may reuse or
+     * allocate a new ship object after death).
+     *
+     * Gate fields checked:
+     *   +0x18  NiNode (DoDamage gate)
+     *   +0x140 Damage target ref (DoDamage gate) — FIXED UP HERE
+     *   +0x128 Handler array ptr (ProcessDamage subsystems)
+     *   +0x130 Handler count (should be ~33)
+     *   +0x1B8 Resistance multiplier (0.0 = invulnerable)
+     *   +0x1BC Falloff multiplier (0.0 = formula breaks)
+     *   +0xD8  Mass (collision formula, div-by-zero risk)
+     * --------------------------------------------------------------- */
+    {
+        static BYTE shipDiagDone[8] = {0};
+        static DWORD lastShipPtr[8] = {0};  /* track pointer for respawn detection */
+        int pCount = 0;
+        DWORD pArray = 0;
+        if (wsnPtr && !IsBadReadPtr((void*)(wsnPtr + 0x30), 4))
+            pCount = *(int*)(wsnPtr + 0x30);
+        if (wsnPtr && !IsBadReadPtr((void*)(wsnPtr + 0x2C), 4))
+            pArray = *(DWORD*)(wsnPtr + 0x2C);
+
+        if (pCount > 0 && pArray) {
+            int pi;
+            for (pi = 0; pi < pCount && pi < 8; pi++) {
+                DWORD pp = 0;
+                DWORD peerID = 0;
+                DWORD shipPtr;
+                if (!IsBadReadPtr((void*)(pArray + pi*4), 4))
+                    pp = *(DWORD*)(pArray + pi*4);
+                if (pp && !IsBadReadPtr((void*)(pp + 0x18), 4))
+                    peerID = *(DWORD*)(pp + 0x18);
+                if (peerID <= 1) continue;  /* skip host */
+
+                shipPtr = ((pfn_GetShipFromPlayerID)0x006a1aa0)((int)peerID);
+
+                /* Respawn detection: if ship pointer changed, reset diag
+                 * so the fixup runs again for the new ship object. */
+                if (shipPtr && shipPtr != lastShipPtr[pi]) {
+                    if (lastShipPtr[pi] != 0) {
+                        ProxyLog("  SHIP_CHANGE peer[%d] id=%u: 0x%08X -> 0x%08X (respawn?)",
+                                 pi, peerID, lastShipPtr[pi], shipPtr);
+                        shipDiagDone[pi] = 0;
+                    }
+                    lastShipPtr[pi] = shipPtr;
+                }
+
+                if (g_peerInitNetDone[pi] && !shipDiagDone[pi]) {
+                    if (shipPtr && !IsBadReadPtr((void*)shipPtr, 0x300)) {
+                        DWORD niNode = 0, dmgTarget = 0, hArray = 0, hCount = 0;
+                        float resist = 0.0f, falloff = 0.0f, mass = 0.0f;
+
+                        if (!IsBadReadPtr((void*)(shipPtr + 0x18), 4))
+                            niNode = *(DWORD*)(shipPtr + 0x18);
+                        if (!IsBadReadPtr((void*)(shipPtr + 0x140), 4))
+                            dmgTarget = *(DWORD*)(shipPtr + 0x140);
+                        if (!IsBadReadPtr((void*)(shipPtr + 0x128), 4))
+                            hArray = *(DWORD*)(shipPtr + 0x128);
+                        if (!IsBadReadPtr((void*)(shipPtr + 0x130), 4))
+                            hCount = *(DWORD*)(shipPtr + 0x130);
+                        if (!IsBadReadPtr((void*)(shipPtr + 0x1B8), 4))
+                            resist = *(float*)(shipPtr + 0x1B8);
+                        if (!IsBadReadPtr((void*)(shipPtr + 0x1BC), 4))
+                            falloff = *(float*)(shipPtr + 0x1BC);
+                        if (!IsBadReadPtr((void*)(shipPtr + 0xD8), 4))
+                            mass = *(float*)(shipPtr + 0xD8);
+
+                        /* DmgTarget fixup: copy NiNode into +0x140 so
+                         * DoDamage doesn't gate out all damage. */
+                        if (niNode && !dmgTarget) {
+                            *(DWORD*)(shipPtr + 0x140) = niNode;
+                            dmgTarget = niNode;
+                            ProxyLog("  SHIP_FIXUP peer[%d] id=%u: +0x140 was NULL, set to +0x18 (0x%08X)",
+                                     pi, peerID, niNode);
+                        }
+
+                        ProxyLog("  SHIP_DIAG peer[%d] id=%u ship=0x%08X:", pi, peerID, shipPtr);
+                        ProxyLog("    +0x018 NiNode       = 0x%08X %s", niNode, niNode ? "PASS" : "** FAIL **");
+                        ProxyLog("    +0x140 DmgTarget    = 0x%08X %s", dmgTarget, dmgTarget ? "PASS" : "** FAIL **");
+                        ProxyLog("    +0x128 HandlerArray = 0x%08X %s", hArray, hArray ? "PASS" : "** FAIL **");
+                        ProxyLog("    +0x130 HandlerCount = %u %s", hCount, (hCount > 0) ? "PASS" : "** FAIL **");
+                        ProxyLog("    +0x1B8 Resistance   = %.4f %s", resist, (resist > 0.0f) ? "PASS" : "WARN(0)");
+                        ProxyLog("    +0x1BC Falloff      = %.4f %s", falloff, (falloff > 0.0f) ? "PASS" : "WARN(0)");
+                        ProxyLog("    +0x0D8 Mass         = %.4f %s", mass, (mass > 0.0f) ? "PASS" : "WARN(0)");
+
+                        /* Only mark done if +0x140 is now set.
+                         * If NiNode is also NULL, ship isn't ready yet. */
+                        if (dmgTarget)
+                            shipDiagDone[pi] = 1;
+                    }
+                }
+            }
+        }
+        /* Reset for disconnected peers */
+        {
+            int pi;
+            for (pi = pCount; pi < 8; pi++) {
+                shipDiagDone[pi] = 0;
+                lastShipPtr[pi] = 0;
             }
         }
     }
@@ -691,6 +831,13 @@ static VOID CALLBACK GameLoopTimerProc(HWND hwnd, UINT msg,
             }
         }
         lastLogTime = time;
+    }
+
+    /* Periodic function tracer dump every 300 ticks (~10s) */
+    if (tickCount > 0 && (tickCount % 300 == 0)) {
+        char label[32];
+        wsprintfA(label, "tick_%d", tickCount);
+        FTraceDump(label);
     }
 }
 
@@ -841,6 +988,15 @@ static VOID CALLBACK DedicatedServerTimerProc(HWND hwnd, UINT msg,
                     ProxyLog("  DS_TIMER[2]: TopWindow created inside pCreate(): 0x%08X", twPtr);
                     logOnce = 1;
                 }
+                /* Set ReadyForNewPlayers=1 EARLY so clients connecting during
+                 * Phase 3 Python execution aren't deferred. Without this, the
+                 * engine's NewPlayerHandler finds +0x1F8==0 and defers via a
+                 * timer that doesn't work in our TIMERPROC environment, causing
+                 * the first connection to always time out. */
+                if (!IsBadWritePtr((void*)(twPtr + 0x1F8), 1)) {
+                    *(BYTE*)(twPtr + 0x1F8) = 1;
+                    ProxyLog("  DS_TIMER[2]: Set +0x1F8=1 EARLY (re-entrant path)");
+                }
                 g_iDedState = 3;
             }
             break;
@@ -858,6 +1014,11 @@ static VOID CALLBACK DedicatedServerTimerProc(HWND hwnd, UINT msg,
 
 
         if (twPtr != 0) {
+            /* Set ReadyForNewPlayers=1 EARLY (normal path) */
+            if (!IsBadWritePtr((void*)(twPtr + 0x1F8), 1)) {
+                *(BYTE*)(twPtr + 0x1F8) = 1;
+                ProxyLog("  DS_TIMER[2]: Set +0x1F8=1 EARLY (normal path)");
+            }
             g_iDedState = 3;
         } else {
             ProxyLog("  DS_TIMER[2]: TopWindow creation failed");

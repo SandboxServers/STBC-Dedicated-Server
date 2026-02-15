@@ -10,6 +10,12 @@
 reference/decompiled/all_decompiled.c
 reference/decompiled/.progress.json
 
+logs/*
+!logs/readme.md
+
+engine/**
+!engine/readme.md
+
 # Game installs (copyrighted content) - keep only readme files
 game/server/*
 !game/server/readme.md

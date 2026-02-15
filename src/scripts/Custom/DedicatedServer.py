@@ -41,153 +41,8 @@ def _pydbg(msg):
 
 _pydbg("DedicatedServer.py loading")
 
-###############################################################################
-#   Headless import hook - wraps mission Python handlers with try/except
-#   so that GUI-related AttributeErrors don't crash the headless server.
-#   Mission scripts assume GUI widgets exist (KillChildren, etc.) but in
-#   headless mode those references are None.
-###############################################################################
-try:
-    import __builtin__
-    _ds_orig_import = __builtin__.__import__
-    _ds_patched = {}
-
-    def _ds_log(msg):
-        try:
-            _bp = getattr(sys, '_ds_base_path', '')
-            f = open(_bp + "dedicated_init.log", "a")
-            f.write(msg + "\n")
-            f.close()
-        except:
-            pass
-
-    def _ds_patch_handler(mod, hname):
-        """Patch a handler function IN-PLACE using func_code replacement.
-
-        The event system holds a direct reference to the original function
-        object, so replacing the module attribute doesn't help.  Instead we:
-        1. Copy the original function (preserving its code)
-        2. Create a wrapper that calls the copy inside try/except
-        3. Replace the original function's func_code with the wrapper's code
-        4. Set func_defaults so the copy is passed as a default argument
-
-        This way the event system's reference to the original function object
-        now executes our safe wrapper code when called.
-
-        Python 1.5 lacks closures, so we use default args to capture values.
-        """
-        orig_fn = getattr(mod, hname)
-        if not hasattr(orig_fn, 'func_code'):
-            return 0
-        # Create a copy of the original function with its original code
-        import new
-        copy_fn = new.function(orig_fn.func_code, orig_fn.func_globals,
-                               hname + '_orig')
-        if orig_fn.func_defaults:
-            copy_fn.func_defaults = orig_fn.func_defaults
-        # Create wrapper - default args capture copy_fn and _ds_log
-        # Python 1.5: no closures, use default args instead
-        def wrapper(pObject, pEvent, _orig=copy_fn, _log=_ds_log):
-            try:
-                _orig(pObject, pEvent)
-            except Exception, e:
-                _log("HANDLER CAUGHT: " + str(e))
-            except:
-                _log("HANDLER CAUGHT: (unknown)")
-        # Replace the original function's code IN-PLACE
-        # The event system's reference to orig_fn now executes wrapper's code
-        orig_fn.func_code = wrapper.func_code
-        orig_fn.func_defaults = (copy_fn, _ds_log)
-        return 1
-
-    def _ds_safe_import(name, globals=None, locals=None, fromlist=None):
-        """Import hook that patches mission modules for headless mode.
-
-        In Python 1.5, __import__('A.B.C') returns module A (top-level).
-        The actual submodule C is in sys.modules['A.B.C'].
-        We must look there to find the handler functions.
-        """
-        # Always trace Multiplayer imports with fromlist (debug MissionShared)
-        trace = (str(name) == 'Multiplayer' and fromlist is not None)
-        if trace:
-            _ds_log("HOOK PRE: from %s import %s" % (str(name), str(fromlist)))
-        if fromlist is not None:
-            mod = _ds_orig_import(name, globals, locals, fromlist)
-        elif locals is not None:
-            mod = _ds_orig_import(name, globals, locals)
-        elif globals is not None:
-            mod = _ds_orig_import(name, globals)
-        else:
-            mod = _ds_orig_import(name)
-        # Fix: ensure parent packages have submodule attributes set.
-        # Python 1.5's embedded import doesn't always set pkg.submod,
-        # causing LOAD_ATTR 'submod' to raise AttributeError.
-        modname = str(name)
-        if strop.find(modname, '.') >= 0:
-            parts = strop.split(modname, '.')
-            for _i in range(len(parts) - 1):
-                _pfull = strop.join(parts[:_i+1], '.')
-                _cname = parts[_i+1]
-                _cfull = strop.join(parts[:_i+2], '.')
-                _pmod = sys.modules.get(_pfull, None)
-                _cmod = sys.modules.get(_cfull, None)
-                if _pmod is not None and _cmod is not None:
-                    if not hasattr(_pmod, _cname):
-                        setattr(_pmod, _cname, _cmod)
-        # Also fix fromlist: from X import Y needs X.Y as attribute
-        if fromlist is not None:
-            for _attr in fromlist:
-                if str(_attr) == '*':
-                    continue
-                _full = modname + '.' + str(_attr)
-                if sys.modules.has_key(_full) and not hasattr(mod, str(_attr)):
-                    setattr(mod, str(_attr), sys.modules[_full])
-        if trace:
-            _ds_log("HOOK POST: mod=%s has_attr=%s" % (
-                str(mod), str(hasattr(mod, str(fromlist[0])))))
-        if not _ds_patched.has_key(modname):
-            # Check if this is a mission module (any multiplayer episode)
-            # NOTE: Python 1.5 'in' on strings requires single-char left operand
-            # (raises TypeError otherwise), so use strop.find for substring search
-            is_mission = 0
-            for mname in ['Mission1', 'Mission2', 'Mission3', 'Mission5']:
-                if strop.find(modname, mname) >= 0:
-                    is_mission = 1
-                    break
-            if is_mission:
-                _ds_patched[modname] = 1
-                # Get the ACTUAL submodule from sys.modules
-                # (not the top-level package returned by __import__)
-                try:
-                    actual_mod = sys.modules[modname]
-                except:
-                    actual_mod = None
-                if actual_mod:
-                    _ds_log("IMPORT HOOK: Patching " + modname)
-                    handler_names = [
-                        'NewPlayerHandler', 'DeletePlayerHandler',
-                        'RebuildPlayerList', 'StartGame',
-                        'RebuildInfoPane', 'RebuildShipPane',
-                        'RebuildTeamPane', 'RebuildReadyButton',
-                    ]
-                    for hname in handler_names:
-                        if hasattr(actual_mod, hname):
-                            try:
-                                ok = _ds_patch_handler(actual_mod, hname)
-                                if ok:
-                                    _ds_log("  Patched " + hname + " (func_code)")
-                                else:
-                                    _ds_log("  Skipped " + hname + " (not a function)")
-                            except Exception, e:
-                                _ds_log("  FAILED " + hname + ": " + str(e))
-        return mod
-
-    __builtin__.__import__ = _ds_safe_import
-    print "DedicatedServer: import hook installed"
-    _pydbg("DedicatedServer: import hook installed")
-except:
-    print "DedicatedServer: import hook FAILED"
-    _pydbg("DedicatedServer: import hook FAILED")
+# Headless import hook (extracted to Custom/DSImportHook.py)
+__import__('Custom.DSImportHook')
 
 ###############################################################################
 #   File-based logging (more reliable than print in stub mode)
@@ -203,109 +58,11 @@ def _log(msg):
     except:
         pass
 
-###############################################################################
-#   Explicit mission module patching
-#
-#   The import hook may not fire if the engine loads mission .pyc files
-#   through C code (bypassing __builtin__.__import__).  This function
-#   scans sys.modules for any already-loaded mission modules and patches
-#   them for headless safety.
-#
-#   Two strategies:
-#   1. EVENT HANDLERS (called by event system with direct func reference):
-#      Replace func_code IN-PLACE with try/except wrapper.
-#      Signature: (pObject, pEvent) - standard event handler args.
-#   2. GUI HELPERS (called by handlers via module attribute lookup):
-#      Replace module attribute with a safe no-op function.
-#      This prevents crashes even if the handler wrapper doesn't fire.
-###############################################################################
-
-# Event handlers called by the C event system (hold direct func references)
-_EVENT_HANDLERS = [
-    'NewPlayerHandler', 'DeletePlayerHandler', 'StartGame',
-]
-
-# GUI functions that access UI widgets (called via module.func())
-_GUI_FUNCTIONS = [
-    'RebuildPlayerList', 'RebuildInfoPane', 'RebuildShipPane',
-    'RebuildTeamPane', 'RebuildReadyButton',
-    'UpdateShipList', 'UpdatePlayerList',
-    'ConfigureTeamPane', 'ConfigureInfoPane',
-    'ConfigureShipPane', 'ConfigureReadyButton',
-    'CreateInfoPane', 'CreateShipPane', 'CreateTeamPane',
-]
-
-def _noop_gui(*args):
-    """No-op replacement for GUI functions in headless mode."""
-    pass
-
-def PatchLoadedMissionModules():
-    """Scan sys.modules and patch any mission module handlers for headless mode."""
-    import new
-    count = 0
-    keys = sys.modules.keys()
-    for modname in keys:
-        is_mission = 0
-        for mname in ['Mission1', 'Mission2', 'Mission3', 'Mission5']:
-            if strop.find(modname, mname) >= 0:
-                is_mission = 1
-                break
-        if not is_mission:
-            continue
-        if _ds_patched.has_key(modname):
-            continue
-        _ds_patched[modname] = 1
-        mod = sys.modules[modname]
-        if mod is None:
-            continue
-        _log("EXPLICIT PATCH: " + modname)
-
-        # Strategy 1: Wrap event handlers with try/except via func_code swap
-        for hname in _EVENT_HANDLERS:
-            if not hasattr(mod, hname):
-                continue
-            orig_fn = getattr(mod, hname)
-            if not hasattr(orig_fn, 'func_code'):
-                continue
-            try:
-                copy_fn = new.function(orig_fn.func_code, orig_fn.func_globals,
-                                       hname + '_orig')
-                if orig_fn.func_defaults:
-                    copy_fn.func_defaults = orig_fn.func_defaults
-                # Wrapper with exact event handler signature (pObject, pEvent)
-                # Default args capture the copy and logger (no closures in 1.5)
-                def wrapper(pObject, pEvent,
-                            _orig=copy_fn, _logfn=_log, _fname=hname):
-                    try:
-                        _orig(pObject, pEvent)
-                    except:
-                        ei = sys.exc_info()
-                        _logfn("HANDLER CAUGHT [" + _fname + "]: " + str(ei[0]) + ": " + str(ei[1]))
-                # Replace func_code IN-PLACE so event system's reference works
-                orig_fn.func_code = wrapper.func_code
-                orig_fn.func_defaults = wrapper.func_defaults
-                _log("  Wrapped " + hname + " (func_code)")
-                count = count + 1
-            except Exception, e:
-                _log("  FAILED " + hname + ": " + str(e))
-
-        # Strategy 2: Replace GUI helpers with no-ops at module level
-        for hname in _GUI_FUNCTIONS:
-            if not hasattr(mod, hname):
-                continue
-            orig_fn = getattr(mod, hname)
-            if not hasattr(orig_fn, 'func_code'):
-                continue
-            try:
-                setattr(mod, hname, _noop_gui)
-                _log("  Replaced " + hname + " (noop)")
-                count = count + 1
-            except Exception, e:
-                _log("  FAILED " + hname + ": " + str(e))
-
-    if count > 0:
-        _log("EXPLICIT PATCH: done, patched " + str(count) + " functions")
-    return count
+# Mission module patching (extracted to Custom/DSPatches.py)
+__import__('Custom.DSPatches')
+_patches = sys.modules['Custom.DSPatches']
+PatchLoadedMissionModules = _patches.PatchLoadedMissionModules
+_noop_gui = _patches._noop_gui
 
 ###############################################################################
 #   Configuration - edit these for your server
@@ -327,196 +84,11 @@ SERVER_FRIENDLY_FIRE_POINTS = 100 # FF warning threshold (0=disabled)
 ###############################################################################
 g_pTopWindow = None
 
-g_bAppWrapCompatInstalled = 0
-g_pfnRaw_Game_GetCurrentGame = None
-g_pfnRaw_TopWindow_GetTopWindow = None
-g_pfnRaw_MultiplayerGame_Cast = None
-g_pfnRaw_Game_GetCurrentPlayer = None
-
-def _WrapPtrResult(pRawFn, pPtrClass, args, kwargs):
-    """Call raw SWIG function and wrap pointer-string result to Ptr object."""
-    val = apply(pRawFn, args, kwargs)
-    if val and pPtrClass is not None:
-        try:
-            val = pPtrClass(val)
-        except:
-            pass
-    return val
-
-def _Compat_Game_GetCurrentGame(*args, **kwargs):
-    global g_pfnRaw_Game_GetCurrentGame
-    return _WrapPtrResult(g_pfnRaw_Game_GetCurrentGame,
-                          getattr(App, 'GamePtr', None), args, kwargs)
-
-def _Compat_TopWindow_GetTopWindow(*args, **kwargs):
-    global g_pfnRaw_TopWindow_GetTopWindow
-    return _WrapPtrResult(g_pfnRaw_TopWindow_GetTopWindow,
-                          getattr(App, 'TopWindowPtr', None), args, kwargs)
-
-def _Compat_MultiplayerGame_Cast(*args, **kwargs):
-    global g_pfnRaw_MultiplayerGame_Cast
-    return _WrapPtrResult(g_pfnRaw_MultiplayerGame_Cast,
-                          getattr(App, 'MultiplayerGamePtr', None), args, kwargs)
-
-def _Compat_Game_GetCurrentPlayer(*args, **kwargs):
-    global g_pfnRaw_Game_GetCurrentPlayer
-    return _WrapPtrResult(g_pfnRaw_Game_GetCurrentPlayer,
-                          getattr(App, 'ShipClassPtr', None), args, kwargs)
-
-def EnsureAppPointerWrappers():
-    """Install stock-like wrappers when App is raw C API (builtins only)."""
-    global g_bAppWrapCompatInstalled
-    global g_pfnRaw_Game_GetCurrentGame
-    global g_pfnRaw_TopWindow_GetTopWindow
-    global g_pfnRaw_MultiplayerGame_Cast
-    global g_pfnRaw_Game_GetCurrentPlayer
-
-    if g_bAppWrapCompatInstalled:
-        return
-    g_bAppWrapCompatInstalled = 1
-
-    try:
-        fn = getattr(App, 'Game_GetCurrentGame', None)
-        if fn and not hasattr(fn, 'func_code'):
-            g_pfnRaw_Game_GetCurrentGame = fn
-            App.Game_GetCurrentGame = _Compat_Game_GetCurrentGame
-            _log("Installed App compat wrapper: Game_GetCurrentGame -> GamePtr")
-    except Exception, e:
-        _log("App compat wrap failed (Game_GetCurrentGame): " + str(e))
-
-    try:
-        fn = getattr(App, 'TopWindow_GetTopWindow', None)
-        if fn and not hasattr(fn, 'func_code'):
-            g_pfnRaw_TopWindow_GetTopWindow = fn
-            App.TopWindow_GetTopWindow = _Compat_TopWindow_GetTopWindow
-            _log("Installed App compat wrapper: TopWindow_GetTopWindow -> TopWindowPtr")
-    except Exception, e:
-        _log("App compat wrap failed (TopWindow_GetTopWindow): " + str(e))
-
-    try:
-        fn = getattr(App, 'MultiplayerGame_Cast', None)
-        if fn and not hasattr(fn, 'func_code'):
-            g_pfnRaw_MultiplayerGame_Cast = fn
-            App.MultiplayerGame_Cast = _Compat_MultiplayerGame_Cast
-            _log("Installed App compat wrapper: MultiplayerGame_Cast -> MultiplayerGamePtr")
-    except Exception, e:
-        _log("App compat wrap failed (MultiplayerGame_Cast): " + str(e))
-
-    try:
-        fn = getattr(App, 'Game_GetCurrentPlayer', None)
-        if fn and not hasattr(fn, 'func_code'):
-            g_pfnRaw_Game_GetCurrentPlayer = fn
-            App.Game_GetCurrentPlayer = _Compat_Game_GetCurrentPlayer
-            _log("Installed App compat wrapper: Game_GetCurrentPlayer -> ShipClassPtr")
-    except Exception, e:
-        _log("App compat wrap failed (Game_GetCurrentPlayer): " + str(e))
-
-class _SWIGWrapper:
-    """Callable wrapper: calls raw_fn and wraps result with ptr_cls."""
-    def __init__(self, raw_fn, ptr_cls):
-        self.raw_fn = raw_fn
-        self.ptr_cls = ptr_cls
-    def __call__(self, *args):
-        val = apply(self.raw_fn, args)
-        if val:
-            val = self.ptr_cls(val)
-        return val
-
-def FixAppShadowWrappers():
-    """Install shadow wrappers for App.*_Create/*_Cast that are raw Appc builtins.
-
-    App.py does 'from Appc import *' then defines shadow wrapper functions later.
-    If App.py stops executing partway, the wrapper functions are missing and
-    App.*_Create returns raw SWIG pointer strings instead of wrapped objects.
-    This fixes that by installing wrappers for all known _Create/_Cast functions.
-    """
-    import Appc
-    _builtin_type = type(getattr(Appc, 'ShipProperty_Create', None))
-    _fixed = 0
-
-    # All property _Create/_Cast functions and their Ptr class names
-    _wrapper_map = [
-        # Properties
-        ('TGModelProperty', 'TGModelPropertyPtr'),
-        ('TGModelPropertySet', 'TGModelPropertySetPtr'),
-        ('PositionOrientationProperty', 'PositionOrientationPropertyPtr'),
-        ('SubsystemProperty', 'SubsystemPropertyPtr'),
-        ('PoweredSubsystemProperty', 'PoweredSubsystemPropertyPtr'),
-        ('WeaponSystemProperty', 'WeaponSystemPropertyPtr'),
-        ('WeaponProperty', 'WeaponPropertyPtr'),
-        ('EnergyWeaponProperty', 'EnergyWeaponPropertyPtr'),
-        ('PhaserProperty', 'PhaserPropertyPtr'),
-        ('PulseWeaponProperty', 'PulseWeaponPropertyPtr'),
-        ('TractorBeamProperty', 'TractorBeamPropertyPtr'),
-        ('TorpedoTubeProperty', 'TorpedoTubePropertyPtr'),
-        ('TorpedoSystemProperty', 'TorpedoSystemPropertyPtr'),
-        ('EngineGlowProperty', 'EngineGlowPropertyPtr'),
-        ('ShieldProperty', 'ShieldPropertyPtr'),
-        ('HullProperty', 'HullPropertyPtr'),
-        ('SensorProperty', 'SensorPropertyPtr'),
-        ('CloakingSubsystemProperty', 'CloakingSubsystemPropertyPtr'),
-        ('RepairSubsystemProperty', 'RepairSubsystemPropertyPtr'),
-        ('ShipProperty', 'ShipPropertyPtr'),
-        ('PowerProperty', 'PowerPropertyPtr'),
-        ('ImpulseEngineProperty', 'ImpulseEnginePropertyPtr'),
-        ('WarpEngineProperty', 'WarpEnginePropertyPtr'),
-        ('EngineProperty', 'EnginePropertyPtr'),
-        ('EffectEmitterProperty', 'EffectEmitterPropertyPtr'),
-        ('SmokeEmitterProperty', 'SmokeEmitterPropertyPtr'),
-        ('SparkEmitterProperty', 'SparkEmitterPropertyPtr'),
-        ('ExplodeEmitterProperty', 'ExplodeEmitterPropertyPtr'),
-        ('BlinkingLightProperty', 'BlinkingLightPropertyPtr'),
-        ('ObjectEmitterProperty', 'ObjectEmitterPropertyPtr'),
-        # Events
-        ('TGEvent', 'TGEventPtr'),
-        ('TGBoolEvent', 'TGBoolEventPtr'),
-        ('TGCharEvent', 'TGCharEventPtr'),
-        ('TGShortEvent', 'TGShortEventPtr'),
-        ('TGIntEvent', 'TGIntEventPtr'),
-        ('TGFloatEvent', 'TGFloatEventPtr'),
-        ('TGStringEvent', 'TGStringEventPtr'),
-        ('TGVoidPtrEvent', 'TGVoidPtrEventPtr'),
-        ('TGObjPtrEvent', 'TGObjPtrEventPtr'),
-        ('TGMouseEvent', 'TGMouseEventPtr'),
-        ('TGKeyboardEvent', 'TGKeyboardEventPtr'),
-        ('TGGamepadEvent', 'TGGamepadEventPtr'),
-        # Game objects
-        ('SetClass', 'SetClassPtr'),
-        ('Game', 'GamePtr'),
-        ('BaseObjectClass', 'BaseObjectClassPtr'),
-        ('ObjectClass', 'ObjectClassPtr'),
-        ('ShipClass', 'ShipClassPtr'),
-        ('PlayerClass', 'PlayerClassPtr'),
-        # Other
-        ('TGMessage', 'TGMessagePtr'),
-        ('TGSequence', 'TGSequencePtr'),
-        ('TGTimer', 'TGTimerPtr'),
-        ('TGSound', 'TGSoundPtr'),
-        ('TGLocalizationDatabase', 'TGLocalizationDatabasePtr'),
-    ]
-
-    for base_name, ptr_name in _wrapper_map:
-        ptr_cls = getattr(App, ptr_name, None)
-        if ptr_cls is None:
-            continue
-        # Fix _Create
-        create_name = base_name + '_Create'
-        app_fn = getattr(App, create_name, None)
-        if app_fn is not None and type(app_fn) == _builtin_type:
-            raw_fn = getattr(Appc, create_name, None)
-            if raw_fn is not None:
-                setattr(App, create_name, _SWIGWrapper(raw_fn, ptr_cls))
-                _fixed = _fixed + 1
-        # Fix _Cast
-        cast_name = base_name + '_Cast'
-        app_fn = getattr(App, cast_name, None)
-        if app_fn is not None and type(app_fn) == _builtin_type:
-            raw_fn = getattr(Appc, cast_name, None)
-            if raw_fn is not None:
-                setattr(App, cast_name, _SWIGWrapper(raw_fn, ptr_cls))
-                _fixed = _fixed + 1
-
-    _log("FixAppShadowWrappers: installed %d wrappers" % _fixed)
+# SWIG compatibility wrappers (extracted to Custom/DSSwig.py)
+__import__('Custom.DSSwig')
+_swig = sys.modules['Custom.DSSwig']
+EnsureAppPointerWrappers = _swig.EnsureAppPointerWrappers
+FixAppShadowWrappers = _swig.FixAppShadowWrappers
 
 def Initialize():
     print "DedicatedServer: Initialize()"
@@ -559,40 +131,10 @@ def CreateSystemSet():
         _log("CreateSystemSet FAILED: %s: %s" % (str(ei[0]), str(ei[1])))
 
 ###############################################################################
-#   TopWindowInitialized - called from C-side DS_TIMER Phase 3
-#
-#   At this point, the C code has already:
-#   - Set IsHost=1, IsMultiplayer=1
-#   - Created WSN (network listening on port 22101)
-#   - Created MultiplayerGame (which creates the TopWindow/Game object)
-#
-#   We just need to set config values and report status.
+#   _init_game_config - Phase 2: Configure network, GameSpy, game settings
 ###############################################################################
-def TopWindowInitialized(pTopWindow):
-    EnsureAppPointerWrappers()
-    global g_pTopWindow
-    g_pTopWindow = pTopWindow
-    _log("TopWindowInitialized called, pTopWindow=" + str(pTopWindow))
-    _log("  pTopWindow type = " + str(type(pTopWindow)))
-    print "DedicatedServer: TopWindowInitialized"
-    _pydbg("DedicatedServer: TopWindowInitialized")
-
-    # --- Construct SWIG pointers manually for global singletons ---
-    # The g_k* module attributes aren't set because we bypass the SWIG init.
-    # We know the memory address of UtopiaModule (0x0097FA00) from binary analysis.
-    # SWIG pointer format: _HEXADDR_p_TypeName (lowercase hex, no 0x prefix)
-    um = "_97fa00_p_UtopiaModule"
-    _log("  Using manual UtopiaModule ptr: " + um)
-
-    # --- Set UtopiaModule flags ---
-    try:
-        App.UtopiaModule_SetMultiplayer(um, 1)
-        App.UtopiaModule_SetIsHost(um, 1)
-        App.UtopiaModule_SetIsClient(um, 0)
-        _log("  UtopiaModule flags set OK via SWIG")
-    except Exception, e:
-        _log("  UtopiaModule flags FAILED: " + str(e))
-
+def _init_game_config(um):
+    """Phase 2: Configure network, GameSpy, game settings."""
     # --- Check network status ---
     try:
         network = App.UtopiaModule_GetNetwork(um)
@@ -642,10 +184,10 @@ def TopWindowInitialized(pTopWindow):
     # --- Set VarManager mission variable ---
     # Episode.Initialize reads this via g_kVarManager.GetStringVariable()
     # to determine which mission to load. Must be set BEFORE the ET_START
-    # cascade fires (which triggers Episode.Initialize → LoadMission).
+    # cascade fires (which triggers Episode.Initialize -> LoadMission).
     # NOTE: Manual LoadEpisode/LoadMission calls were REMOVED. The stock
-    # cascade (ET_START → MultiplayerGame.Initialize → Episode.Initialize
-    # → Mission1.Initialize) now handles loading via C++ callbacks.
+    # cascade (ET_START -> MultiplayerGame.Initialize -> Episode.Initialize
+    # -> Mission1.Initialize) now handles loading via C++ callbacks.
     try:
         App.g_kVarManager.SetStringVariable("Multiplayer", "Mission", SERVER_GAME_MODE)
         _log("  VarManager: Set Multiplayer.Mission = %s" % SERVER_GAME_MODE)
@@ -771,10 +313,53 @@ def TopWindowInitialized(pTopWindow):
     except Exception, e:
         _log("  Network details FAILED: " + str(e))
 
+# Network handler replacements (extracted to Custom/DSNetHandlers.py)
+__import__('Custom.DSNetHandlers')
+_nethnd = sys.modules['Custom.DSNetHandlers']
+_init_network_handlers = _nethnd._init_network_handlers
+
+###############################################################################
+#   TopWindowInitialized - called from C-side DS_TIMER Phase 3
+#
+#   At this point, the C code has already:
+#   - Set IsHost=1, IsMultiplayer=1
+#   - Created WSN (TGWinsockNetwork) via FUN_00445d90
+#   - Created MultiplayerGame/TopWindow via FUN_00504f10
+#   - Phase 3: Calls this module's TopWindowInitialized()
+#
+#   We just need to set config values and report status.
+###############################################################################
+def TopWindowInitialized(pTopWindow):
+    EnsureAppPointerWrappers()
+    global g_pTopWindow
+    g_pTopWindow = pTopWindow
+    _log("TopWindowInitialized called, pTopWindow=" + str(pTopWindow))
+    _log("  pTopWindow type = " + str(type(pTopWindow)))
+    print "DedicatedServer: TopWindowInitialized"
+    _pydbg("DedicatedServer: TopWindowInitialized")
+
+    # --- Construct SWIG pointers manually for global singletons ---
+    # The g_k* module attributes aren't set because we bypass the SWIG init.
+    # We know the memory address of UtopiaModule (0x0097FA00) from binary analysis.
+    # SWIG pointer format: _HEXADDR_p_TypeName (lowercase hex, no 0x prefix)
+    um = "_97fa00_p_UtopiaModule"
+    _log("  Using manual UtopiaModule ptr: " + um)
+
+    # --- Set UtopiaModule flags ---
+    try:
+        App.UtopiaModule_SetMultiplayer(um, 1)
+        App.UtopiaModule_SetIsHost(um, 1)
+        App.UtopiaModule_SetIsClient(um, 0)
+        _log("  UtopiaModule flags set OK via SWIG")
+    except Exception, e:
+        _log("  UtopiaModule flags FAILED: " + str(e))
+
+    _init_game_config(um)
+
     # --- Initialize game (replicate "Start Game" button) ---
-    # Stock flow: host clicks Start → fires ET_START to TopWindow → C++ cascade:
-    #   MultiplayerGame.Initialize → LoadEpisode → Episode.Initialize
-    #   → LoadMission → Mission1.Initialize → SetupEventHandlers
+    # Stock flow: host clicks Start -> fires ET_START to TopWindow -> C++ cascade:
+    #   MultiplayerGame.Initialize -> LoadEpisode -> Episode.Initialize
+    #   -> LoadMission -> Mission1.Initialize -> SetupEventHandlers
     # We pre-import modules, set up stubs/wrappers, then fire ET_START.
     try:
         game = App.Game_GetCurrentGame()
@@ -1019,7 +604,23 @@ def TopWindowInitialized(pTopWindow):
             _App.g_kEventManager.AddBroadcastPythonFuncHandler(
                 _ET_SUB_SOUND_DONE, pMission,
                 _ms_modname + ".SoundDoneHandler")
-            _logfn("  Registered 3 broadcast handlers (skip warp button)")
+            # Chat relay: replaces MultiplayerMenus.ProcessMessageHandler
+            # which is never registered headless (no BuildMultiplayerWindow)
+            _App.g_kEventManager.AddBroadcastPythonFuncHandler(
+                _App.ET_NETWORK_MESSAGE_EVENT, pMission,
+                "Custom.DedicatedServer.ChatRelayHandler")
+            # Ship created: captures new ships for respawn fallback
+            # (GetShipFromPlayerID returns NULL after respawn)
+            _App.g_kEventManager.AddBroadcastPythonFuncHandler(
+                _App.ET_OBJECT_CREATED_NOTIFY, pMission,
+                "Custom.DedicatedServer.ShipCreatedHandler")
+            # NOTE: ObjectKilledHandler is NOT registered here because
+            # Mission1.SetupEventHandlers already registers it on
+            # ET_OBJECT_EXPLODING.  We patched _m1.ObjectKilledHandler
+            # in DSNetHandlers._init_network_handlers() to point to
+            # _ds_ObjectKilledHandler, so the stock registration works.
+            # Registering here too would cause 2x calls (× 2x dispatch = 4x).
+            _logfn("  Registered 5 broadcast handlers (skip warp button, +chat, +ship created)")
             return 0
         ms.SetupEventHandlers = _headless_ms_seh
         _log("  Replaced MissionShared.SetupEventHandlers with headless version")
@@ -1204,7 +805,7 @@ def TopWindowInitialized(pTopWindow):
         # --- Manual cascade fallback ---
         # C++ TopWindow doesn't dispatch ET_START to MultiplayerGame.Initialize.
         # Manually execute the headless cascade:
-        #   LoadEpisode → LoadMission → Mission1.Initialize
+        #   LoadEpisode -> LoadMission -> Mission1.Initialize
         # Step 1: Headless MultiplayerGame.Initialize (calls LoadEpisode)
         try:
             _log("  Cascade fallback: calling headless MultiplayerGame.Initialize")
@@ -1282,329 +883,21 @@ def TopWindowInitialized(pTopWindow):
         ei = sys.exc_info()
         _log("  Game start FAILED: " + str(ei[0]) + ": " + str(ei[1]))
 
-    # --- Replace InitNetwork with functional-API version ---
-    # The original Mission1.InitNetwork uses shadow class methods like
-    # pMessage.SetGuaranteed(1) which fail when App.TGMessage_Create()
-    # returns a raw SWIG pointer string instead of a shadow class instance.
-    # This replacement uses Appc functional API directly to avoid the issue.
-    try:
-        import Appc
-        __import__('Multiplayer.Episode.Mission1.Mission1')
-        _m1 = sys.modules['Multiplayer.Episode.Mission1.Mission1']
-        __import__('Multiplayer.MissionShared')
-        __import__('Multiplayer.MissionMenusShared')
-        _ms = sys.modules['Multiplayer.MissionShared']
-        _mms = sys.modules['Multiplayer.MissionMenusShared']
-
-        def _ds_InitNetwork(iToID, _logfn=_log, _App=App, _Appc=Appc,
-                            _ms=_ms, _mms=_mms, _m1=_m1):
-            _logfn(">>> InitNetwork called: iToID=%s" % str(iToID))
-            try:
-                # Get network via functional API
-                pNetwork = _App.UtopiaModule_GetNetwork(_App.g_kUtopiaModule)
-                if not pNetwork:
-                    _logfn(">>> InitNetwork: no network, bailing")
-                    return
-                _logfn(">>> InitNetwork: network=%s" % str(pNetwork))
-
-                # Create message via raw Appc (avoids shadow class issue)
-                pMessage = _Appc.TGMessage_Create()
-                _logfn(">>> InitNetwork: msg=%s type=%s" %
-                       (str(pMessage), str(type(pMessage))))
-                _Appc.TGMessage_SetGuaranteed(pMessage, 1)
-
-                # Create buffer stream via raw Appc
-                kStream = _Appc.new_TGBufferStream()
-                _Appc.TGBufferStream_OpenBuffer(kStream, 256)
-
-                # Write MISSION_INIT_MESSAGE header
-                _Appc.TGBufferStream_WriteChar(kStream,
-                    chr(_ms.MISSION_INIT_MESSAGE))
-                _Appc.TGBufferStream_WriteChar(kStream,
-                    chr(_mms.g_iPlayerLimit))
-                _Appc.TGBufferStream_WriteChar(kStream,
-                    chr(_mms.g_iSystem))
-
-                # Time limit
-                if _mms.g_iTimeLimit == -1:
-                    _Appc.TGBufferStream_WriteChar(kStream, chr(255))
-                else:
-                    _Appc.TGBufferStream_WriteChar(kStream,
-                        chr(_mms.g_iTimeLimit))
-                    gameTime = _App.UtopiaModule_GetGameTime(
-                        _App.g_kUtopiaModule)
-                    _Appc.TGBufferStream_WriteInt(kStream,
-                        _ms.g_iTimeLeft + int(gameTime))
-
-                # Frag limit
-                if _mms.g_iFragLimit == -1:
-                    _Appc.TGBufferStream_WriteChar(kStream, chr(255))
-                else:
-                    _Appc.TGBufferStream_WriteChar(kStream,
-                        chr(_mms.g_iFragLimit))
-
-                # Attach data to message and send
-                _Appc.TGMessage_SetDataFromStream(pMessage, kStream)
-                _Appc.TGNetwork_SendTGMessage(pNetwork, iToID, pMessage)
-                _Appc.TGBufferStream_CloseBuffer(kStream)
-
-                _logfn(">>> InitNetwork: MISSION_INIT_MESSAGE sent OK")
-
-                # Send current scores to joining player (SCORE_MESSAGE)
-                # Builds merged key set from kills/deaths/scores dicts,
-                # sends one message per player with their current stats.
-                _kKills = _m1.g_kKillsDictionary
-                _kDeaths = _m1.g_kDeathsDictionary
-                _kScores = _m1.g_kScoresDictionary
-                _pDict = {}
-                for _ik in _kKills.keys():
-                    _pDict[_ik] = 1
-                for _ik in _kDeaths.keys():
-                    _pDict[_ik] = 1
-                for _ik in _kScores.keys():
-                    _pDict[_ik] = 1
-                _scoreCount = 0
-                for _ik in _pDict.keys():
-                    _iKills = 0
-                    _iDeaths = 0
-                    _iScore = 0
-                    if _kKills.has_key(_ik):
-                        _iKills = _kKills[_ik]
-                    if _kDeaths.has_key(_ik):
-                        _iDeaths = _kDeaths[_ik]
-                    if _kScores.has_key(_ik):
-                        _iScore = _kScores[_ik]
-                    _sMsg = _Appc.TGMessage_Create()
-                    _Appc.TGMessage_SetGuaranteed(_sMsg, 1)
-                    _sStream = _Appc.new_TGBufferStream()
-                    _Appc.TGBufferStream_OpenBuffer(_sStream, 256)
-                    _Appc.TGBufferStream_WriteChar(_sStream,
-                        chr(_ms.SCORE_MESSAGE))
-                    _Appc.TGBufferStream_WriteLong(_sStream, _ik)
-                    _Appc.TGBufferStream_WriteLong(_sStream, _iKills)
-                    _Appc.TGBufferStream_WriteLong(_sStream, _iDeaths)
-                    _Appc.TGBufferStream_WriteLong(_sStream, _iScore)
-                    _Appc.TGMessage_SetDataFromStream(_sMsg, _sStream)
-                    _Appc.TGNetwork_SendTGMessage(pNetwork, iToID, _sMsg)
-                    _Appc.TGBufferStream_CloseBuffer(_sStream)
-                    _scoreCount = _scoreCount + 1
-                if _scoreCount > 0:
-                    _logfn(">>> InitNetwork: sent %d SCORE_MESSAGEs" %
-                           _scoreCount)
-
-            except:
-                ei = sys.exc_info()
-                _logfn(">>> InitNetwork EXCEPTION: %s: %s" %
-                       (str(ei[0]), str(ei[1])))
-
-        _m1.InitNetwork = _ds_InitNetwork
-        _log("  Replaced InitNetwork with functional-API version")
-    except:
-        ei = sys.exc_info()
-        _log("  InitNetwork replace FAILED: %s: %s" % (str(ei[0]), str(ei[1])))
-
-    # --- Also wrap ProcessMessageHandler for server-side diagnostics ---
-    try:
-        _m1 = sys.modules['Multiplayer.Episode.Mission1.Mission1']
-        if hasattr(_m1, 'ProcessMessageHandler'):
-            _orig_pmh = _m1.ProcessMessageHandler
-            def _logged_pmh(self, pEvent, _orig=_orig_pmh, _logfn=_log):
-                _logfn(">>> ProcessMessageHandler called on server")
-                try:
-                    return _orig(self, pEvent)
-                except:
-                    ei = sys.exc_info()
-                    _logfn(">>> ProcessMessageHandler EXCEPTION: %s: %s" %
-                           (str(ei[0]), str(ei[1])))
-            _m1.ProcessMessageHandler = _logged_pmh
-            _log("  Wrapped ProcessMessageHandler with logging")
-    except:
-        ei = sys.exc_info()
-        _log("  ProcessMessageHandler wrap FAILED: %s: %s" %
-             (str(ei[0]), str(ei[1])))
-
-    # ---------------------------------------------------------------
-    # Monkey-patch SpeciesToShip.InitObject to trace ship creation.
-    # The C engine calls InitObject(self, iType) when a ship object
-    # arrives over the network. We need to know if it's called at all
-    # and where it fails on the headless server.
-    # ---------------------------------------------------------------
-    try:
-        _sts_temp = __import__("Multiplayer.SpeciesToShip")
-        _sts_mod = sys.modules["Multiplayer.SpeciesToShip"]
-        # Ensure parent package has the attribute (ships/*.py do
-        # "import Multiplayer.SpeciesToShip" then access constants)
-        _mp_pkg = sys.modules.get('Multiplayer', None)
-        if _mp_pkg is not None:
-            setattr(_mp_pkg, 'SpeciesToShip', _sts_mod)
-        _orig_InitObject = _sts_mod.InitObject
-        _orig_GetShipFromSpecies = _sts_mod.GetShipFromSpecies
-
-        def _wrapped_InitObject(self, iType,
-                _origIO=_orig_InitObject,
-                _origGSFS=_orig_GetShipFromSpecies,
-                _logfn=_log):
-            _logfn(">>> SpeciesToShip.InitObject(self=%s, iType=%d)" % (str(self), iType))
-            try:
-                kStats = _origGSFS(iType)
-                _logfn("  GetShipFromSpecies -> %s" % str(kStats))
-            except:
-                ei = sys.exc_info()
-                _logfn("  GetShipFromSpecies FAILED: %s: %s" % (str(ei[0]), str(ei[1])))
-            try:
-                iResult = _origIO(self, iType)
-                _logfn("  Native InitObject returned %s" % str(iResult))
-            except:
-                ei = sys.exc_info()
-                _logfn("  Native InitObject FAILED: %s: %s" % (str(ei[0]), str(ei[1])))
-                _logfn("<<< InitObject done (FAIL)")
-                return 0
-
-            try:
-                pPropertySet = self.GetPropertySet()
-                _logfn("  GetPropertySet(after native) -> %s" % str(pPropertySet))
-            except:
-                ei = sys.exc_info()
-                _logfn("  GetPropertySet(after native) FAILED: %s: %s" %
-                     (str(ei[0]), str(ei[1])))
-
-            _logfn("<<< InitObject done")
-            return iResult
-
-        _sts_mod.InitObject = _wrapped_InitObject
-        # Set __dummy__ so the C++ dispatcher (FUN_006f7d90) uses
-        # this cached module directly instead of reimporting via
-        # PyImport_ImportModule (which returns the top-level package).
-        _sts_mod.__dummy__ = 1
-        _log("  Monkey-patched SpeciesToShip.InitObject with tracing (+ __dummy__)")
-    except:
-        ei = sys.exc_info()
-        _log("  SpeciesToShip monkey-patch FAILED: %s: %s" %
-             (str(ei[0]), str(ei[1])))
-
+    _init_network_handlers()
     _log("DedicatedServer: Setup complete - server should be listening")
     print "DedicatedServer: Setup complete - server should be listening"
     _pydbg("DedicatedServer: Setup complete - server should be listening")
 
-###############################################################################
-#   Deferred ship initialization
-#
-#   The engine's TG_CallPythonFunction (FUN_006f8ab0) calls
-#   SpeciesToShip.InitObject during ship ReadStream deserialization.
-#   This call fails silently on our headless server (the monkey-patched
-#   wrapper never fires, no errors in state_dump.log).  Without InitObject,
-#   ships have no NIF model, no subsystems, no collision geometry.
-#
-#   Fix: after a player joins and selects a ship, find the ship via
-#   MultiplayerGame.GetShipFromPlayerID and call InitObject ourselves
-#   through Python (which works).  Called periodically from C GameLoop
-#   until the ship is found or timeout.
-###############################################################################
+# Event handlers (extracted to Custom/DSHandlers.py)
+__import__('Custom.DSHandlers')
+_handlers = sys.modules['Custom.DSHandlers']
+ChatRelayHandler = _handlers.ChatRelayHandler
+ShipCreatedHandler = _handlers.ShipCreatedHandler
+DeferredInitObject = _handlers.DeferredInitObject
+_initobj_done = _handlers._initobj_done
+_initobj_dead = _handlers._initobj_dead
+_initobj_known = _handlers._initobj_known
+_pending_ships = _handlers._pending_ships
 
-_initobj_done = {}   # playerID -> 1 once attempted (prevents retries)
-
-def DeferredInitObject(playerID):
-    global _initobj_done
-    if _initobj_done.has_key(playerID):
-        return 0
-    try:
-        pGame = App.MultiplayerGame_Cast(App.Game_GetCurrentGame())
-        if pGame is None:
-            return 0
-        pShip = pGame.GetShipFromPlayerID(playerID)
-        if pShip is None:
-            return 0   # ship not created yet, C will retry
-        iType = pShip.GetNetType()
-        if iType <= 0:
-            _log(">>> DeferredInitObject(%d): GetNetType=%d (invalid)" % (playerID, iType))
-            _initobj_done[playerID] = 1
-            return 0
-        _initobj_done[playerID] = 1
-        _log(">>> DeferredInitObject(%d): ship=%s netType=%d" % (playerID, str(pShip), iType))
-
-        # Inline InitObject logic (avoids SpeciesToShip cross-module
-        # attribute issues with Multiplayer.SpeciesToShip.CONSTANT).
-        # Uses sys.modules to get correct submodules after __import__.
-        __import__('Multiplayer.SpeciesToShip')
-        _sts = sys.modules['Multiplayer.SpeciesToShip']
-
-        # Ensure Multiplayer package has SpeciesToShip attribute
-        # (ships/*.py access Multiplayer.SpeciesToShip.CONSTANT)
-        _mp = sys.modules['Multiplayer']
-        _mp.SpeciesToShip = _sts
-
-        if iType <= 0 or iType >= _sts.MAX_SHIPS:
-            _log(">>> DeferredInitObject(%d): species %d out of range" % (playerID, iType))
-            return 0
-
-        pSpecTuple = _sts.kSpeciesTuple[iType]
-        pcScript = pSpecTuple[0]
-        if pcScript is None:
-            _log(">>> DeferredInitObject(%d): species %d has no script" % (playerID, iType))
-            return 0
-        _log("  ship script = %s" % pcScript)
-
-        # Import ship module and get it from sys.modules
-        # (__import__ in Python 1.5 returns the top-level package)
-        _shipmod_name = "ships." + pcScript
-        __import__(_shipmod_name)
-        _shipmod = sys.modules[_shipmod_name]
-        _log("  ship module = %s" % str(_shipmod))
-
-        # Ensure the ship module's Multiplayer ref has SpeciesToShip
-        # (ships/*.py cache their own Multiplayer reference at import time)
-        if hasattr(_shipmod, 'Multiplayer'):
-            _shipmod.Multiplayer.SpeciesToShip = _sts
-
-        _shipmod.LoadModel()
-        kStats = _shipmod.GetShipStats()
-        _log("  kStats = %s" % str(kStats))
-
-        # SetupModel
-        pShip.SetupModel(kStats['Name'])
-        _log("  SetupModel OK")
-
-        # Load hardpoints
-        pPropertySet = pShip.GetPropertySet()
-        _log("  GetPropertySet = %s" % str(pPropertySet))
-
-        _hpmod_name = "ships.Hardpoints." + kStats['HardpointFile']
-        # Remove stale partial module from any prior failed import
-        if sys.modules.has_key(_hpmod_name):
-            del sys.modules[_hpmod_name]
-
-        App.g_kModelPropertyManager.ClearLocalTemplates()
-        __import__(_hpmod_name)
-        _hpmod = sys.modules[_hpmod_name]
-        _hpmod.LoadPropertySet(pPropertySet)
-        _log("  Hardpoints loaded")
-
-        pShip.SetupProperties()
-        pShip.UpdateNodeOnly()
-
-        # Diagnostic: check subsystem state after init
-        _log("  LODModelManager.Contains(%s) = %s" % (kStats['Name'],
-             str(App.g_kLODModelManager.Contains(kStats['Name']))))
-        try:
-            _hull = pShip.GetHull()
-            _log("  GetHull = %s" % str(_hull))
-        except:
-            _log("  GetHull FAILED: %s" % str(sys.exc_info()[1]))
-        try:
-            _shld = pShip.GetShields()
-            _log("  GetShields = %s" % str(_shld))
-        except:
-            _log("  GetShields FAILED: %s" % str(sys.exc_info()[1]))
-        try:
-            _sens = pShip.GetSensorSubsystem()
-            _log("  GetSensorSubsystem = %s" % str(_sens))
-        except:
-            _log("  GetSensorSubsystem FAILED: %s" % str(sys.exc_info()[1]))
-        # Check UtopiaModule flags
-        _log("  IsMultiplayer(0x97FA8A) via SWIG = %s" % str(App.g_kUtopiaModule.IsMultiplayer()))
-        _log(">>> DeferredInitObject(%d): InitObject OK" % playerID)
-        return 1
-    except:
-        ei = sys.exc_info()
-        _log(">>> DeferredInitObject(%d) EXCEPT: %s: %s" % (playerID, str(ei[0]), str(ei[1])))
-        return 0
+# Scoring and game flow handlers (from DSNetHandlers.py)
+ObjectKilledHandler = _nethnd._ds_ObjectKilledHandler

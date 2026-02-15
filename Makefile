@@ -9,7 +9,7 @@ STOCKDEDI_DIR ?= game/stock-dedi
 
 # Compiler settings
 CC       = i686-w64-mingw32-gcc
-CFLAGS   = -Wall -O2 -std=c99 -DWIN32 -D_WIN32
+CFLAGS   = -Wall -O2 -fno-omit-frame-pointer -std=c99 -DWIN32 -D_WIN32
 LDFLAGS  = -shared -static-libgcc -Wl,--enable-stdcall-fixup
 LIBS     = -lgdi32 -lws2_32
 
@@ -65,6 +65,11 @@ deploy-server: $(TARGET)
 	mkdir -p "$(SERVER_DIR)/scripts/Custom"
 	cp $(TARGET) "$(SERVER_DIR)/"
 	cp src/scripts/Custom/DedicatedServer.py "$(SERVER_DIR)/scripts/Custom/"
+	cp src/scripts/Custom/DSSwig.py "$(SERVER_DIR)/scripts/Custom/"
+	cp src/scripts/Custom/DSImportHook.py "$(SERVER_DIR)/scripts/Custom/"
+	cp src/scripts/Custom/DSPatches.py "$(SERVER_DIR)/scripts/Custom/"
+	cp src/scripts/Custom/DSHandlers.py "$(SERVER_DIR)/scripts/Custom/"
+	cp src/scripts/Custom/DSNetHandlers.py "$(SERVER_DIR)/scripts/Custom/"
 	cp src/scripts/Custom/StateDumper.py "$(SERVER_DIR)/scripts/Custom/"
 	cp src/scripts/Custom/__init__.py "$(SERVER_DIR)/scripts/Custom/"
 	rm -f "$(SERVER_DIR)/scripts/Custom/"*.pyc

@@ -91,11 +91,58 @@ collision damage and subsystem damage. The main multiplayer loop is functional.
 - **Scripting**: Embedded Python 1.5, SWIG 1.x bindings (App/Appc modules)
 - **Executable**: 32-bit Windows (stbc.exe, ~5.9MB, base 0x400000)
 
-### Two Message Dispatchers
+### Three Message Dispatchers
 1. **NetFile dispatcher (FUN_006a3cd0)**: Checksums/file opcodes 0x20-0x27
-2. **MultiplayerGame dispatcher (0x0069f2a0)**: Game opcodes 0x00-0x2A (jump table at 0x0069F534)
-   - 0x06/0x0D=PythonEvent, 0x07-0x0C/0x0E-0x10/0x1B=EventForward, 0x19=TorpedoFire, 0x1A=BeamFire
-   - 0x14=DestroyObj, 0x1D=ObjNotFound, 0x1E=RequestObj, 0x29=Explosion, 0x2A=NewPlayerInGame
+2. **MultiplayerGame dispatcher (0x0069f2a0)**: Game opcodes 0x00-0x2A (jump table at 0x0069F534, 41 entries)
+3. **MultiplayerWindow dispatcher (FUN_00504c10)**: Opcodes 0x00, 0x01, 0x16 (UI-level settings)
+4. **Python SendTGMessage**: Opcodes 0x2C-0x39 (chat, scoring, game flow) bypass C++ dispatcher
+
+### Game Opcode Table (complete, verified from jump table + packet traces)
+| Opcode | Name | Handler | Type |
+|--------|------|---------|------|
+| 0x00 | Settings | FUN_0069f9e0 | Game config (gameTime, map, collision) |
+| 0x01 | GameInit | FUN_0069fc00 | Game start trigger |
+| 0x02 | ObjCreate | FUN_0069f620 | Non-team object creation |
+| 0x03 | ObjCreateTeam | FUN_0069f620 | Ship creation with team |
+| 0x04 | Boot | (default) | Kick player |
+| 0x05 | (unused) | (default) | |
+| 0x06 | PythonEvent | FUN_0069fda0 | **Primary event forwarding** (3432/session) |
+| 0x07 | StartFiring | FUN_0069fda0 | Weapon fire begin (2282/session) |
+| 0x08 | StopFiring | FUN_0069fda0 | Weapon fire end |
+| 0x09 | StopFiringAtTarget | FUN_0069fda0 | Stop firing at specific target |
+| 0x0A | SubsysStatus | FUN_0069fda0 | Subsystem toggle (shields, etc.) |
+| 0x0B | AddToRepairList | FUN_0069fda0 | Crew repair assignment |
+| 0x0C | ClientEvent | FUN_0069fda0 | Generic event forward (preserve=0) |
+| 0x0D | PythonEvent2 | FUN_0069fda0 | Alternate Python event path |
+| 0x0E | StartCloak | FUN_0069fda0 | Cloak engage (event 0x008000E3) |
+| 0x0F | StopCloak | FUN_0069fda0 | Cloak disengage (event 0x008000E5) |
+| 0x10 | StartWarp | FUN_0069fda0 | Warp drive engage |
+| 0x11 | RepairListPriority | FUN_0069fda0 | Repair priority ordering |
+| 0x12 | SetPhaserLevel | FUN_0069fda0 | Phaser power/intensity (event 0x008000E0) |
+| 0x13 | HostMsg | FUN_006a0d90 | Host message broadcast |
+| 0x14 | DestroyObject | FUN_006a01e0 | Object destruction |
+| 0x15 | CollisionEffect | FUN_006a2470 | **Collision damage relay** (84/session) |
+| 0x16 | UICollisionSetting | FUN_00504c70 | Collision toggle (MultiplayerWindow dispatcher) |
+| 0x17 | DeletePlayerUI | (handler) | Remove player from scoreboard |
+| 0x19 | TorpedoFire | FUN_0069fe60 | Torpedo launch (897/session) |
+| 0x1A | BeamFire | FUN_006a0340 | Beam weapon hit |
+| 0x1B | TorpTypeChange | FUN_0069fda0 | Torpedo type switch |
+| 0x1D | ObjNotFound | FUN_006a0620 | Object lookup failure |
+| 0x1E | RequestObj | FUN_006a07d0 | Request object data |
+| 0x1F | EnterSet | FUN_006a0a20 | Enter game set |
+| 0x29 | Explosion | FUN_006a0080 | Explosion damage (S→C only) |
+| 0x2A | NewPlayerInGame | FUN_006a1e70 | Player join handshake |
+
+### Python-Level Messages (via SendTGMessage, bypass C++ dispatcher)
+| Byte | Name | Notes |
+|------|------|-------|
+| 0x2C | CHAT_MESSAGE | We forward this |
+| 0x2D | TEAM_CHAT_MESSAGE | We forward this |
+| 0x35 | MISSION_INIT_MESSAGE | Game config |
+| 0x36 | SCORE_CHANGE_MESSAGE | Score deltas |
+| 0x37 | SCORE_MESSAGE | Full score sync |
+| 0x38 | END_GAME_MESSAGE | Game over |
+| 0x39 | RESTART_GAME_MESSAGE | Game restart |
 
 ### Settings Packet (opcode 0x00) - sent after checksums pass
 `[0x00] [float:gameTime] [byte:0x008e5f59] [byte:0x0097faa2] [byte:playerSlot] [short:mapLen] [data:mapName] [byte:checksumFlag] [if 1: checksum data]`
@@ -155,6 +202,16 @@ Then opcode 0x01 (single byte).
 - [docs/swig-api.md](docs/swig-api.md) - SWIG function reference
 - [docs/decompiled-functions.md](docs/decompiled-functions.md) - Key function analysis
 - [docs/function-map.md](docs/function-map.md) - 18K-function organized map
+- [docs/damage-system.md](docs/damage-system.md) - Complete damage pipeline: collision, weapon, explosion paths, gate checks, subsystem distribution
+
+## Knowledge Preservation
+
+After completing long-form reverse engineering analysis where findings are high-confidence (verified against live game traces or decompiled code), **always**:
+1. Write or update a `docs/` markdown file with the findings (function addresses, call graphs, data layouts, gate conditions)
+2. Update agent memory files with key discoveries for cross-session continuity
+3. Add new docs to the Documentation Index above
+
+This ensures hard-won RE knowledge is never lost between sessions.
 
 ## Agent Team
 

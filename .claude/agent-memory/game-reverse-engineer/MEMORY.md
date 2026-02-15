@@ -5,68 +5,48 @@
 - NetImmerse 3.1 engine, Winsock UDP, embedded Python 1.5.2 (SWIG 1.x)
 - stbc.exe: 32-bit Windows, base 0x400000, ~5.9MB
 
-## State Dump Baseline (2026-02-12, no custom client connected)
-- Stock-dedi `state_dump.log` shows lifecycle:
-  - Dumps #1-#3: `CurrentGame: None`
-  - Dumps #4-#17: `CurrentGame: <C Game instance ...>` (in-game)
-  - Dumps #18-#19: `CurrentGame: None`
-- In stock in-game dumps, `CurrentGame` is a real SWIG object with `this/thisown`;
-  `.GetPlayer() = None` for dedicated host role.
-- `g_pStartingSet` flips from `None` to `<C SetClass ...>` beginning at dump #6.
-- Custom dedicated dump #1 is already in-game but reports raw-pointer
-  `CurrentGame: _<addr>_p_Game` (`0 attributes`), indicating wrapper mismatch
-  versus stock object exposure.
-
-## App Wrapper Parity Fix (2026-02-12)
-- `reference/scripts/App.py` shows stock pattern:
-  `Game_GetCurrentGame -> Appc.Game_GetCurrentGame -> GamePtr(...)`.
-- Added dedicated compat wrappers in `src/scripts/Custom/DedicatedServer.py`
-  to wrap raw builtin App returns into Ptr objects for key APIs.
+## State Dump Baseline (2026-02-12)
+- Stock-dedi: CurrentGame transitions None->SWIG object->None over lifecycle
+- Custom server: raw SWIG ptr (wrapper mismatch) - fixed with App compat wrappers
 
 ## Key Architecture Discoveries
 - See [architecture.md](architecture.md) for detailed notes
 - See [crash-analysis.md](crash-analysis.md) for InitNetwork crash chain analysis
+- See [ebp-corruption-crash.md](ebp-corruption-crash.md) for EBP/RunPyCode crash (SOLVED 2026-02-15)
 - See [open-source-analysis.md](open-source-analysis.md) for dependency/legal analysis
 - See [client-join-flow.md](client-join-flow.md) for post-checksum message sequence
 - See [stock-baseline-analysis.md](stock-baseline-analysis.md) for stock host vs our server comparison
 - See [encryption-analysis.md](encryption-analysis.md) for TGNetwork encryption/cipher analysis
-- **Wire format spec**: `docs/wire-format-spec.md` - packet decoder (NEEDS CORRECTION, see below)
 - See [torpedo-beam-network.md](torpedo-beam-network.md) for corrected opcode table
+- See [complete-opcode-table.md](complete-opcode-table.md) for FULL verified opcode table (all 41 entries + Python msg types)
+
+## RTTI / Type System (2026-02-15)
+- **NO MSVC RTTI** for game/engine code (compiled with /GR-)
+- Only 22 MSVC TypeDescriptors: all CRT/STL + `TGStreamException`
+- Uses **NetImmerse NiRTTI**: custom factory hash table at DAT_009a2b98
+- Registration pattern: `push factory_fn; push "ClassName"; call hash_insert`
+- Example: FUN_007e3670 registers "NiNode" with factory FUN_007e5450
+- ~670 unique C++ classes identified; 129 Ni*, 124 TG*, ~420 game-specific
+- 114 TG classes have SWIG Python bindings (~1340 wrapper methods)
+- Full catalog: [docs/rtti-class-catalog.md](../../docs/rtti-class-catalog.md)
 
 ## BREAKTHROUGH: Black Screen SOLVED
 - Fix: Replace Mission1.InitNetwork with functional Appc API version
 - Root cause: TGMessage_Create() returns raw SWIG pointer, not shadow class
 - Client now sees ship selection screen and can fly in-game
 
-## CRITICAL DISCOVERY: 0x0097FA88 is IsClient, NOT IsHost (2026-02-08)
+## CRITICAL: 0x0097FA88 is IsClient, NOT IsHost (2026-02-08)
+- 0x0097FA88=IsClient(0=host), 0x0097FA89=IsHost(1=host), 0x0097FA8A=IsMultiplayer
 - See [stock-baseline-analysis.md](stock-baseline-analysis.md) for full evidence
-- 0x0097FA88 = **IsClient**: 0 on host, 1 on client
-- 0x0097FA89 = **IsHost**: 1 on host, 0 on client
-- 0x0097FA8A = **IsMultiplayer**: 1 on host, 0 on client (our server=1, CORRECT)
-- Our server correctly sets IsClient=0, IsHost=1, IsMp=1
-- Stock host: GetPlayer()=None (no player ship), ReadyForNewPlayers=1, conn=2
-- Stock client: conn transitions 3->2, gameTime syncs with server at join
-- 0x1C state updates flow at ~10Hz after client joins in working sessions
-- Stock host runs 163 unique Python calls during gameplay (full game logic server-side)
 
 ## 0x1C State Update & Subsystem Analysis (2026-02-09)
-- See [subsystem-state-update-analysis.md](subsystem-state-update-analysis.md) for full analysis
-- FUN_005b17f0 builds flags byte: 0x20=subsystems, 0x80=weapons
-- 0x80 (weapons) only in single-player; 0x20 (subsystems) in MP during initial sync
-- Subsystem lists at ship+0x284 populated by FUN_005b3e50, driven by FUN_005b3fb0
-- Subsystems come from: hardpoint .py -> RegisterLocalTemplate -> AddToSet("Scene Root")
-- AddToSet requires NIF model loaded (NiNode "Scene Root" in scene graph)
-- PatchNetworkUpdateNullLists WORKS: clears 0x20/0x80 when lists NULL, prevents malformed packets
-- **Server has NO game objects** -> FUN_005b17f0 never called -> no 0x1C packets sent
-- Ship creation is client-side; server only receives replication via FUN_0069f620
+- See [subsystem-state-update-analysis.md](subsystem-state-update-analysis.md)
+- FUN_005b17f0 flags: 0x20=subsystems, 0x80=weapons; ship+0x284=subsystem list
+- Ship creation is client-side; server receives replication via FUN_0069f620
 
 ## Client Join Message Sequence (CRITICAL ORDER)
-1. C++ opcode 0x00 (settings: gameTime, settings bytes, playerSlot, mapName, checksumFlag)
-2. C++ opcode 0x01 (single byte -> creates MultiplayerGame, runs GameInit)
-3. Python MISSION_INIT_MESSAGE (game config: playerLimit, system, timeLimit, fragLimit)
-4. Python SCORE_MESSAGE (one per existing player - empty for first joiner)
-- Client FUN_00504c10 checks `this+0xb0 != 0` gate before processing ANY messages
-- For first player joining empty game: NO game objects to replicate (loop is no-op)
+- 0x00 (settings) -> 0x01 (GameInit) -> 0x35 (MISSION_INIT) -> 0x37 (SCORE)
+- See [client-join-flow.md](client-join-flow.md)
 
 ## CRITICAL: 0x0078xxxx = Python 1.5.2 Parser (NOT NIF)
 - FUN_007840f0 = PyNode_AddChild, FUN_0078b530 = token processor
@@ -113,83 +93,24 @@
 - Fix: Patch FUN_006d1e10 with code cave adding `TEST ECX,ECX / JZ return_null`
 - Single-point fix eliminates ALL downstream 0x1C crashes across dozens of callers
 
-## Bug Analysis: InitNetwork Duplicates (2026-02)
-- See [initnet-duplicates.md](initnet-duplicates.md) for full analysis
-- Engine's native C++ NewPlayerInGameHandler (FUN_006a1e70) already calls InitNetwork
-- Our GameLoopTimerProc was ALSO calling FUN_006a1e70 manually, causing duplicates
-- Double call caused: duplicate 0x35/0x37/0x17 packets, ACK storms, double ObjNotFound
-- FIX: Remove manual FUN_006a1e70 call from GameLoopTimerProc
-
-## Bug Analysis: Collision Damage Missing (2026-02)
-- See [collision-damage.md](collision-damage.md) for full analysis
-- Root cause: DedicatedServer.py stubs ALL MultiplayerMenus functions as noop
-- This prevents HandleStartGame -> StartMission -> CreateSystemFromSpecies
-- No system loaded = no SetClass = no ProximityManagerActive = no collisions
-- FIX: Call CreateSystemFromSpecies directly in DedicatedServer.py after Initialize
-
-## Bug Analysis: SetClass_Create Returns Raw String (2026-02)
-- See [set-creation-analysis.md](set-creation-analysis.md) for full analysis
-- Multi1.Initialize() does App.SetClass_Create() but gets raw SWIG ptr, not shadow class
-- Root cause: App module may be raw Appc (no shadow wrappers) in headless bootstrap
-- Ship creation is CLIENT-SIDE (server never creates client ships)
-- Server needs Set in SetManager for object replication + ProximityManager for collisions
-- FIX: Use Appc functional API directly (SetClass_Create, SetRegionModule, AddSet, etc.)
-- Missing Set does NOT cause disconnect - it only affects collision damage
-- Second connection works because Python/C++ state persists from first attempt
+## Bug Fixes Summary
+- **InitNetwork duplicates**: removed manual FUN_006a1e70 call (see [initnet-duplicates.md])
+- **Collision damage missing**: call CreateSystemFromSpecies directly (see [collision-damage.md])
+- **SetClass_Create raw string**: use Appc functional API directly (see [set-creation-analysis.md])
 
 ## Normal Host Flow for System Loading
-1. Host clicks Start -> HandleHostStartClicked fires ET_START
-2. ET_START -> HandleStartGame (UI cleanup only, calls CallNextHandler first)
-3. Player selects ship -> ET_FINISHED_SELECT -> FinishedSelectHandler -> StartMission
-4. StartMission (Mission1Menus.py:740) -> CreateSystemFromSpecies (line 758)
+- HandleHostStartClicked -> ET_START -> HandleStartGame -> ship select -> StartMission -> CreateSystemFromSpecies
+- FUN_00504890 (ET_START): if MultiplayerGame exists, forwards to C++ handler; else sets up network fresh
 
-## ET_START C++ Path (FUN_00504890)
-- If DAT_0097e238 (MultiplayerGame) != NULL AND IsMultiplayer:
-  - Increments event counter at param+0x1a
-  - Calls MultiplayerGame vtable[0x68](event) -- forwards to C++ handler
-  - Goes to LAB_00504bc2 -> FUN_006d90e0 (event dispatch cleanup)
-- If DAT_0097e238 == NULL:
-  - Sets up network from scratch (FUN_00445d90)
-  - This is the INITIAL setup path for fresh start
+## DISCONNECT ROOT CAUSE: TGBootPlayerMessage sub-cmd 4 (2026-02-09)
+- See [boot-player-analysis.md](boot-player-analysis.md)
+- Subsystem hash mismatch -> ET_BOOT_PLAYER -> kicks player
+- Server has no ship objects -> hash=0 -> false positive kick
+- FIX: PatchSubsystemHashCheck bypasses when list is NULL
 
-## Open Source Viability Assessment (2026-02)
-- See [open-source-analysis.md](open-source-analysis.md) for full analysis
-
-## DISCONNECT ROOT CAUSE FOUND: TGBootPlayerMessage sub-cmd 4 (2026-02-09)
-- See [boot-player-analysis.md](boot-player-analysis.md) for full analysis
-- Server sends `04 07 C0 02 00 04 02` = TGBootPlayerMessage, reason=4 (kicked)
-- Sub-command 4 = "boot player" (host kicking a player)
-- Sender: MultiplayerWindow::BootPlayerHandler at 0x00506170
-- Triggered by event ET_BOOT_PLAYER (0x8000f6)
-- ONLY source of ET_BOOT_PLAYER: FUN_005b21c0 (ship state update receiver)
-- FUN_005b21c0 has anti-cheat: computes subsystem hash via FUN_005b5eb0
-- If received_hash != computed_hash -> fires ET_BOOT_PLAYER -> kicks player
-- Server has NO ship objects -> hash=0 -> client sends valid hash != 0 -> FALSE POSITIVE
-- FIX OPTIONS: (1) suppress ET_BOOT_PLAYER on server, (2) patch FUN_005b21c0 hash check,
-  (3) ensure server has matching ship objects, (4) NOP the hash comparison
-
-## Renderer Pipeline Analysis (2026-02-09)
-- See [renderer-pipeline-analysis.md](renderer-pipeline-analysis.md) for initial analysis
-- See [renderer-pipeline-trace.md](renderer-pipeline-trace.md) for FULL Ghidra disasm trace
-- See [renderer-device7-overread.md](renderer-device7-overread.md) for Device7 copy crash
-- PatchRendererMethods ACTIVE (stubs 3 renderer vtable methods)
-- PatchDeviceCapsRawCopy zeroes the MOV ECX count in FUN_007d1ff0 (prevents raw copy)
-- FUN_007c4850 (at 0x007C4879) = logging helper, NOT crash source
-
-### SOLVED: Dev_GetDirect3D Returns NULL (Previous Pipeline Crash)
-- Fixed by adding ProxyD3D7* back-ref to ProxyDevice7
-
-### SOLVED: ProxyDevice7 Raw Copy Crash (2026-02-09)
-- See [renderer-device7-overread.md](renderer-device7-overread.md) for full analysis
-- FUN_007d1ff0 copies 59 DWORDs (236 bytes) FROM Device7 into texture format manager
-- FIX: PatchDeviceCapsRawCopy zeroes the REP MOVSD count at 0x007d2119
-- This prevents the raw memcpy entirely; NI gets zeroed caps (safe, means "no features")
-
-### Active Renderer Patches
-- **PatchRendererMethods** - stubs 3 vtable methods: FUN_007e8780 (RET), FUN_007c2a10 (RET 4), FUN_007c16f0 (RET 0x18)
-- **PatchSkipDeviceLost** - always skip device-lost recreation path
-- **PatchRenderTick** - JMP skip render work (no GPU cost)
-- **PatchDeviceCapsRawCopy** - zero the 236-byte raw copy count
+## Renderer Pipeline (2026-02-09)
+- See [renderer-pipeline-analysis.md](renderer-pipeline-analysis.md), [renderer-device7-overread.md](renderer-device7-overread.md)
+- Active patches: PatchRendererMethods, PatchSkipDeviceLost, PatchRenderTick, PatchDeviceCapsRawCopy
 
 ## Subsystem Creation Chain (2026-02-09)
 - See [subsystem-creation-analysis.md](subsystem-creation-analysis.md) for full analysis
@@ -199,6 +120,14 @@
 ## NIF Loading Pipeline Analysis (2026-02-10)
 - See [nif-loading-pipeline.md](nif-loading-pipeline.md) for full call chain
 - See [ship-creation-callchain.md](ship-creation-callchain.md) for full HOST-side analysis (2026-02-13)
+
+## Ship+0x140 DamageTarget Analysis (2026-02-15)
+- See [ship-0x140-analysis.md](ship-0x140-analysis.md) for full analysis
+- +0x140 = NiNode for damage coordinate transforms; gate check in DoDamage (FUN_00594020)
+- +0x128/+0x130 = damage handler array/count for ProcessDamage (FUN_00593e50)
+- ALL set by FUN_00591b60 (SetModelName/vtable[0x128]) called via SetupModel SWIG wrapper
+- TWO code paths: registry lookup (0x00980798) success -> sets +0x140; failure -> DOES NOT
+- Root cause: headless server takes Path 2 (registry empty), +0x140 stays NULL
 
 ## Ship Creation Call Chain (2026-02-13)
 - FUN_0069f620 (ObjCreateTeam handler) -> FUN_005a1f50 (deserialize) -> FUN_005b0e80 (InitObject)
@@ -215,27 +144,11 @@
 - If vtable corrupted, callee-clean stack params strand 24 bytes -> misaligned ESP -> crash
 - FIX: PatchCompressedVectorRead validates vtable in .rdata range before entering function
 
-## CRITICAL: Wire Format Opcode Table CORRECTED (2026-02-09)
-- See [torpedo-beam-network.md](torpedo-beam-network.md) for full corrected table
-- Spec was WRONG about opcodes 0x07-0x0B. Switch table at 0x0069F534 (base=opcode-2)
-- 0x09 is NOT TorpedoFire, it's StopFiringAtTarget (event forward 0x008000DB)
-- 0x0A is NOT BeamFire, it's SubsystemStatusChanged (event forward 0x0080006C)
-- ACTUAL TorpedoFire = opcode 0x19, sent by FUN_0057cb10 (TorpedoSystem::SendFireMessage)
-- ACTUAL BeamFire = opcode 0x1A, sent by FUN_00575480 (PhaserSystem::SendFireMessage)
-- Opcodes 0x07-0x0B, 0x0E-0x10, 0x1B all go through FUN_0069FDA0 (generic event forward)
-- Torpedoes are game OBJECTS: fire creates projectile, replicated via 0x02/0x03 (ObjectCreate)
+## Wire Format Opcode Table CORRECTED (2026-02-09)
+- See [torpedo-beam-network.md](torpedo-beam-network.md), [complete-opcode-table.md](complete-opcode-table.md)
+- TorpedoFire=0x19, BeamFire=0x1A (not 0x09/0x0A as spec said)
 
 ## Dump Baseline Delta (2026-02-12)
-- Stock dedicated `state_dump.log` shows canonical host-start path in dump #2:
-  `HandleHostStartClicked -> HandleStartGame -> ProcessMessageHandler -> MissionShared.Initialize -> MissionShared.SetupEventHandlers -> SpeciesToSystem.CreateSystemFromSpecies`.
-- Stock transitions from menu baseline to valid game state in one run:
-  `CurrentGame: None` at dump #1, then `CurrentGame: <C Game instance>` at dump #2.
-- Custom server dump currently captures only 3 code paths (`_ds_safe_import`, `PatchLoadedMissionModules`, `<string>:?`), indicating bootstrap bypass of the canonical menu/start path.
-- This bypass is a primary suspect when behavior diverges despite `CurrentGame` existing.
-
-## Stock 4-Stage Startup Baseline (2026-02-12, new capture)
-- Dump #1 (main menu): `CurrentGame=None`, `sys.modules=142`, `g_pDatabase=None`, `g_pStartingSet=None`.
-- Dump #2 (host game screen): still `CurrentGame=None`, `sys.modules=158` after `BuildMultiplayerPreGameMenus/BuildHostPane/BuildMissionMenu`.
-- Dump #3 (system select lobby): `CurrentGame` created, `sys.modules=334`, `g_pDatabase!=None`, but `g_pStartingSet=None`.
-- Dump #4 (scoreboard): `StartMission -> SpeciesToSystem.CreateSystemFromSpecies -> App.InitializeAllSets -> Systems.Multi1.Initialize`, `sys.modules=348`, `g_pStartingSet!=None`.
-- Therefore `CurrentGame` appears one stage BEFORE starting set/system creation.
+- See [stock-baseline-analysis.md](stock-baseline-analysis.md) for detailed 4-stage startup baseline
+- Stock host: CurrentGame appears one stage BEFORE starting set/system creation
+- Custom server bypasses canonical menu/start path (direct bootstrap)

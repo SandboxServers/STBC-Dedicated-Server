@@ -20,6 +20,46 @@
 - The RET patch at 0x006CF1DC (dead marker skip) does NOT cause this -- it only affects *(this+0x04), not this+0x08
 - CRT addresses: FUN_0085a047 = fclose, FUN_0085a0f5 = fopen, FUN_0085ba65 = ftell-like
 
+## TGWinsockNetwork (WSN) Peer System
+- WSN+0x14 = state (param_1[5]): 2=client, 3=host
+- WSN+0x18 = local player ID (param_1[6])
+- WSN+0x2C = peer array ptr (param_1[0xb]) -- sorted array of pointers to 0xC0-byte peer objects
+- WSN+0x30 = peer count (param_1[0xc])
+- WSN+0x34 = peer array capacity
+- WSN+0xAC = send buffer size (param_1[0x2b])
+- WSN+0xB0 = round-robin peer index (param_1[0x2c])
+- WSN+0x10C = "active" flag (param_1[0x43])
+- FUN_006b7410 = AddPeer (allocates 0xC0 peer, inserts sorted by playerID)
+- FUN_006b55b0 = SendStateUpdates (iterates peers, serializes pending messages)
+- FUN_006b5c90 = ReceiveStateUpdates (receives and dispatches inbound messages)
+- FUN_006b4560 = TGNetwork_Update (main per-frame network pump, calls Send/Receive/etc.)
+- FUN_006b4060 = TGNetwork_FlushAndReset (sends final updates, destroys all peers+queues)
+
+### Peer Object Layout (0xC0 bytes)
+- +0x00 = vtable ptr
+- +0x18 = player ID
+- +0x1C = ref/connection ID
+- +0x2C = last update time
+- +0x30 = another time field
+- +0x64 = reliable outgoing list head
+- +0x68 = reliable list tail
+- +0x6C = reliable list cursor
+- +0x70 = reliable list next-ptr
+- +0x74 = reliable list iterator index
+- +0x78 = reliable list sentinel
+- +0x7C = reliable list count
+- +0x80 = retry outgoing list head
+- +0x84 = retry list tail
+- +0x8C = retry list next-ptr
+- +0x90 = retry list iterator index
+- +0x98 = retry list count
+- +0x9C = urgent outgoing list head
+- +0xA8 = urgent list next-ptr
+- +0xAC = urgent list iterator index
+- +0xB4 = urgent list count
+- +0xB8 = last activity timestamp
+- +0xBC = flag byte (bc flag, unreliable for InitNetwork timing)
+
 ## Function Name Corrections
 - FUN_006cefe0 = TGNetworkStream ctor (same class for read AND write)
 - FUN_006a1b10 = ChecksumCompleteHandler / SendSettingsToPlayer
@@ -80,9 +120,13 @@
 
 ## UI Pane Lookup (FUN_0050e1b0)
 - Iterates linked list at this+0x34, matches element+0x4C == type
-- Type 4: general UI, Type 5: subtitle/notification, Type 8: MP chat
+- Type 4: general UI, Type 5: subtitle/notification, Type 8: MP chat/status
 - DAT_009878cc = pane manager. Type 5 never created in dedi-server mode.
 - FUN_00507f80 = AddSubtitleFromText, FUN_00508000 = AddSubtitleByHandle, FUN_00508120 = RemoveSubtitle
+- **Type 8 pane (vtable 0x0088E74C)**: exists on dedi-server BUT child at +0x60 is NULL
+- FUN_005054b0 = UpdateMPStatusPane (navigates +0x60 child, vtable+0x11C x2, then +0x160/+0xe8)
+- FUN_005054b0 is purely cosmetic (UI text update), safe to RET-patch on server
+- 9 callers, all cdecl (PUSH/CALL/ADD ESP,4), no return value used
 
 ## Ghidra Function DB Gaps (important for disassembly)
 - 0x0069F27C-0x0069F61F: MultiplayerGame::ReceiveMessageHandler (LAB_0069f2a0)

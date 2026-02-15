@@ -552,7 +552,6 @@ BOOL WINAPI DllMain(HINSTANCE hInstDLL, DWORD reason, LPVOID reserved) {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(hInstDLL);
 
-#ifndef OBSERVE_ONLY
         /* Install crash dump handler (logs diagnostics, lets process die) */
         SetUnhandledExceptionFilter(CrashDumpHandler);
         /* Also install VEH first-chance handler to catch driver-thread crashes
@@ -565,7 +564,6 @@ BOOL WINAPI DllMain(HINSTANCE hInstDLL, DWORD reason, LPVOID reserved) {
                         GetCurrentProcess(), &g_hMainThread,
                         THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION,
                         FALSE, 0);
-#endif /* !OBSERVE_ONLY */
 
         /* Resolve base path */
         GetModuleFileNameA(hInstDLL, g_szBasePath, MAX_PATH);
@@ -640,6 +638,7 @@ BOOL WINAPI DllMain(HINSTANCE hInstDLL, DWORD reason, LPVOID reserved) {
         }
 
         PatchDebugConsoleToFile();
+        InstallFunctionTracer(); /* C++ function call counter hooks (observer) */
         MsgTraceOpen();
         ObserverHookIAT();
         /* OBSERVE_ONLY can be idle between packets; poll input via timer
@@ -795,9 +794,12 @@ BOOL WINAPI DllMain(HINSTANCE hInstDLL, DWORD reason, LPVOID reserved) {
         PatchCompressedVectorRead(); /* Validate vtable in compressed vector read (safety) */
         PatchNullThunk_00419960(); /* NULL-check [ECX+0x1C] vtable thunk (AsteroidField tick) */
         PatchStreamReadNullBuffer(); /* NULL buffer check in stream read (network deserialization) */
+        PatchSendStateUpdatesPeerValidation(); /* Skip corrupt peer pointers in SendStateUpdates loop */
+        PatchRemovePeerAddress(); /* NULL list head guard in RemovePeerAddress (disconnect safety) */
         PatchCollisionNullNodeCall_005AFE2C(); /* Skip NULL collision node call into FUN_005af4a0 */
         PatchCollisionNullNodeCallGuard_005AFE44(); /* Guard FUN_005af4a0 from NULL node payloads */
         PatchDebugConsoleToFile(); /* Redirect Python exceptions to state_dump.log */
+        InstallFunctionTracer(); /* C++ function call counter hooks */
             /* PatchChecksumAlwaysPass REMOVED - flag=0 means "no mismatches"
              * which is CORRECT for first player (no peers to compare against).
              * Forcing flag=1 corrupted the settings packet with bogus mismatch data. */

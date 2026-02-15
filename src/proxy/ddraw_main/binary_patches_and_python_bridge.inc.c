@@ -273,6 +273,12 @@ static void PatchHeadlessCrashSites(void) {
          * Looks up pane #5 via FUN_0050e1b0, passes NULL to FUN_00508120 -> crash.
          * __fastcall, PUSH ESI -> safe to RET. */
         { 0x0055c890, 0x56, "FUN_0055c890 (subtitle remove callback)" },
+        /* FUN_005054b0: MP status pane text updater ("Connecting...", "Synchronizing...").
+         * Looks up pane #8 via FUN_0050e1b0 -> pane exists but pane+0x60 child is NULL.
+         * Crash at 0x005054C7: MOV EAX,[ECX] where ECX=pane+0x60=NULL.
+         * Called 9 times during MP flow (checksum, settings, game init).
+         * No params, no return value, purely cosmetic UI text. Safe to RET. */
+        { 0x005054b0, 0x8B, "FUN_005054b0 (MP status pane text update)" },
     };
     int i;
     for (i = 0; i < (int)(sizeof(sites) / sizeof(sites[0])); i++) {
@@ -1306,6 +1312,188 @@ patch2:
 }
 
 /* ================================================================
+ * PatchSendStateUpdatesPeerValidation - Validate peer pointers in
+ * TGNetwork::SendStateUpdates (FUN_006b55b0) before dereferencing.
+ *
+ * The peer iteration loop loads ESI = peerArray[index] at 0x006b5619:
+ *   006b5619: 8B 34 BA   MOV ESI, [EDX + EDI*4]   ; load peer ptr
+ *   006b561c: 8B 13      MOV EDX, [EBX]            ; load WSN vtable
+ *   006b561e: 8B 46 1C   MOV EAX, [ESI+0x1C]      ; first dereference of peer
+ *
+ * If the peer array gets corrupted (e.g. by wild writes from unrelated
+ * exceptions), ESI can point to kernel32 or other invalid memory,
+ * causing a fatal write AV at 0x006b569C (MOV [ESI+0xAC], 0).
+ *
+ * Fix: Code cave at 0x006b5619 validates ESI is within plausible
+ * heap range (0x00100000..0x6FFFFFFF). Invalid peers skip to the
+ * "not connected" path at 0x006b562d (safe increment + continue).
+ *
+ * Original 5 bytes: 8B 34 BA 8B 13
+ * Replaced with:    E9 xx xx xx xx (JMP to code cave)
+ * ================================================================ */
+static void PatchSendStateUpdatesPeerValidation(void) {
+    /*
+     * Code cave layout (35 bytes):
+     *  [0]:  MOV ESI,[EDX+EDI*4]  8B 34 BA           (relocated)
+     *  [3]:  TEST ESI,ESI         85 F6              (NULL check)
+     *  [5]:  JZ +0x17 (.skip)     74 17
+     *  [7]:  CMP ESI,0x00100000   81 FE 00 00 10 00  (below heap?)
+     *  [13]: JB +0x0F (.skip)     72 0F
+     *  [15]: CMP ESI,0x70000000   81 FE 00 00 00 70  (DLL/kernel range?)
+     *  [21]: JAE +0x07 (.skip)    73 07
+     *  [23]: MOV EDX,[EBX]        8B 13              (relocated)
+     *  [25]: JMP 0x006b561e       E9 xx xx xx xx     (back to normal)
+     *  .skip:
+     *  [30]: JMP 0x006b562d       E9 xx xx xx xx     (skip peer)
+     */
+    static BYTE cave[] = {
+        0x8B, 0x34, 0xBA,                       /* MOV ESI,[EDX+EDI*4]  */
+        0x85, 0xF6,                              /* TEST ESI,ESI         */
+        0x74, 0x17,                              /* JZ  +0x17 (.skip)    */
+        0x81, 0xFE, 0x00, 0x00, 0x10, 0x00,     /* CMP ESI,0x00100000   */
+        0x72, 0x0F,                              /* JB  +0x0F (.skip)    */
+        0x81, 0xFE, 0x00, 0x00, 0x00, 0x70,     /* CMP ESI,0x70000000   */
+        0x73, 0x07,                              /* JAE +0x07 (.skip)    */
+        0x8B, 0x13,                              /* MOV EDX,[EBX]        */
+        0xE9, 0x00, 0x00, 0x00, 0x00,           /* JMP 0x006b561e (fixup) */
+        /* .skip: */
+        0xE9, 0x00, 0x00, 0x00, 0x00            /* JMP 0x006b562d (fixup) */
+    };
+    BYTE* pCave;
+    BYTE* target = (BYTE*)0x006b5619;
+    DWORD oldProt;
+
+    /* Verify expected bytes: 8B 34 BA 8B 13 */
+    if (IsBadReadPtr(target, 5) ||
+        target[0] != 0x8B || target[1] != 0x34 || target[2] != 0xBA ||
+        target[3] != 0x8B || target[4] != 0x13) {
+        ProxyLog("  PatchSendStateUpdatesPeerValidation: unexpected bytes at 0x006b5619 "
+                 "(%02X %02X %02X %02X %02X), skipped",
+                 target[0], target[1], target[2], target[3], target[4]);
+        return;
+    }
+
+    pCave = (BYTE*)VirtualAlloc(NULL, sizeof(cave),
+                                MEM_COMMIT | MEM_RESERVE,
+                                PAGE_EXECUTE_READWRITE);
+    if (!pCave) {
+        ProxyLog("  PatchSendStateUpdatesPeerValidation: VirtualAlloc failed");
+        return;
+    }
+    memcpy(pCave, cave, sizeof(cave));
+
+    /* Fix up JMP-back at cave[25]: target = 0x006b561e, from = pCave+30 */
+    *(DWORD*)(pCave + 26) = 0x006b561e - (DWORD)(pCave + 30);
+
+    /* Fix up JMP-skip at cave[30]: target = 0x006b562d, from = pCave+35 */
+    *(DWORD*)(pCave + 31) = 0x006b562d - (DWORD)(pCave + 35);
+
+    /* Overwrite 5 bytes at 0x006b5619: JMP rel32 to cave */
+    VirtualProtect(target, 5, PAGE_EXECUTE_READWRITE, &oldProt);
+    target[0] = 0xE9;  /* JMP rel32 */
+    *(DWORD*)(target + 1) = (DWORD)pCave - (0x006b5619 + 5);
+    VirtualProtect(target, 5, oldProt, &oldProt);
+
+    ProxyLog("  PatchSendStateUpdatesPeerValidation: 0x006b5619 -> cave at %p "
+             "(skip corrupt peer pointers)", pCave);
+}
+
+/* ================================================================
+ * PatchRemovePeerAddress - NULL list head guard in TGWinsockNetwork::RemovePeerAddress
+ *
+ * FUN_006b9f40 is __thiscall with 1 stack param (IP address, DWORD).
+ * It walks a singly-linked list whose head is at this+0x348.
+ *
+ *   006b9f40: MOV EAX,[ECX+0x348]   ; load list head
+ *   006b9f46: MOV EDX,[ESP+0x4]     ; load param_1 (IP addr)
+ *   006b9f4a: CMP [EAX],EDX         ; CRASH when EAX==0
+ *
+ * When the peer address list is empty (head==NULL), the CMP
+ * dereferences NULL. This happens during client disconnect when
+ * RemovePeerAddress is called for a peer that was never fully added.
+ *
+ * Fix: Code cave at function entry. Reproduces the two overwritten
+ * instructions, inserts a TEST EAX,EAX / JZ to RET 0x4, then
+ * JMPs back to the CMP at 0x006B9F4A.
+ *
+ * Original bytes at 0x006B9F40 (10 bytes):
+ *   8B 81 48 03 00 00   MOV EAX,[ECX+0x348]
+ *   8B 54 24 04         MOV EDX,[ESP+0x4]
+ * Overwritten with:
+ *   E9 xx xx xx xx      JMP cave
+ *   90 90 90 90 90      NOP (5 bytes padding)
+ * ================================================================ */
+static void PatchRemovePeerAddress(void) {
+    /* Code cave layout (22 bytes):
+     *  [0]:  MOV EAX,[ECX+0x348]   8B 81 48 03 00 00  (original instr #1)
+     *  [6]:  TEST EAX,EAX          85 C0              (NULL check)
+     *  [8]:  JZ +9 (.early_ret)    74 09              (-> offset 19)
+     *  [10]: MOV EDX,[ESP+0x4]     8B 54 24 04        (original instr #2)
+     *  [14]: JMP 0x006B9F4A        E9 xx xx xx xx     (back to CMP [EAX],EDX)
+     *  .early_ret:
+     *  [19]: RET 0x4               C2 04 00           (clean __thiscall return)
+     */
+    static BYTE cave[] = {
+        0x8B, 0x81, 0x48, 0x03, 0x00, 0x00,  /* MOV EAX,[ECX+0x348]  */
+        0x85, 0xC0,                           /* TEST EAX,EAX         */
+        0x74, 0x09,                           /* JZ  +9 (.early_ret)  */
+        0x8B, 0x54, 0x24, 0x04,               /* MOV EDX,[ESP+0x4]    */
+        0xE9, 0x00, 0x00, 0x00, 0x00,         /* JMP 0x006B9F4A (fixup) */
+        /* .early_ret: */
+        0xC2, 0x04, 0x00                      /* RET 0x4              */
+    };
+    BYTE* pCave;
+    BYTE* target = (BYTE*)0x006B9F40;
+    DWORD oldProt;
+    DWORD jmpBackFrom, jmpBackTo;
+
+    /* Verify expected bytes: 8B 81 48 03 00 00 8B 54 24 04 */
+    if (IsBadReadPtr(target, 10) ||
+        target[0] != 0x8B || target[1] != 0x81 ||
+        target[2] != 0x48 || target[3] != 0x03 ||
+        target[4] != 0x00 || target[5] != 0x00 ||
+        target[6] != 0x8B || target[7] != 0x54 ||
+        target[8] != 0x24 || target[9] != 0x04) {
+        ProxyLog("  PatchRemovePeerAddress: unexpected bytes at 0x006B9F40 "
+                 "(%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X), skipped",
+                 target[0], target[1], target[2], target[3], target[4],
+                 target[5], target[6], target[7], target[8], target[9]);
+        return;
+    }
+
+    pCave = (BYTE*)VirtualAlloc(NULL, sizeof(cave),
+                                MEM_COMMIT | MEM_RESERVE,
+                                PAGE_EXECUTE_READWRITE);
+    if (!pCave) {
+        ProxyLog("  PatchRemovePeerAddress: VirtualAlloc failed");
+        return;
+    }
+    memcpy(pCave, cave, sizeof(cave));
+
+    /* Fix up JMP-back rel32: target - addr_after_jmp
+     * JMP instruction is at cave[14], 5 bytes, so addr_after_jmp = cave+19
+     * Target = 0x006B9F4A (CMP [EAX],EDX)
+     * Displacement = 0x006B9F4A - (pCave + 19) */
+    jmpBackFrom = (DWORD)(pCave + 19);  /* address after the JMP instruction */
+    jmpBackTo   = 0x006B9F4A;           /* CMP [EAX],EDX */
+    *(DWORD*)(pCave + 15) = jmpBackTo - jmpBackFrom;
+
+    /* Overwrite 10 bytes at 0x006B9F40: JMP rel32 to cave + 5 NOPs */
+    VirtualProtect(target, 10, PAGE_EXECUTE_READWRITE, &oldProt);
+    target[0] = 0xE9;  /* JMP rel32 */
+    *(DWORD*)(target + 1) = (DWORD)pCave - (0x006B9F40 + 5);
+    target[5] = 0x90;  /* NOP */
+    target[6] = 0x90;  /* NOP */
+    target[7] = 0x90;  /* NOP */
+    target[8] = 0x90;  /* NOP */
+    target[9] = 0x90;  /* NOP */
+    VirtualProtect(target, 10, oldProt, &oldProt);
+
+    ProxyLog("  PatchRemovePeerAddress: 0x006B9F40 -> cave at %p "
+             "(NULL list head returns cleanly)", pCave);
+}
+
+/* ================================================================
  * PatchDebugConsoleToFile - Replace debug console with file logging
  *
  * BC's embedded Python has ALL file I/O disabled (open, nt.open, AND
@@ -1371,6 +1559,12 @@ static void __cdecl ReplacementDebugConsole(void) {
     else if (excValue && !IsBadReadPtr(excValue, 24) &&
              *(void**)((char*)excValue + 4) == PY_STRING_TYPE_ADDR) {
         text = PY_StringAsString(excValue);
+    }
+
+    /* Check for FTRACE_RESET command before normal processing */
+    if (text && strncmp(text, "FTRACE_RESET:", 13) == 0) {
+        FTraceReset(text + 13);
+        return;
     }
 
     if (text && g_pStateDump) {
@@ -1571,7 +1765,29 @@ static void LogPyModules(const char* label) {
  * 1. Getting __main__ module from sys.modules dict (C API, always works)
  * 2. Getting its __dict__
  * 3. Calling PyRun_String directly with Py_file_input (0x101)
+ *
+ * IMPORTANT: PY_RunString enters the Python interpreter which calls
+ * SWIG-generated wrappers and stbc.exe C++ code. This foreign code
+ * can corrupt callee-saved registers (EBP, EBX, ESI, EDI). At -O2
+ * without -fno-omit-frame-pointer, GCC caches function pointers
+ * (e.g. IsBadReadPtr) in EBP. If the Python/SWIG chain corrupts
+ * EBP, the caller crashes on the next use of that cached pointer.
+ *
+ * Defense-in-depth:
+ * 1. -fno-omit-frame-pointer in CFLAGS (prevents EBP as GPR)
+ * 2. PY_RunString called via noinline wrapper (isolates registers)
  * ================================================================ */
+
+/* Noinline wrapper isolates PY_RunString in its own stack frame.
+ * Any register corruption inside the Python/SWIG/C++ call chain
+ * is contained: the wrapper's prologue/epilogue restore callee-saved
+ * registers before returning to RunPyCode. This was the fix for the
+ * crash at EIP=0x0CCA8281 (EBP corruption after InitNetwork SWIG call). */
+static void* __attribute__((noinline)) RunPyString_Safe(
+    const char* code, int mode, void* globals, void* locals) {
+    return PY_RunString(code, mode, globals, locals);
+}
+
 static int RunPyCode(const char* code) {
     void *mainMod, *mainDict, *result;
 
@@ -1600,7 +1816,12 @@ static int RunPyCode(const char* code) {
         return -1;
     }
 
-    result = PY_RunString(code, 0x101, mainDict, mainDict);
+    /* Call PY_RunString through noinline wrapper to isolate register state.
+     * The Python/SWIG/C++ call chain corrupts callee-saved registers (EBP).
+     * The wrapper's compiler-generated prologue/epilogue save and restore
+     * EBP/EBX/ESI/EDI, containing the corruption within its stack frame. */
+    result = RunPyString_Safe(code, 0x101, mainDict, mainDict);
+
     if (!result) {
         void *errType = NULL, *errValue = NULL, *errTB = NULL;
         PY_ErrFetch(&errType, &errValue, &errTB);

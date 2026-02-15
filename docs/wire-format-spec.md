@@ -9,7 +9,7 @@ See also: [message-trace-vs-packet-trace.md](message-trace-vs-packet-trace.md) f
 2. [Stream Primitives](#stream-primitives)
 3. [Compressed Data Types](#compressed-data-types)
 4. [Checksum/NetFile Opcodes (0x20-0x28)](#checksumnetfile-opcodes-0x20-0x28)
-5. [Game Opcodes (0x00-0x0F)](#game-opcodes-0x00-0x0f)
+5. [Game Opcodes (0x00-0x2A)](#game-opcodes-0x00-0x2a)
 6. [State Update (0x1C) - The Big One](#state-update-0x1c---the-big-one)
 7. [Object Replication](#object-replication)
 8. [Python Message Dispatch](#python-message-dispatch)
@@ -47,18 +47,23 @@ The TGNetwork layer wraps messages in a TGMessage object:
 - `msg+0x3D` = priority flag
 
 ### Message Dispatchers
-Two independent dispatchers process incoming messages:
+Three C++ dispatchers plus a Python-level message path:
 
 1. **NetFile dispatcher** (`FUN_006a3cd0` at UtopiaModule+0x80): Handles opcodes 0x20-0x27
    - Registered for event type `0x60001` (ET_NETWORK_MESSAGE_EVENT)
    - Sets `DAT_0097fa8b = 1` during processing
 
-2. **MultiplayerGame dispatcher** (registered as `ReceiveMessageHandler`): Handles game opcodes
+2. **MultiplayerGame dispatcher** (`0x0069f2a0`, registered as `ReceiveMessageHandler`): Game opcodes 0x00-0x2A
+   - Jump table at `0x0069F534` (41 entries)
    - Forwards to per-opcode handlers based on first byte of payload
 
 3. **MultiplayerWindow dispatcher** (`FUN_00504c10`): Client-side UI handler
    - Only processes if `this+0xb0 != 0` (gate flag)
    - Handles opcodes 0x00, 0x01, 0x16
+
+4. **Python SendTGMessage**: Opcodes 0x2C-0x39 (chat, scoring, game flow)
+   - Bypass all C++ dispatchers entirely
+   - Handled by Python-level ReceiveMessage in multiplayer scripts
 
 ---
 
@@ -440,11 +445,11 @@ Strips the opcode byte, creates a `TGBufferStream` from the remaining data, cons
 
 This is the mechanism for `MISSION_INIT_MESSAGE`, `SCORE_MESSAGE`, `PLAYER_ACTION`, and all other Python multiplayer messages.
 
-### 0x07-0x0C, 0x0E-0x10, 0x1B - Event Forward Messages
+### 0x07-0x0C, 0x0E-0x12, 0x1B - Event Forward Messages
 
 **Handler**: `FUN_0069FDA0` (generic event forwarder) or `FUN_006a17c0` (sender thunk)
 
-These opcodes forward engine-level events (weapon state, cloak, warp) to all connected peers. They all share the same generic format:
+These opcodes forward engine-level events (weapon state, cloak, warp, repair, phaser power) to all connected peers. They all share the same generic format:
 
 ```
 Offset  Size  Type    Field
@@ -454,27 +459,43 @@ Offset  Size  Type    Field
 5+      var   data    event-specific payload (variable)
 ```
 
-| Opcode | Event Name | Recv Event Code | Description |
-|--------|-----------|-----------------|-------------|
-| 0x07 | StartFiring | 0x008000D7 | Weapon subsystem begins firing |
-| 0x08 | StopFiring | 0x008000D9 | Weapon subsystem stops firing |
-| 0x09 | StopFiringAtTarget | 0x008000DB | Beam/phaser stops tracking target |
-| 0x0A | SubsystemStatusChanged | 0x0080006C | Subsystem health/state change |
-| 0x0B | EventForward_DF | 0x008000DF | (unknown event forward) |
-| 0x0C | EventForward | (from stream) | Generic event forward |
-| 0x0E | StartCloaking | 0x008000E3 | Cloaking device activated |
-| 0x0F | StopCloaking | 0x008000E5 | Cloaking device deactivated |
-| 0x10 | StartWarp | 0x008000ED | Warp drive activated |
-| 0x1B | TorpedoTypeChange | 0x008000FD | Torpedo type selection changed |
+| Opcode | Event Name | Recv Event Code | Description | Stock 15-min count |
+|--------|-----------|-----------------|-------------|--------------------|
+| 0x07 | StartFiring | 0x008000D7 | Weapon subsystem begins firing | 2282 |
+| 0x08 | StopFiring | 0x008000D9 | Weapon subsystem stops firing | common |
+| 0x09 | StopFiringAtTarget | 0x008000DB | Beam/phaser stops tracking target | common |
+| 0x0A | SubsystemStatusChanged | 0x0080006C | Subsystem health/state change | common |
+| 0x0B | AddToRepairList | 0x008000DF | Crew repair assignment | occasional |
+| 0x0C | ClientEvent | (from stream) | Generic event forward (preserve=0) | occasional |
+| 0x0E | StartCloaking | 0x008000E3 | Cloaking device activated | occasional |
+| 0x0F | StopCloaking | 0x008000E5 | Cloaking device deactivated | occasional |
+| 0x10 | StartWarp | 0x008000ED | Warp drive activated | occasional |
+| 0x11 | RepairListPriority | 0x008000E1 | Repair priority ordering | occasional |
+| 0x12 | SetPhaserLevel | 0x008000E0 | Phaser power/intensity setting | 33 |
+| 0x1B | TorpedoTypeChange | 0x008000FD | Torpedo type selection changed | occasional |
 
 **Sender/receiver event code pairing**: The sender uses one event code locally, the receiver uses a paired code:
-- D8→D7 (StartFiring), DA→D9, DC→DB, DD→6C, E2→E3, E4→E5, EC→ED, FE→FD
+- D8→D7 (StartFiring), DA→D9, DC→DB, DD→6C, E0→E1, E2→E3, E4→E5, EC→ED, FE→FD
 
 ### 0x13 - Host Message
 
-**Handler**: `FUN_006A01B0`
+**Handler**: `FUN_006a0d90`
 
 Host-specific message dispatch. Used for self-destruct and other host-authority actions.
+
+### 0x15 - CollisionEffect (Client -> Server)
+
+**Handler**: `FUN_006a2470`
+
+Collision damage relay. Client detects a collision locally and sends this to the host for authoritative damage processing. 84 times in a 15-minute 3-player stock session (4th most common combat opcode).
+
+```
+Offset  Size  Type    Field
+------  ----  ----    -----
+0       1     u8      opcode = 0x15
+1       4     i32     object_id         (colliding ship)
++0      var   data    collision params   (damage, position, etc.)
+```
 
 ### 0x14 - Destroy Object
 
@@ -1104,20 +1125,28 @@ as the game opcode, producing garbage entries:
 
 ---
 
-## Newly Discovered Opcodes (from stock-dedi packet traces)
+## Formerly Unknown Opcodes (now identified)
 
-These opcodes were identified from stock dedicated server packet captures but are not
-yet fully decoded.
+Opcodes originally discovered from stock-dedi packet captures, now fully identified via Ghidra analysis:
 
-| Opcode | Name | Direction | Occurrences | Notes |
-|--------|------|-----------|-------------|-------|
-| 0x11 | Unknown_11 | Relayed (C->S, S->C) | 2 each | 21 bytes payload, contains object ID patterns |
-| 0x12 | Unknown_12 | Relayed (C->S, S->C) | 5 each | 18 bytes payload, contains object ID patterns |
-| 0x13 | HostMsg | C->S only | 2 | Not relayed to other clients |
-| 0x28 | Unknown_28 | S->C only | 3 | 6 bytes total (1 byte payload), sent before Settings |
-| 0x2C | ChatMessage | Relayed | 5 C->S, ~15 S->C | `[0x2C][sender_slot:1][00 00 00][msgLen:2 LE][ASCII text]` |
-| 0x35 | GameState | S->C only | 3 | Sent after ObjCreateTeam |
-| 0x37 | PlayerRoster | S->C only | 1 | Sent once during join sequence |
+| Opcode | Name | Handler | Direction | Stock 15-min count | Notes |
+|--------|------|---------|-----------|--------------------|-------|
+| 0x11 | RepairListPriority | FUN_0069fda0 | Relayed | occasional | Crew repair priority ordering (event 0x008000E1) |
+| 0x12 | SetPhaserLevel | FUN_0069fda0 | Relayed | 33 | Phaser power/intensity setting (event 0x008000E0) |
+| 0x15 | CollisionEffect | FUN_006a2470 | C->S | 84 | Collision damage relay — client detects, host processes |
+| 0x28 | (no handler) | (default case) | S->C | 3 | Falls through jump table — vestigial/unused |
+
+Python-level messages (bypass C++ dispatcher entirely via SendTGMessage):
+
+| Byte | Name | Direction | Notes |
+|------|------|-----------|-------|
+| 0x2C | CHAT_MESSAGE | Relayed | `[0x2C][sender_slot:1][00 00 00][msgLen:2 LE][ASCII text]` |
+| 0x2D | TEAM_CHAT_MESSAGE | Relayed | Same format as 0x2C |
+| 0x35 | MISSION_INIT_MESSAGE | S->C | Game config, sent after ObjCreateTeam |
+| 0x36 | SCORE_CHANGE_MESSAGE | S->C | Score deltas |
+| 0x37 | SCORE_MESSAGE | S->C | Full score sync, sent once during join |
+| 0x38 | END_GAME_MESSAGE | S->C | Game over signal |
+| 0x39 | RESTART_GAME_MESSAGE | S->C | Game restart signal |
 
 ---
 
@@ -1137,15 +1166,18 @@ yet fully decoded.
 | 0x08 | StopFiring | any | FUN_0069fda0 | objectId, event data (→ event 0x008000D9) |
 | 0x09 | StopFiringAtTarget | any | FUN_0069fda0 | objectId, event data (→ event 0x008000DB) |
 | 0x0A | SubsysStatus | any | FUN_0069fda0 | objectId, event data (→ event 0x0080006C) |
-| 0x0B | EventFwd_DF | any | FUN_0069fda0 | objectId, event data (→ event 0x008000DF) |
-| 0x0C | EventFwd | any | FUN_0069fda0 | objectId, event data (from stream) |
+| 0x0B | AddToRepairList | any | FUN_0069fda0 | objectId, event data (→ event 0x008000DF) |
+| 0x0C | ClientEvent | any | FUN_0069fda0 | objectId, event data (from stream, preserve=0) |
 | 0x0D | PythonEvent2 | any | FUN_0069f880 | eventCode, eventPayload (same as 0x06) |
 | 0x0E | StartCloaking | any | FUN_0069fda0 | objectId, event data (→ event 0x008000E3) |
 | 0x0F | StopCloaking | any | FUN_0069fda0 | objectId, event data (→ event 0x008000E5) |
 | 0x10 | StartWarp | any | FUN_0069fda0 | objectId, event data (→ event 0x008000ED) |
-| 0x13 | HostMsg | C->S | FUN_006a01b0 | host-specific dispatch (self-destruct etc.) |
+| 0x11 | RepairListPriority | any | FUN_0069fda0 | objectId, event data (→ event 0x008000E1) |
+| 0x12 | SetPhaserLevel | any | FUN_0069fda0 | objectId, event data (→ event 0x008000E0) |
+| 0x13 | HostMsg | C->S | FUN_006a0d90 | host-specific dispatch (self-destruct etc.) |
 | 0x14 | DestroyObject | S->C | FUN_006a01e0 | objectId |
-| 0x16 | UISettings | S->C | FUN_00504c70 | collisionDamageFlag(bit) |
+| 0x15 | CollisionEffect | C->S | FUN_006a2470 | objectId, collision params (damage relay) |
+| 0x16 | UICollisionSetting | S->C | FUN_00504c70 | collisionDamageFlag(bit) |
 | 0x17 | DeletePlayerUI | S->C | FUN_006a1360 | player UI cleanup |
 | 0x18 | DeletePlayerAnim | S->C | FUN_006a1420 | player deletion animation |
 | 0x19 | TorpedoFire | owner->all | FUN_0069f930 | objId, flags, velocity(cv3), [targetId, impact(cv4)] |
@@ -1155,12 +1187,21 @@ yet fully decoded.
 | 0x1D | ObjNotFound | S->C | FUN_006a0490 | objectId (0x3FFFFFFF queries are normal) |
 | 0x1E | RequestObject | C->S | FUN_006a02a0 | objectId (server responds with 0x02/0x03) |
 | 0x1F | EnterSet | S->C | FUN_006a05e0 | objectId, setData |
-| 0x28 | Unknown_28 | S->C | (unknown) | 1 byte payload, sent before Settings |
-| 0x29 | Explosion | any | FUN_006a0080 | objectId, impact(cv4), damage(cf16), radius(cf16) |
-| 0x2A | NewPlayerInGame | C->S | FUN_006a1e70 | (triggers InitNetwork + object replication) |
-| 0x2C | ChatMessage | relayed | (unknown) | senderSlot, padding, msgLen, ASCII text |
-| 0x35 | GameState | S->C | (unknown) | Sent after ObjCreateTeam during join |
-| 0x37 | PlayerRoster | S->C | (unknown) | Sent once during join sequence |
+| 0x28 | (no handler) | S->C | (default) | 1 byte payload, vestigial/unused |
+| 0x29 | Explosion | S->C | FUN_006a0080 | objectId, impact(cv4), damage(cf16), radius(cf16) |
+| 0x2A | NewPlayerInGame | S->C | FUN_006a1e70 | (triggers InitNetwork + object replication) |
+
+### Python-Level Messages (via SendTGMessage, bypass C++ dispatcher)
+
+| Byte | Name | Direction | Handler | Payload Summary |
+|------|------|-----------|---------|-----------------|
+| 0x2C | CHAT_MESSAGE | relayed | Python ReceiveMessage | senderSlot, padding, msgLen, ASCII text |
+| 0x2D | TEAM_CHAT_MESSAGE | relayed | Python ReceiveMessage | same format as 0x2C |
+| 0x35 | MISSION_INIT_MESSAGE | S->C | Python ReceiveMessage | game config, sent after ObjCreateTeam |
+| 0x36 | SCORE_CHANGE_MESSAGE | S->C | Python ReceiveMessage | score deltas |
+| 0x37 | SCORE_MESSAGE | S->C | Python ReceiveMessage | full score sync, sent once during join |
+| 0x38 | END_GAME_MESSAGE | S->C | Python ReceiveMessage | game over signal |
+| 0x39 | RESTART_GAME_MESSAGE | S->C | Python ReceiveMessage | game restart signal |
 
 ### Checksum/NetFile Opcodes
 

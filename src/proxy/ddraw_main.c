@@ -23,6 +23,7 @@ void ODSLog(const char* fmt, ...);
  */
 #include "ddraw_main/packet_trace_and_decode.inc.c"
 #include "ddraw_main/message_factory_hooks.inc.c"
+#include "ddraw_main/function_tracer.inc.c"
 #include "ddraw_main/socket_and_input_hooks.inc.c"
 #include "ddraw_main/binary_patches_and_python_bridge.inc.c"
 #include "ddraw_main/game_loop_and_bootstrap.inc.c"
