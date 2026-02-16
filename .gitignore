@@ -10,9 +10,6 @@
 reference/decompiled/all_decompiled.c
 reference/decompiled/.progress.json
 
-logs/*
-!logs/readme.md
-
 engine/**
 !engine/readme.md
 
