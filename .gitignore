@@ -4,7 +4,6 @@
 *.pyc
 
 # Logs
-*.log
 
 # Redundant decompiled superset
 reference/decompiled/all_decompiled.c

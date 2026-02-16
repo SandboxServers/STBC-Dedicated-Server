@@ -1,26 +1,21 @@
 # Default: auto-detect (git handles conversion)
 * text=auto
-
 # C source: LF (compiled on Linux/WSL2, line endings don't matter to gcc)
 *.c text eol=lf
 *.h text eol=lf
 *.def text eol=lf
-
 # Python scripts: LF (Python 1.5 handles both, but LF is safer)
 *.py text eol=lf
-
 # Markdown/docs: LF
 *.md text eol=lf
-
 # Config: CRLF (consumed by Windows game)
 *.cfg text eol=crlf
 *.bat text eol=crlf
 *.ps1 text eol=crlf
-
 # Makefile must be LF
 Makefile text eol=lf
-
 # Binary - no conversion
 *.dll binary
 *.exe binary
 *.pyc binary
+*.log filter=lfs diff=lfs merge=lfs -text
