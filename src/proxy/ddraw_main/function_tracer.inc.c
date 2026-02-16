@@ -101,17 +101,26 @@ static int FTraceRegister(DWORD addr, int relocLen, const BYTE* expectedBytes,
 }
 
 /* ----------------------------------------------------------------
- * FTraceResolveCaller - try to map a return address to a hook name
+ * FTraceResolveName - binary search the static function name table
  *
- * If callerAddr falls within the first 0x400 bytes of a hooked
- * function, return that hook's name.  Otherwise return NULL.
+ * Finds the function containing `addr` by searching for the largest
+ * table entry <= addr.  If the offset is within 0x2000 bytes, returns
+ * the function name and optionally the offset within it.
  * ---------------------------------------------------------------- */
-static const char* FTraceResolveCaller(DWORD callerAddr) {
-    int i;
-    for (i = 0; i < g_ftHookCount; i++) {
-        if (callerAddr >= g_ftHooks[i].addr &&
-            callerAddr < g_ftHooks[i].addr + 0x400)
-            return g_ftHooks[i].name;
+static const char* FTraceResolveName(DWORD addr, DWORD* outOffset) {
+    int lo = 0, hi = (int)FUNC_NAME_COUNT - 1, best = -1;
+    while (lo <= hi) {
+        int mid = (lo + hi) / 2;
+        if (g_funcNames[mid].addr == addr) {
+            if (outOffset) *outOffset = 0;
+            return g_funcNames[mid].name;
+        }
+        if (g_funcNames[mid].addr < addr) { best = mid; lo = mid + 1; }
+        else hi = mid - 1;
+    }
+    if (best >= 0 && (addr - g_funcNames[best].addr) < 0x2000) {
+        if (outOffset) *outOffset = addr - g_funcNames[best].addr;
+        return g_funcNames[best].name;
     }
     return NULL;
 }
@@ -275,13 +284,21 @@ static void FTraceDump(const char* label) {
                 int nc = g_ftHooks[i].callerCount;
                 if (nc > FTRACE_MAX_CALLERS) nc = FTRACE_MAX_CALLERS;
                 for (c = 0; c < nc; c++) {
-                    const char* resolved = FTraceResolveCaller(
-                        g_ftHooks[i].callers[c].addr);
+                    DWORD coff = 0;
+                    const char* resolved = FTraceResolveName(
+                        g_ftHooks[i].callers[c].addr, &coff);
                     if (resolved) {
-                        ProxyLog("         from 0x%08X (%s) x%ld",
-                                 g_ftHooks[i].callers[c].addr,
-                                 resolved,
-                                 (long)g_ftHooks[i].callers[c].count);
+                        if (coff > 0) {
+                            ProxyLog("         from 0x%08X %s+0x%X x%ld",
+                                     g_ftHooks[i].callers[c].addr,
+                                     resolved, coff,
+                                     (long)g_ftHooks[i].callers[c].count);
+                        } else {
+                            ProxyLog("         from 0x%08X %s x%ld",
+                                     g_ftHooks[i].callers[c].addr,
+                                     resolved,
+                                     (long)g_ftHooks[i].callers[c].count);
+                        }
                     } else {
                         ProxyLog("         from 0x%08X x%ld",
                                  g_ftHooks[i].callers[c].addr,

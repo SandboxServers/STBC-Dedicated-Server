@@ -220,18 +220,42 @@ static DWORD g_dwMainThreadId = 0;
 static void ResolveAddr(DWORD addr, char* out, int outLen) {
     MEMORY_BASIC_INFORMATION mbi;
     char modName[MAX_PATH];
+    const char* funcName;
+    DWORD funcOff;
+
+    /* Try static function name table first */
+    funcName = FTraceResolveName(addr, &funcOff);
+
     if (VirtualQuery((void*)addr, &mbi, sizeof(mbi)) && mbi.AllocationBase) {
         if (GetModuleFileNameA((HMODULE)mbi.AllocationBase, modName, MAX_PATH)) {
             char* slash = modName;
             char* p;
             for (p = modName; *p; p++)
                 if (*p == '\\' || *p == '/') slash = p + 1;
-            wsprintfA(out, "0x%08X [%s+0x%X]", addr, slash,
-                      addr - (DWORD)mbi.AllocationBase);
+            if (funcName) {
+                if (funcOff)
+                    _snprintf(out, outLen, "0x%08lX %s+0x%lX [%s+0x%lX]", addr,
+                              funcName, funcOff, slash, addr - (DWORD)mbi.AllocationBase);
+                else
+                    _snprintf(out, outLen, "0x%08lX %s [%s+0x%lX]", addr,
+                              funcName, slash, addr - (DWORD)mbi.AllocationBase);
+            } else {
+                _snprintf(out, outLen, "0x%08lX [%s+0x%lX]", addr, slash,
+                          addr - (DWORD)mbi.AllocationBase);
+            }
+            out[outLen - 1] = '\0';
             return;
         }
     }
-    wsprintfA(out, "0x%08X", addr);
+    if (funcName) {
+        if (funcOff)
+            _snprintf(out, outLen, "0x%08lX %s+0x%lX", addr, funcName, funcOff);
+        else
+            _snprintf(out, outLen, "0x%08lX %s", addr, funcName);
+        out[outLen - 1] = '\0';
+    } else {
+        wsprintfA(out, "0x%08X", addr);
+    }
 }
 
 /* ================================================================
@@ -257,13 +281,29 @@ static LONG WINAPI VEHCrashLogger(EXCEPTION_POINTERS* ep) {
         InterlockedDecrement(&vehCount);
         return EXCEPTION_CONTINUE_SEARCH;
     }
-    /* Log minimal crash info */
-    ProxyLog("!!! VEH[%ld]: exception 0x%08X at EIP=0x%08X thread=%lu ECX=0x%08X EAX=0x%08X ESP=0x%08X",
-             count, excCode, (DWORD)ep->ContextRecord->Eip,
-             GetCurrentThreadId(),
-             (DWORD)ep->ContextRecord->Ecx,
-             (DWORD)ep->ContextRecord->Eax,
-             (DWORD)ep->ContextRecord->Esp);
+    /* Log minimal crash info with resolved function name */
+    {
+        DWORD eipAddr = (DWORD)ep->ContextRecord->Eip;
+        DWORD eipOff = 0;
+        const char* eipFunc = FTraceResolveName(eipAddr, &eipOff);
+        if (eipFunc) {
+            if (eipOff)
+                ProxyLog("!!! VEH[%ld]: exception 0x%08X at EIP=0x%08X (%s+0x%X) thread=%lu ECX=0x%08X EAX=0x%08X ESP=0x%08X",
+                         count, excCode, eipAddr, eipFunc, eipOff, GetCurrentThreadId(),
+                         (DWORD)ep->ContextRecord->Ecx, (DWORD)ep->ContextRecord->Eax,
+                         (DWORD)ep->ContextRecord->Esp);
+            else
+                ProxyLog("!!! VEH[%ld]: exception 0x%08X at EIP=0x%08X (%s) thread=%lu ECX=0x%08X EAX=0x%08X ESP=0x%08X",
+                         count, excCode, eipAddr, eipFunc, GetCurrentThreadId(),
+                         (DWORD)ep->ContextRecord->Ecx, (DWORD)ep->ContextRecord->Eax,
+                         (DWORD)ep->ContextRecord->Esp);
+        } else {
+            ProxyLog("!!! VEH[%ld]: exception 0x%08X at EIP=0x%08X thread=%lu ECX=0x%08X EAX=0x%08X ESP=0x%08X",
+                     count, excCode, eipAddr, GetCurrentThreadId(),
+                     (DWORD)ep->ContextRecord->Ecx, (DWORD)ep->ContextRecord->Eax,
+                     (DWORD)ep->ContextRecord->Esp);
+        }
+    }
     /* Dump stack around ESP to find return addresses */
     if (count <= 5) {
         DWORD esp = ep->ContextRecord->Esp;
@@ -289,7 +329,16 @@ static LONG WINAPI VEHCrashLogger(EXCEPTION_POINTERS* ep) {
                 if (IsBadReadPtr((void*)frame, 8)) break;
                 DWORD savedEbp = *(DWORD*)frame;
                 DWORD retAddr = *(DWORD*)(frame + 4);
-                ProxyLog("!!! VEH[%ld]: FRAME[%d] EBP=0x%08X RET=0x%08X", count, i, frame, retAddr);
+                DWORD retOff = 0;
+                const char* retFunc = FTraceResolveName(retAddr, &retOff);
+                if (retFunc) {
+                    if (retOff)
+                        ProxyLog("!!! VEH[%ld]: FRAME[%d] EBP=0x%08X RET=0x%08X (%s+0x%X)", count, i, frame, retAddr, retFunc, retOff);
+                    else
+                        ProxyLog("!!! VEH[%ld]: FRAME[%d] EBP=0x%08X RET=0x%08X (%s)", count, i, frame, retAddr, retFunc);
+                } else {
+                    ProxyLog("!!! VEH[%ld]: FRAME[%d] EBP=0x%08X RET=0x%08X", count, i, frame, retAddr);
+                }
                 if (savedEbp <= frame) break; /* stack grows down, EBP should increase */
                 frame = savedEbp;
             }
