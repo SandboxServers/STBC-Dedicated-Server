@@ -175,6 +175,15 @@
 - See [torpedo-beam-network.md](torpedo-beam-network.md), [complete-opcode-table.md](complete-opcode-table.md)
 - TorpedoFire=0x19, BeamFire=0x1A (not 0x09/0x0A as spec said)
 
+## GameSpy Master Server & LAN Discovery (2026-02-16)
+- See [docs/gamespy-master-server.md](../../docs/gamespy-master-server.md) for complete analysis
+- GameSpy object: 0xF4 bytes at UtopiaModule+0x7C, vtable PTR_FUN_00895564
+- QR (heartbeat) code EXISTS but is **DEAD CODE** -- qr_init at 0x006ab558 never called
+- Static qr_t at 0x0095a740 is zeroed, active flag=0, master sockaddr zeroed
+- Game name: "bcommander", Secret key: "Nm3aZ9", Master port: 27900 (UDP heartbeat), 28900 (TCP browser)
+- Default master: stbridgecmnd01.activision.com, override via masterserver.txt
+- LAN: UDP broadcast to 255.255.255.255, query format `\status\`, port range scan
+
 ## Dump Baseline Delta (2026-02-12)
 - See [stock-baseline-analysis.md](stock-baseline-analysis.md) for detailed 4-stage startup baseline
 - Stock host: CurrentGame appears one stage BEFORE starting set/system creation

@@ -77,7 +77,7 @@ deploy-server: $(TARGET)
 	cp src/scripts/Local.py "$(SERVER_DIR)/scripts/"
 	rm -f "$(SERVER_DIR)/scripts/Local.pyc"
 	cp config/dedicated.cfg "$(SERVER_DIR)/"
-	rm -f "$(SERVER_DIR)/"*.log "$(SERVER_DIR)/"*.txt
+	rm -f "$(SERVER_DIR)/"*.log
 	@echo "Deployed SERVER to $(SERVER_DIR)"
 
 # Deploy client: observe-only proxy DLL + ClientLogger + Observer scripts (no dedicated.cfg)
@@ -92,7 +92,7 @@ deploy-client: $(OBS_TARGET)
 	rm -f "$(CLIENT_DIR)/scripts/Custom/_proxy_log.py"
 	cp src/scripts/ClientLocal.py "$(CLIENT_DIR)/scripts/Local.py"
 	rm -f "$(CLIENT_DIR)/scripts/Local.pyc"
-	rm -f "$(CLIENT_DIR)/"*.log "$(CLIENT_DIR)/"*.txt
+	rm -f "$(CLIENT_DIR)/"*.log
 	@echo "Deployed CLIENT to $(CLIENT_DIR)"
 
 # Deploy stock-dedi: observe-only proxy DLL + Observer Python scripts (NO dedicated.cfg)
@@ -107,7 +107,7 @@ deploy-stockdedi: $(OBS_TARGET)
 	rm -f "$(STOCKDEDI_DIR)/scripts/Custom/_proxy_log.py"
 	cp src/scripts/ObserverLocal.py "$(STOCKDEDI_DIR)/scripts/Local.py"
 	rm -f "$(STOCKDEDI_DIR)/scripts/Local.pyc"
-	rm -f "$(STOCKDEDI_DIR)/"*.log "$(STOCKDEDI_DIR)/"*.txt
+	rm -f "$(STOCKDEDI_DIR)/"*.log
 	@echo "Deployed STOCK-DEDI (observer) to $(STOCKDEDI_DIR)"
 
 # Deploy both server + client

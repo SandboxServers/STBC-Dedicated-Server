@@ -308,6 +308,14 @@ static VOID CALLBACK GameLoopTimerProc(HWND hwnd, UINT msg,
                                               (struct sockaddr*)&srcAddr, &addrLen);
                             if (recvRc > 0) {
                                 queryBuf[recvRc] = '\0';
+                                ProxyLog("  GAMELOOP[%d]: GameSpy query from %d.%d.%d.%d:%d: \"%s\"",
+                                         tickCount,
+                                         (unsigned char)srcAddr.sin_addr.S_un.S_un_b.s_b1,
+                                         (unsigned char)srcAddr.sin_addr.S_un.S_un_b.s_b2,
+                                         (unsigned char)srcAddr.sin_addr.S_un.S_un_b.s_b3,
+                                         (unsigned char)srcAddr.sin_addr.S_un.S_un_b.s_b4,
+                                         ntohs(srcAddr.sin_port),
+                                         queryBuf);
                                 QR_HANDLE_QUERY((void*)qrPtr, queryBuf,
                                                 (struct sockaddr*)&srcAddr);
                                 routed++;

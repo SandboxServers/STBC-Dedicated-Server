@@ -1307,6 +1307,19 @@ static void PktHexDump(FILE* f, const unsigned char* data, int len) {
         fprintf(f, "    ... (%d bytes truncated)\n", len - 2048);
 }
 
+/* Find a substring within a fixed-length buffer (not NUL-terminated safe) */
+static int PktFindSubstring(const char* haystack, int hayLen, const char* needle) {
+    int needleLen = 0;
+    int i;
+    const char* n = needle;
+    while (*n++) needleLen++;
+    if (needleLen == 0 || needleLen > hayLen) return 0;
+    for (i = 0; i <= hayLen - needleLen; i++) {
+        if (memcmp(haystack + i, needle, needleLen) == 0) return 1;
+    }
+    return 0;
+}
+
 static void PktLog(const char* dir, const struct sockaddr_in* peer,
                     const unsigned char* data, int len, int rc) {
     SYSTEMTIME st;
@@ -1335,12 +1348,75 @@ static void PktLog(const char* dir, const struct sockaddr_in* peer,
         PktHexDump(g_pPacketLog, decBuf, len);
         PktDecodePacket(g_pPacketLog, decBuf, len);
     } else {
-        opcode = "";
+        /* GameSpy packet — decode key-value pairs */
+        const char* gsType = "GAMESPY";
+        if (len >= 8 && memcmp(data, "\\status\\", 8) == 0)
+            gsType = "GAMESPY_QUERY [\\status\\]";
+        else if (len >= 7 && memcmp(data, "\\basic\\", 7) == 0)
+            gsType = "GAMESPY_QUERY [\\basic\\]";
+        else if (len >= 6 && memcmp(data, "\\info\\", 6) == 0)
+            gsType = "GAMESPY_QUERY [\\info\\]";
+        else if (len >= 7 && memcmp(data, "\\rules\\", 7) == 0)
+            gsType = "GAMESPY_QUERY [\\rules\\]";
+        else if (len >= 9 && memcmp(data, "\\players\\", 9) == 0)
+            gsType = "GAMESPY_QUERY [\\players\\]";
+        else if (len >= 6 && memcmp(data, "\\echo\\", 6) == 0)
+            gsType = "GAMESPY_ECHO";
+        else if (len > 2 && data[0] == '\\') {
+            /* Check for response (contains \hostname\ or \final\ or \heartbeat\) */
+            if (len > 10 && PktFindSubstring((const char*)data, len, "\\hostname\\"))
+                gsType = "GAMESPY_RESPONSE";
+            else if (len > 7 && PktFindSubstring((const char*)data, len, "\\final\\"))
+                gsType = "GAMESPY_RESPONSE";
+            else if (len > 12 && PktFindSubstring((const char*)data, len, "\\heartbeat\\"))
+                gsType = "GAMESPY_HEARTBEAT";
+            else if (len > 10 && PktFindSubstring((const char*)data, len, "\\gamename\\"))
+                gsType = "GAMESPY_MASTER_AUTH";
+            else if (len > 8 && PktFindSubstring((const char*)data, len, "\\secure\\"))
+                gsType = "GAMESPY_SECURE";
+            else if (len > 10 && PktFindSubstring((const char*)data, len, "\\validate\\"))
+                gsType = "GAMESPY_VALIDATE";
+        }
+
         fprintf(g_pPacketLog,
                 "[%02d:%02d:%02d.%03d] #%ld %s %s len=%d rc=%d %s\n",
                 st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
-                seq, dir, label, len, rc, opcode);
-        fprintf(g_pPacketLog, "  Plaintext:\n");
+                seq, dir, label, len, rc, gsType);
+        /* Print GameSpy text as readable string (NUL-safe) */
+        {
+            char gsBuf[1500];
+            int printLen = len;
+            if (printLen > (int)sizeof(gsBuf) - 1) printLen = (int)sizeof(gsBuf) - 1;
+            memcpy(gsBuf, data, printLen);
+            gsBuf[printLen] = '\0';
+            fprintf(g_pPacketLog, "  Text: %s\n", gsBuf);
+        }
+        /* Also decode key-value pairs on separate lines for readability */
+        if (len > 2 && data[0] == '\\') {
+            const char* p = (const char*)data + 1;  /* skip leading \ */
+            const char* end = (const char*)data + len;
+            fprintf(g_pPacketLog, "  Decoded:\n");
+            while (p < end) {
+                /* Find key end (next \) */
+                const char* keyEnd = p;
+                while (keyEnd < end && *keyEnd != '\\' && *keyEnd != '\0') keyEnd++;
+                if (keyEnd == p) { p++; continue; }  /* empty key, skip */
+                /* Find value start and end */
+                if (keyEnd < end && *keyEnd == '\\') {
+                    const char* valStart = keyEnd + 1;
+                    const char* valEnd = valStart;
+                    while (valEnd < end && *valEnd != '\\' && *valEnd != '\0') valEnd++;
+                    fprintf(g_pPacketLog, "    %-20.*s = %.*s\n",
+                            (int)(keyEnd - p), p,
+                            (int)(valEnd - valStart), valStart);
+                    p = (valEnd < end && *valEnd == '\\') ? valEnd + 1 : valEnd;
+                } else {
+                    fprintf(g_pPacketLog, "    %.*s (no value)\n", (int)(keyEnd - p), p);
+                    p = keyEnd;
+                }
+            }
+        }
+        fprintf(g_pPacketLog, "  Hex:\n");
         PktHexDump(g_pPacketLog, data, len);
     }
     fprintf(g_pPacketLog, "\n");

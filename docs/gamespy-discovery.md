@@ -1,0 +1,614 @@
+# GameSpy Discovery & Master Server Protocol
+
+Complete reverse-engineered analysis of Star Trek: Bridge Commander's GameSpy integration: LAN discovery, query/response protocol, and master server heartbeat. Verified against live stock dedicated server traces (2026-02-16).
+
+## Overview
+
+BC uses the **GameSpy QR (Query & Reporting) SDK** for server-side query response and the **GameSpy ServerList SDK** for client-side server browsing. All GameSpy traffic shares the game's UDP socket and is distinguished from game traffic by the leading `\` (0x5C) byte.
+
+- **Game name**: `"bcommander"` (hardcoded at `0x00959c24`)
+- **Game version**: `60` (sent in responses as `\gamever\60`)
+- **Master server**: `stbridgecmnd01.activision.com` (hardcoded at `0x0095a4fc`, dead since ~2012)
+- **333networks master**: `81.205.81.173:27900` (via `masterserver.txt`, heartbeats observed in trace)
+- **Game port**: UDP 22101 (0x5655)
+- **LAN scan range**: UDP 22101-22201 (0x5655-0x56B9)
+
+---
+
+## 1. LAN Discovery Flow
+
+### Step 1: Client Clicks "Start Query"
+
+**Python layer** (`Multiplayer/MultiplayerMenus.py`):
+- "Start Query" button fires `App.ET_REFRESH_SERVER_LIST` event with `SetBool(0)` (start=0, stop=1)
+- LAN/Internet mode toggle (`ET_LOCAL_INTERNET_HOST`): int=0 for LAN, int=1 for Internet
+
+**C++ layer** (`FUN_006ab620` at `0x006ab620`):
+- Dispatches based on mode parameter: case 2 or 3 = LAN, case 0 = Internet
+- Stores callback pointers and calls `FUN_006ad430` to initiate the search
+
+### Step 2: Client Creates Broadcast Socket
+
+**`FUN_006aa720`** at `0x006aa720` (SL_CreateBroadcastSocket):
+```c
+socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);   // socket(2, 2, 0x11)
+setsockopt(s, SOL_SOCKET, SO_BROADCAST, &on, 4);  // setsockopt(s, 0xffff, 0x20, ...)
+```
+Socket stored at `ServerList+0x88`.
+
+### Step 3: Client Broadcasts `\status\`
+
+**`FUN_006aa770`** at `0x006aa770` (SL_SendLANBroadcast):
+```c
+// param_2 = 0x5655 (22101), param_3 = 0x56B9 (22201), param_4 = 1 (step)
+sockaddr dest;
+dest.sa_family = AF_INET;          // 2
+dest.sa_data[2..5] = 0xFF;         // 255.255.255.255 (broadcast)
+
+while ((short)port <= endPort) {
+    dest.sa_data[0..1] = htons(port);
+    sendto(socket, "\\status\\", 8, 0, &dest, 16);
+    port += step;                   // increment by 1
+}
+```
+
+**The client sends `\status\` (8 bytes) to `255.255.255.255` on every port from 22101 through 22201 — that's 101 UDP broadcasts.** After sending, it sets the ServerList state to "searching" and records `GetTickCount()` for timeout tracking.
+
+### Step 4: Server Receives Query
+
+The server's **peek-based UDP router** (in `game_loop_and_bootstrap.inc.c`) runs every game tick:
+
+1. `select()` checks for pending data on the shared game socket
+2. `recvfrom()` with `MSG_PEEK` reads the first byte
+3. If byte is `\` (0x5C): this is a GameSpy query — consume the full packet and dispatch
+4. If byte is binary (not `\`): leave it for `TGNetwork_Update` (game traffic)
+
+The query is dispatched to **`FUN_006ac1e0`** (qr_handle_query).
+
+### Step 5: Server Parses Query Type
+
+**`FUN_006ac1e0`** at `0x006ac1e0` (qr_handle_query):
+
+Iterates a table of 8 query type strings at `0x0095a71c` and uses `strstr`-based matching (`FUN_006ac450`):
+
+| Index | String | Handler | What It Returns |
+|-------|--------|---------|-----------------|
+| 0 | `basic` | `FUN_006ac5f0` | Hostname, map, player count |
+| 1 | `info` | `FUN_006ac7a0` | Extended server info |
+| 2 | `rules` | `FUN_006ac810` | Game settings (timelimit, fraglimit, system, password) |
+| 3 | `players` | `FUN_006ac880` | Connected player list |
+| 4 | **`status`** | **All four above** | Combined response (basic + info + rules + players) |
+| 5 | `packets` | All four + flush between each | Fragmented combined response |
+| 6 | `echo` | `FUN_006ac8f0` | Reflects query data back |
+| 7 | (secure) | Stores challenge string | For `\validate\` response |
+
+**Since the LAN broadcast sends `\status\`, the server calls ALL FOUR builders sequentially (case 4).**
+
+### Step 6: Server Builds Response
+
+Each builder calls a registered callback that populates a response buffer with backslash-delimited key-value pairs.
+
+**Basic callback** (`FUN_0069c580` at `0x0069c580`):
+
+The basic info callback builds the core server identity. It reads from Python globals and engine state. **Verified field order** from trace (the basic+info callbacks produce these first):
+
+```
+\gamename\bcommander              # hardcoded game name
+\gamever\60                       # hardcoded game version
+\location\1                       # server location/region
+\hostname\<serverName>            # or \hostname\*<name> if password-protected
+\missionscript\<script>           # e.g. "Multiplayer.Episode.Mission1.Mission1"
+\mapname\<displayName>            # calls Python GetMissionShortName() (e.g. "DM")
+\numplayers\<count>               # from FUN_006a2650 (connected player count)
+\maxplayers\<limit>               # reads Python Multiplayer.MissionMenusShared.g_iPlayerLimit
+\gamemode\<mode>                  # from GameSpy object +0x14 (e.g. "openplaying")
+```
+
+When a password is set, hostname gets a `*` prefix: `\hostname\*My Server`
+
+**Rules callback** (uses format string at `0x00959cf8`):
+```
+\timelimit\<value>                # reads Python g_iTimeLimit
+\fraglimit\<value>                # reads Python g_iFragLimit
+\system\<systemScript>            # SpeciesToSystem.GetScriptFromSpecies(g_iSystem)
+\password\<0|1>                   # password protection flag
+```
+
+**Players callback**: Iterates connected players and adds `\player_N\<name>` entries.
+
+**Info callback**: Additional server metadata.
+
+### Step 7: Response Transmission
+
+**Fragment handling** (`FUN_006ac660` at `0x006ac660`):
+- Concatenates key-value pairs to the response buffer
+- If total exceeds **0x545 bytes (1349)**, splits at a backslash boundary
+- Sends the first fragment via `FUN_006ac550`, continues with remainder
+
+**Send packet** (`FUN_006ac550` at `0x006ac550`):
+- Appends `\queryid\<N>.<M>` where N = sequence counter (`qr_t+0x37`), M = fragment counter (`qr_t+0x38`)
+- Calls `sendto()` to the client's source address
+- Clears the buffer for the next fragment
+
+**Final packet** (`FUN_006ac950` at `0x006ac950`):
+- If a `\secure\` challenge was received: generates validation hash via RC4 (`FUN_006abf70`) and appends `\validate\<hash>`
+- Appends `\final\`
+- Sends via `FUN_006ac550`
+
+### Step 8: Client Receives Response
+
+The client polls its broadcast socket each frame:
+
+1. `select()` with zero timeout checks for data
+2. `recvfrom()` reads up to ~1500 bytes
+3. Searches for `\final\` to know the response is complete
+4. Extracts server IP and port from the `recvfrom` `sockaddr`
+5. Adds server to the browser list with parsed hostname, map, player count
+6. **3-second timeout**: if no more responses arrive within 3 seconds after the last one, closes the broadcast socket and fires `ET_REFRESH_SERVER_LIST_DONE`
+
+---
+
+## 2. Wire Format
+
+### Query Packet (Client → Server)
+```
+\status\                                    8 bytes, LAN broadcast
+\basic\                                     individual server query
+\info\                                      individual query type
+\rules\                                     individual query type
+\players\                                   individual query type
+\echo\<data>                                ping/echo test
+\secure\<challenge_string>                  validation request
+```
+
+### Response Packet (Server → Client)
+
+Verified from stock dedi trace (267 bytes, single unfragmented packet):
+```
+\gamename\bcommander\gamever\60\location\1\hostname\My Game23\missionscript\Multiplayer.Episode.Mission1.Mission1\mapname\DM\numplayers\0\maxplayers\8\gamemode\openplaying\timelimit\-1\fraglimit\-2\system\Multi1\password\0\player_0\Dedicated Server\final\\queryid\2.1
+```
+
+**Field order** (verified): gamename, gamever, location, hostname, missionscript, mapname, numplayers, maxplayers, gamemode, timelimit, fraglimit, system, password, player_N (for each connected player), final, queryid.
+
+**Note**: `\final\` is followed by `\` (double backslash), then `queryid`. The response terminates with `\queryid\N.M` as the last field (no trailing backslash).
+
+If password-protected, hostname gets `*` prefix:
+```
+\hostname\*My Server\...
+```
+
+**gamemode values**: `"openplaying"` = game in progress and accepting players, `"settings"` = in lobby
+
+### Response Fragmentation
+- Maximum packet payload: **1349 bytes** (0x545)
+- Fragments split at backslash boundaries
+- Each fragment gets `\queryid\N.M` — N = query sequence, M = fragment index within query
+- Final fragment includes `\final\` (and optionally `\validate\<hash>`)
+
+### Validation (Internet mode only)
+```
+Server receives:  \secure\<challenge>
+Server computes:  XOR key from secret + challenge, then RC4-encrypt challenge
+Server appends:   \validate\<rc4_hash>
+```
+
+Crypto functions:
+- `FUN_006ac050` (gs_xor_key): XOR key generation from secret key + challenge
+- `FUN_006abf70` (gs_encrypt): RC4-based encryption
+- `FUN_006ac020` (gs_encode_char): Single byte encoding
+
+---
+
+## 3. Master Server Protocol
+
+### Registration
+
+Master server addresses in the binary:
+- `0x0095a4fc`: `"stbridgecmnd01.activision.com"` (original Activision, dead since ~2012)
+- `0x0095a594`: same (duplicate)
+- `0x0095a834`: same (duplicate)
+
+The master server sockaddr is stored at `0x00995880`. When the master server hostname doesn't resolve (which it doesn't anymore), this stays zeroed and heartbeats silently fail.
+
+**333networks support**: When a `masterserver.txt` file exists in the game directory with a master server IP, the stock dedi resolves it and populates the sockaddr. Heartbeats are then sent to the 333networks master server (e.g. `81.205.81.173:27900`).
+
+### Heartbeat Format
+
+**`FUN_006aca60`** at `0x006aca60` (qr_send_heartbeat):
+
+```
+\heartbeat\<port>\gamename\bcommander
+```
+
+With state change notification:
+```
+\heartbeat\<port>\gamename\bcommander\statechanged\<N>
+```
+
+**Verified from stock dedi trace** (packet #83, sent to `81.205.81.173:27900`):
+```
+\heartbeat\0\gamename\bcommander\statechanged\1
+```
+
+The `\heartbeat\0` means port 0 — the stock dedi reports its query port as 0. The `\statechanged\1` indicates the first state-change notification (player joined/left or game state changed). In the trace, `rc=-1` (sendto failed), likely because the master server was unreachable.
+
+Sent via `sendto()` to the master server sockaddr at `0x00995880` using the heartbeat socket at `qr_t+0x04`.
+
+### Heartbeat Timing
+
+**`FUN_006abd80`** at `0x006abd80` (qr_heartbeat_tick):
+
+- Sends heartbeat every **30 seconds** (30000ms check)
+- Tracks count at `qr_t+0xE8` — stops after **10 heartbeats** (counter > `'\n'` = 10)
+- First heartbeat sent immediately (when `qr_t+0xD8` timestamp is 0 or stale > 300,001ms)
+- Heartbeat socket at `qr_t+0x04` must not be `INVALID_SOCKET` (-1)
+
+### Client Master Server Auth
+
+**`FUN_006aa4c0`** (SL_master_connect):
+
+TCP connection to master:28964, then:
+```
+→ Receive: \secure\<challenge>
+→ Send:    \gamename\bcommander\gamever\<ver>\location\0\validate\<hash>\final\\queryid\1.1\
+→ Send:    \list\<filter>\gamename\bcommander\final\
+← Receive: Binary server list (IP:port pairs)
+```
+
+Format string at `0x0095a624`:
+```
+\gamename\%s\gamever\%s\location\0\validate\%s\final\\queryid\1.1\
+```
+
+Filter/list format at `0x0095a5cc`:
+```
+\list\%s\gamename\%s\final\
+```
+
+### Shutdown
+
+**`FUN_006abe00`** (qr_send_exit): Sends an "exiting" heartbeat to the master server.
+
+**`FUN_006abe40`** (qr_shutdown):
+- `closesocket()` on both query and heartbeat sockets
+- Sets both to `INVALID_SOCKET` (0xFFFFFFFF)
+- Frees qr_t if not the static instance (checks against `DAT_0095a740`)
+- Calls `WSACleanup()`
+
+---
+
+## 4. GameSpy Object Layout
+
+### GameSpy Object (0xF4 bytes, at UtopiaModule+0x7C = 0x0097FA7C)
+
+| Offset | Type | Field |
+|--------|------|-------|
+| +0x00 | vtable* | vtable pointer |
+| +0x14 | char[~64] | gameMode string (e.g. "settings", "playing") |
+| +0xDC | qr_t* | Server-side Query/Report struct (NULL if not hosting) |
+| +0xE0 | ServerList* | Client-side server browser (NULL if not browsing) |
+| +0xE4 | float | Last ServerList poll time |
+| +0xE8 | void* | TGL file handle (`Multiplayer.tgl`) |
+| +0xEC | byte | Flag: initialized |
+| +0xED | byte | Flag: active (tick processing enabled) |
+| +0xEE | byte | Flag: isHost (1=server, 0=client) |
+| +0xEF | byte | Flag: queryOnly (skip heartbeat, LAN mode) |
+
+### qr_t Layout (estimated from field access patterns)
+
+| Offset | Type | Field |
+|--------|------|-------|
+| +0x00 | SOCKET | Query socket (receives GameSpy queries) |
+| +0x04 | SOCKET | Heartbeat socket (sends to master server) |
+| +0x12 | char[~48] | Secret key buffer (holds `"Nm3aZ9"` or derived key) |
+| +0x37 | DWORD | Query sequence counter (incremented per query) |
+| +0x38 | DWORD | Fragment counter within current query |
+| +0x3A | byte | Flag (cleared at start of query handling) |
+| +0xC8 | callback* | basic_callback (builds basic response section) |
+| +0xCC | callback* | info_callback (builds info response section) |
+| +0xD0 | callback* | rules_callback (builds rules response section) |
+| +0xD4 | callback* | players_callback (builds players response section) |
+| +0xD8 | DWORD | Last heartbeat timestamp (GetTickCount) |
+| +0xE4 | int | Packet counter (for queryid generation) |
+| +0xE8 | byte | Heartbeat repetition counter (stops at 10) |
+
+### ServerList Layout (partial)
+
+| Offset | Type | Field |
+|--------|------|-------|
+| +0x22 | SOCKET | Broadcast socket (for LAN queries) |
+| +0x23 | DWORD | Last activity timestamp (for 3-second timeout) |
+| +0x88 | SOCKET | Individual query socket |
+
+---
+
+## 5. Function Address Table
+
+### GameSpy Object Methods
+
+| Address | Name | Description |
+|---------|------|-------------|
+| 0x0069bfa0 | GameSpy::ctor | Constructor: allocates 0xF4, loads TGL, registers handlers |
+| 0x0069c140 | GameSpy::dtor | Destructor: sends exit heartbeat, closes sockets |
+| 0x0069c440 | GameSpy::Tick | Per-frame: polls query socket (host) or ServerList (client) |
+| 0x0069c580 | GameSpy::BuildBasicResponse | Builds hostname/map/numplayers/maxplayers/gamemode |
+| 0x0069cc40 | GameSpy::SetGameModeHandler | Event 0x109: updates gameMode string |
+| 0x0069d720 | GameSpy::ProcessQueryHandler | Event 0x867: routes query to QR handler |
+
+### QR SDK Functions (Server-Side)
+
+| Address | Name | Description |
+|---------|------|-------------|
+| 0x006abca0 | qr_process_all | Heartbeat check + query processing |
+| 0x006abcc0 | qr_process_queries_only | Query processing without heartbeat |
+| 0x006abce0 | qr_process_queries | select()+recvfrom() loop on query socket |
+| 0x006abd80 | qr_heartbeat_tick | 30-second heartbeat timer, max 10 repeats |
+| 0x006abe00 | qr_send_exit | Sends "exiting" heartbeat to master |
+| 0x006abe40 | qr_shutdown | closesocket() both sockets, WSACleanup() |
+| 0x006ac1e0 | qr_handle_query | Main dispatcher: matches query type, calls builders |
+| 0x006ac450 | qr_match_type | strstr-based query type matching |
+| 0x006ac550 | qr_send_packet | Appends queryid, calls sendto() |
+| 0x006ac5f0 | qr_build_basic | Invokes basic callback at qr_t+0xC8 |
+| 0x006ac660 | qr_append_fragment | Append data + fragment if > 1349 bytes |
+| 0x006ac7a0 | qr_build_info | Invokes info callback at qr_t+0xCC |
+| 0x006ac810 | qr_build_rules | Invokes rules callback at qr_t+0xD0 |
+| 0x006ac880 | qr_build_players | Invokes players callback at qr_t+0xD4 |
+| 0x006ac8f0 | qr_build_echo | Reflects query data back |
+| 0x006ac950 | qr_send_final | Appends \validate\ + \final\, sends |
+| 0x006aca60 | qr_send_heartbeat | Sends `\heartbeat\<port>\gamename\bcommander` |
+
+### ServerList SDK Functions (Client-Side)
+
+| Address | Name | Description |
+|---------|------|-------------|
+| 0x006aa720 | SL_create_broadcast_socket | UDP socket with SO_BROADCAST |
+| 0x006aa770 | SL_send_lan_broadcast | Sends `\status\` to 255.255.255.255 across port range |
+| 0x006aab40 | SL_process | Per-frame state machine processing |
+| 0x006ab150 | SL_query_server | Individual server query with ping measurement |
+| 0x006ab620 | SL_start_update | Initiates refresh: mode 0=Internet, 2/3=LAN |
+
+### Master Server Functions
+
+| Address | Name | Description |
+|---------|------|-------------|
+| 0x006aa4c0 | SL_master_connect | TCP to master, challenge-response auth |
+
+### Crypto Functions
+
+| Address | Name | Description |
+|---------|------|-------------|
+| 0x006abf70 | gs_encrypt | RC4-based encryption |
+| 0x006ac020 | gs_encode_char | Single byte encoding for validation |
+| 0x006ac050 | gs_xor_key | XOR key generation from secret + challenge |
+
+---
+
+## 6. Data Section Addresses
+
+### Format Strings
+
+| Address | String |
+|---------|--------|
+| 0x00959c24 | `bcommander` (game name) |
+| 0x00959c50 | `\gamename\%s\gamever\%s\location\%d` |
+| 0x00959c74 | `\gamemode\%s` |
+| 0x00959c84 | `\maxplayers\%d` |
+| 0x00959c94 | `\numplayers\%d` |
+| 0x00959ca4 | `\mapname\%s` |
+| 0x00959cc4 | `\missionscript\%s` |
+| 0x00959cd8 | `\hostname\%s` |
+| 0x00959ce8 | `\hostname\*%s` (password-protected) |
+| 0x00959cf8 | `\timelimit\%d\fraglimit\%d\system\%s\password\%d` |
+| 0x0095a554 | `\status\` (LAN broadcast query payload) |
+| 0x0095a58c | `\basic\` |
+| 0x0095a5cc | `\list\%s\gamename\%s\final\` |
+| 0x0095a624 | `\gamename\%s\gamever\%s\location\0\validate\%s\final\\queryid\1.1\` |
+| 0x0095a678 | `\final\` |
+| 0x0095a8c4 | `\queryid\%d.%d` |
+| 0x0095a8d4 | `\echo\%s` |
+| 0x0095a8e0 | `\validate\%s` |
+| 0x0095a8f0 | `\statechanged\%d` |
+| 0x0095a904 | `\heartbeat\%d\gamename\%s` |
+
+### Query Type Table (at 0x0095a71c, 8 DWORD pointers)
+
+| Index | Pointer | String |
+|-------|---------|--------|
+| 0 | 0x0095a8ac | `basic` |
+| 1 | 0x0095a8a4 | `info` |
+| 2 | 0x0095a89c | `rules` |
+| 3 | 0x0095a894 | `players` |
+| 4 | 0x0095a88c | `status` |
+| 5 | 0x0095a884 | `packets` |
+| 6 | 0x0095a87c | `echo` |
+| 7 | 0x0095a874 | (secure challenge) |
+
+### Static Buffers
+
+| Address | Size | Purpose |
+|---------|------|---------|
+| 0x00995578 | 255 | Static recvfrom buffer for query socket |
+| 0x00995880 | 16 | sockaddr_in for master server |
+| 0x0095a740 | — | Static qr_t address (for free-check in shutdown) |
+| 0x0095a4fc | — | `"stbridgecmnd01.activision.com"` (master hostname) |
+
+---
+
+## 7. Verified LAN Discovery Sequence (from stock dedi trace)
+
+```
+CLIENT (10.10.10.239)                               SERVER (10.10.10.1)
+  |                                                    |
+  |-- Click "Start Query" (LAN mode)                   |
+  |   SL_create_broadcast_socket + SO_BROADCAST        |
+  |   SL_send_lan_broadcast ports 22101-22201          |
+  |                                                    |
+  | ===== \status\ to 255.255.255.255:22101 =========> |
+  |   (101 broadcasts, one per port)                   |
+  |                                                    |
+  |                     Peek router: byte[0]='\'       |
+  |                     recvfrom() consumes packet      |
+  |                     qr_handle_query → case 4        |
+  |                     Builds ALL fields into 1 packet |
+  |                                                    |
+  | <===== 267 bytes from server:22101 =============== |
+  |   \gamename\bcommander\gamever\60\location\1       |
+  |   \hostname\My Game23\missionscript\Multi...       |
+  |   \mapname\DM\numplayers\0\maxplayers\8            |
+  |   \gamemode\openplaying\timelimit\-1               |
+  |   \fraglimit\-2\system\Multi1\password\0           |
+  |   \player_0\Dedicated Server                       |
+  |   \final\\queryid\2.1                              |
+  |                                                    |
+  |-- Parse response, add to server browser list       |
+  |-- 3-second timeout → close broadcast socket        |
+```
+
+**Observed timing** (from packet_trace.log):
+- LAN queries arrive from multiple IPs/ports (each client uses a fresh ephemeral port per query)
+- Response is immediate (<1ms after query received)
+- queryid increments per query: 2.1, 3.1, 4.1, 5.1 (starts at 2 in this session)
+
+---
+
+## 8. Verified Connection Handshake (from stock dedi trace)
+
+Complete client-to-server join sequence captured on stock dedi. All timestamps from a single session, relative to Connect at T=0.
+
+```
+CLIENT (10.10.10.239:59405)                          SERVER (stock dedi)
+  |                                                    |
+  T+0ms    Connect (0x03) ============================>|
+  |                                                    |
+  T+2ms   <==== Connect (0x03) + ChecksumReq round 0  |
+  |              dir="scripts/" filter="App.pyc"       |
+  |              (non-recursive)                       |
+  T+2ms   <==== ACK                                    |
+  |                                                    |
+  T+9ms    ACK + ACK + Keepalive (player name) =======>|
+  |         "C.a.d.y.2." (wide chars)                  |
+  |                                                    |
+  T+11ms  <==== Keepalive echo + ACK                   |
+  |                                                    |
+  T+17ms   ChecksumResp round 0 ======================>|
+  |                                                    |
+  T+17ms  <==== ACK + ChecksumReq round 1              |
+  |              dir="scripts/" filter="Autoexec.pyc"  |
+  |              (non-recursive)                       |
+  |                                                    |
+  T+26ms   ChecksumResp round 1 ======================>|
+  |                                                    |
+  T+26ms  <==== ACK + ChecksumReq round 2              |
+  |              dir="scripts/ships" filter="*.pyc"    |
+  |              (RECURSIVE)                           |
+  |                                                    |
+  T+38ms   ChecksumResp round 2 (FRAGMENTED: 3 parts)=>|
+  |         seq=512, flags=0xA1, 418+441 bytes         |
+  |                                                    |
+  T+41ms  <==== ACK + ChecksumReq round 3              |
+  |              dir="scripts/mainmenu" filter="*.pyc" |
+  |              (non-recursive)                       |
+  |                                                    |
+  T+53ms   ChecksumResp round 3 ======================>|
+  |                                                    |
+  T+53ms  <==== ACK + ChecksumReq round 255 (0xFF)     |
+  |              dir="Scripts/Multiplayer" filter="*.pyc"
+  |              (RECURSIVE) — final/multiplayer round |
+  |                                                    |
+  T+63ms   ChecksumResp round 255 (FRAGMENTED) =======>|
+  |         first-response crc=0x8794D13F              |
+  |                                                    |
+  T+66ms  <==== 0x28 (ChecksumComplete, no payload)    |
+  |        <==== 0x00 Settings:                        |
+  |              gameTime=35.84 collision=1 ff=0       |
+  |              slot=0 map="Multi...Mission1"         |
+  |        <==== 0x01 GameInit (trigger, no payload)   |
+  |         (ALL THREE in one 65-byte packet!)         |
+  |                                                    |
+  T+113ms  ACKs for seq 5,6,7 ========================>|
+  |                                                    |
+  T+140ms  0x2A NewPlayerInGame =======================>|
+  |         trailing byte: 0x20 (space)                |
+  |                                                    |
+  T+142ms <==== ACK + 0x35 GameState [08 01 FF FF]     |
+  |        <==== 0x17 DeletePlayerUI (clear stale UI)  |
+  |                                                    |
+  T+5006ms ConnectAck (0x05) =========================>|
+  |         + batch of 12 ACKs for all game messages   |
+  |                                                    |
+  T+10084ms                                            |
+  |        <==== HEARTBEAT to 81.205.81.173:27900      |
+  |              \heartbeat\0\gamename\bcommander      |
+  |              \statechanged\1  (rc=-1, failed)      |
+```
+
+### Key Observations
+
+1. **5 checksum rounds** (not 4): rounds 0, 1, 2, 3, and 0xFF (255). Round 0xFF is the final "multiplayer scripts" round.
+2. **Checksums complete in ~66ms**: entire checksum exchange from Connect to Settings delivery.
+3. **Opcode 0x28** appears between checksums and Settings. No payload. Signals "checksums complete".
+4. **Settings + GameInit bundled**: Both sent in one packet immediately after 0x28.
+5. **ConnectAck at +5 seconds**: Transport-level ConnectAck arrives ~5 seconds after Connect, well after the game handshake is complete. This is a delayed transport confirmation, not part of the game flow.
+6. **Round 2 and 255 are RECURSIVE** (`flag=0x21`): scan subdirectories. These produce large fragmented checksum responses.
+7. **Keepalive contains player name**: Wide-char encoded name in the Keepalive payload, sent immediately after Connect.
+8. **0x35 GameState data**: `[08 01 FF FF]` — byte 0 = max players (8), byte 1 = lobby state (0x01), bytes 2-3 = 0xFFFF.
+9. **0x17 DeletePlayerUI**: Sent right after GameState to clear stale scoreboard entries.
+
+### Checksum Rounds (verified)
+
+| Round | Dir | Filter | Recursive | Typical Response Size |
+|-------|-----|--------|-----------|----------------------|
+| 0 | `scripts/` | `App.pyc` | No | ~26 bytes |
+| 1 | `scripts/` | `Autoexec.pyc` | No | ~22 bytes |
+| 2 | `scripts/ships` | `*.pyc` | Yes | ~418+441 bytes (fragmented) |
+| 3 | `scripts/mainmenu` | `*.pyc` | No | ~46 bytes |
+| 255 | `Scripts/Multiplayer` | `*.pyc` | Yes | ~279 bytes (fragmented) |
+
+---
+
+## 9. Implications for Dedicated Server
+
+### What Works
+- GameSpy object is created during Phase 2 bootstrap (`UtopiaModule::SetupNetwork`)
+- QR SDK query handling runs via the game loop tick
+- Response builder reads Python globals (hostname, player count, map name)
+- The peek-based UDP router correctly separates GameSpy queries from game traffic
+
+### Requirements for LAN Discovery
+1. **GameSpy object must exist** at UtopiaModule+0x7C (created during network setup)
+2. **GameSpy+0xED (active) must be 1** for GameSpy::Tick to process queries
+3. **GameSpy+0xEE (isHost) must be 1** for server-side query processing
+4. **qr_t (GameSpy+0xDC) must be non-NULL** with a bound query socket
+5. **Python globals must be set**: `g_iPlayerLimit`, `g_iTimeLimit`, `g_iFragLimit`, server name
+6. **The peek-based UDP router** must route `\`-prefixed packets to the QR handler
+
+### For 333networks Master Server Support
+To register with a modern master server (e.g. 333networks), the dedicated server would need to:
+1. Resolve the master server hostname to get a valid sockaddr
+2. Store it at the master server sockaddr location (or pass it to `qr_send_heartbeat`)
+3. Set `GameSpy+0xEF (queryOnly) = 0` to enable heartbeat sending
+4. Ensure the heartbeat socket (`qr_t+0x04`) is created and bound
+5. The heartbeat format `\heartbeat\<port>\gamename\bcommander` is already compatible with 333networks
+
+**Verified**: The stock dedi with a `masterserver.txt` file sends heartbeats to the 333networks master at `81.205.81.173:27900`. The port field in the heartbeat is 0 (`\heartbeat\0`) which may need to be fixed to report the actual game port (22101).
+
+### Current Status
+LAN discovery is functional on both the stock dedi and our headless dedicated server. The GameSpy::Tick processes queries via the QR SDK each frame, and the response builder correctly reads Python globals to report server name, map, player count, and game rules.
+
+### Verified Response Fields (from stock dedi trace)
+| Field | Example Value | Source |
+|-------|---------------|--------|
+| gamename | `bcommander` | Hardcoded |
+| gamever | `60` | Hardcoded |
+| location | `1` | Config |
+| hostname | `My Game23` | Python `ServerName` |
+| missionscript | `Multiplayer.Episode.Mission1.Mission1` | Python mission module |
+| mapname | `DM` | Python `GetMissionShortName()` |
+| numplayers | `0` | Connected player count |
+| maxplayers | `8` | Python `g_iPlayerLimit` |
+| gamemode | `openplaying` | GameSpy+0x14 mode string |
+| timelimit | `-1` | Python `g_iTimeLimit` (-1 = disabled) |
+| fraglimit | `-2` | Python `g_iFragLimit` (-2 = disabled) |
+| system | `Multi1` | Python `SpeciesToSystem` mapping |
+| password | `0` | Password protection flag |
+| player_0 | `Dedicated Server` | Host player name |
