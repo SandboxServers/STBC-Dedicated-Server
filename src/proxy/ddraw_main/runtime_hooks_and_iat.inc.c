@@ -300,6 +300,55 @@ static void ObserverHookIAT(void) {
         }
     }
 
+    /* Hook TCP functions for master server challenge-response logging */
+    pfn = NULL;
+    if (hWs2) pfn = GetProcAddress(hWs2, "connect");
+    if (!pfn && hWsock) pfn = GetProcAddress(hWsock, "connect");
+    if (pfn) {
+        g_pfnOrigConnect = (PFN_connect)pfn;
+        if (!PatchIATEntry(pfn, (FARPROC)HookedConnect, "connect")) {
+            if (hWsock) {
+                FARPROC pfn2 = GetProcAddress(hWsock, "connect");
+                if (pfn2 && pfn2 != pfn) {
+                    g_pfnOrigConnect = (PFN_connect)pfn2;
+                    PatchIATEntry(pfn2, (FARPROC)HookedConnect, "connect(wsock32)");
+                }
+            }
+        }
+    }
+
+    pfn = NULL;
+    if (hWs2) pfn = GetProcAddress(hWs2, "send");
+    if (!pfn && hWsock) pfn = GetProcAddress(hWsock, "send");
+    if (pfn) {
+        g_pfnOrigSend = (PFN_send)pfn;
+        if (!PatchIATEntry(pfn, (FARPROC)HookedSend, "send")) {
+            if (hWsock) {
+                FARPROC pfn2 = GetProcAddress(hWsock, "send");
+                if (pfn2 && pfn2 != pfn) {
+                    g_pfnOrigSend = (PFN_send)pfn2;
+                    PatchIATEntry(pfn2, (FARPROC)HookedSend, "send(wsock32)");
+                }
+            }
+        }
+    }
+
+    pfn = NULL;
+    if (hWs2) pfn = GetProcAddress(hWs2, "recv");
+    if (!pfn && hWsock) pfn = GetProcAddress(hWsock, "recv");
+    if (pfn) {
+        g_pfnOrigRecv = (PFN_recv)pfn;
+        if (!PatchIATEntry(pfn, (FARPROC)HookedRecv, "recv")) {
+            if (hWsock) {
+                FARPROC pfn2 = GetProcAddress(hWsock, "recv");
+                if (pfn2 && pfn2 != pfn) {
+                    g_pfnOrigRecv = (PFN_recv)pfn2;
+                    PatchIATEntry(pfn2, (FARPROC)HookedRecv, "recv(wsock32)");
+                }
+            }
+        }
+    }
+
     /* Hook OutputDebugStringA */
     if (hKernel) {
         pfn = GetProcAddress(hKernel, "OutputDebugStringA");

@@ -327,6 +327,117 @@ static int WSAAPI HookedRecvfrom(SOCKET s, char* buf, int len, int flags,
     return rc;
 }
 
+/* TCP hooks for master server challenge-response logging.
+ * The GameSpy master server auth uses TCP (connect/send/recv) to port 28964.
+ * SL_master_connect (0x006aa4c0) does:
+ *   connect() -> recv(\secure\<challenge>) -> send(\gamename\...\validate\...)
+ *   -> send(\list\...) -> recv(binary server list) */
+
+typedef int (WSAAPI *PFN_connect)(SOCKET, const struct sockaddr*, int);
+static PFN_connect g_pfnOrigConnect = NULL;
+
+typedef int (WSAAPI *PFN_send)(SOCKET, const char*, int, int);
+static PFN_send g_pfnOrigSend = NULL;
+
+typedef int (WSAAPI *PFN_recv)(SOCKET, char*, int, int);
+static PFN_recv g_pfnOrigRecv = NULL;
+
+/* Track which socket is the master server TCP connection */
+static SOCKET g_masterServerSocket = INVALID_SOCKET;
+
+static int WSAAPI HookedConnect(SOCKET s, const struct sockaddr* name, int namelen) {
+    int rc;
+    if (name && namelen >= (int)sizeof(struct sockaddr_in)) {
+        const struct sockaddr_in* sin = (const struct sockaddr_in*)name;
+        unsigned char* ip = (unsigned char*)&sin->sin_addr;
+        int port = ntohs(sin->sin_port);
+        ProxyLog("  TCP_CONNECT: socket=%d to %d.%d.%d.%d:%d",
+                 (int)s, ip[0], ip[1], ip[2], ip[3], port);
+        if (g_pPacketLog) {
+            SYSTEMTIME st;
+            GetLocalTime(&st);
+            fprintf(g_pPacketLog,
+                    "[%02d:%02d:%02d.%03d] TCP_CONNECT to %d.%d.%d.%d:%d (socket=%d)\n\n",
+                    st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+                    ip[0], ip[1], ip[2], ip[3], port, (int)s);
+            fflush(g_pPacketLog);
+        }
+        /* Track master server socket (port 28964 = GameSpy master) */
+        if (port == 28964)
+            g_masterServerSocket = s;
+    }
+    rc = g_pfnOrigConnect(s, name, namelen);
+    if (name && namelen >= (int)sizeof(struct sockaddr_in)) {
+        const struct sockaddr_in* sin = (const struct sockaddr_in*)name;
+        unsigned char* ip = (unsigned char*)&sin->sin_addr;
+        ProxyLog("  TCP_CONNECT: result=%d (WSA=%d) to %d.%d.%d.%d:%d",
+                 rc, (rc != 0) ? WSAGetLastError() : 0,
+                 ip[0], ip[1], ip[2], ip[3], ntohs(sin->sin_port));
+    }
+    return rc;
+}
+
+static int WSAAPI HookedSend(SOCKET s, const char* buf, int len, int flags) {
+    int rc = g_pfnOrigSend(s, buf, len, flags);
+    if (g_pPacketLog && len > 0) {
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+        /* Log all TCP sends, with extra detail for GameSpy text */
+        if (buf[0] == '\\') {
+            /* GameSpy text protocol */
+            char textBuf[1500];
+            int printLen = len;
+            if (printLen > (int)sizeof(textBuf) - 1) printLen = (int)sizeof(textBuf) - 1;
+            memcpy(textBuf, buf, printLen);
+            textBuf[printLen] = '\0';
+            fprintf(g_pPacketLog,
+                    "[%02d:%02d:%02d.%03d] TCP_SEND socket=%d len=%d rc=%d GAMESPY_MASTER_AUTH\n"
+                    "  Text: %s\n",
+                    st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+                    (int)s, len, rc, textBuf);
+        } else {
+            fprintf(g_pPacketLog,
+                    "[%02d:%02d:%02d.%03d] TCP_SEND socket=%d len=%d rc=%d\n",
+                    st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+                    (int)s, len, rc);
+        }
+        PktHexDump(g_pPacketLog, (const unsigned char*)buf, len);
+        fprintf(g_pPacketLog, "\n");
+        fflush(g_pPacketLog);
+    }
+    return rc;
+}
+
+static int WSAAPI HookedRecv(SOCKET s, char* buf, int len, int flags) {
+    int rc = g_pfnOrigRecv(s, buf, len, flags);
+    if (g_pPacketLog && rc > 0) {
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+        if (buf[0] == '\\') {
+            /* GameSpy text protocol */
+            char textBuf[1500];
+            int printLen = rc;
+            if (printLen > (int)sizeof(textBuf) - 1) printLen = (int)sizeof(textBuf) - 1;
+            memcpy(textBuf, buf, printLen);
+            textBuf[printLen] = '\0';
+            fprintf(g_pPacketLog,
+                    "[%02d:%02d:%02d.%03d] TCP_RECV socket=%d len=%d rc=%d GAMESPY_MASTER_CHALLENGE\n"
+                    "  Text: %s\n",
+                    st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+                    (int)s, len, rc, textBuf);
+        } else {
+            fprintf(g_pPacketLog,
+                    "[%02d:%02d:%02d.%03d] TCP_RECV socket=%d len=%d rc=%d\n",
+                    st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+                    (int)s, len, rc);
+        }
+        PktHexDump(g_pPacketLog, (const unsigned char*)buf, rc);
+        fprintf(g_pPacketLog, "\n");
+        fflush(g_pPacketLog);
+    }
+    return rc;
+}
+
 /* OutputDebugStringA hook - captures game debug output */
 typedef void (WINAPI *PFN_OutputDebugStringA)(LPCSTR);
 static PFN_OutputDebugStringA g_pfnOrigODS = NULL;

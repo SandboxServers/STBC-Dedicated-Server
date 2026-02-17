@@ -9,7 +9,10 @@ BC uses the **GameSpy QR (Query & Reporting) SDK** for server-side query respons
 - **Game name**: `"bcommander"` (hardcoded at `0x00959c24`)
 - **Game version**: `60` (sent in responses as `\gamever\60`)
 - **Master server**: `stbridgecmnd01.activision.com` (hardcoded at `0x0095a4fc`, dead since ~2012)
-- **333networks master**: `81.205.81.173:27900` (via `masterserver.txt`, heartbeats observed in trace)
+- **333networks master**: `81.205.81.173` (via `masterserver.txt`)
+  - **Heartbeat port**: UDP 27900 (server → master, registration)
+  - **List port**: TCP 28900 (client → master, server list browsing)
+  - **Verify port**: UDP 27901 (master → server, status verification)
 - **Game port**: UDP 22101 (0x5655)
 - **LAN scan range**: UDP 22101-22201 (0x5655-0x56B9)
 
@@ -187,30 +190,52 @@ If password-protected, hostname gets `*` prefix:
 
 ### Validation (Internet mode only)
 ```
-Server receives:  \secure\<challenge>
-Server computes:  XOR key from secret + challenge, then RC4-encrypt challenge
-Server appends:   \validate\<rc4_hash>
+Server receives:  \secure\<challenge>        (6-char challenge string)
+Server computes:  Modified RC4 encrypt with key "Nm3aZ9", then Base64 encode
+Server appends:   \validate\<8-char-hash>
 ```
 
-Crypto functions:
-- `FUN_006ac050` (gs_xor_key): XOR key generation from secret key + challenge
-- `FUN_006abf70` (gs_encrypt): RC4-based encryption
-- `FUN_006ac020` (gs_encode_char): Single byte encoding
+See **Section 10** for full algorithm details, standalone C implementation, and binary function addresses.
 
 ---
 
 ## 3. Master Server Protocol
 
-### Registration
+### Architecture: Pure UDP (No TCP)
 
-Master server addresses in the binary:
+The master server registration protocol is **entirely UDP**. The server sends heartbeats via `sendto()` and receives verification queries via the same GameSpy query socket. **TCP is never used server-side** — only the client uses TCP (via `SL_master_connect`) to browse the master server list.
+
+This was verified by hooking `connect()`, `send()`, and `recv()` on the stock dedi — all three hooks installed successfully but never fired during an entire session. All master server communication went through the existing `sendto()`/`recvfrom()` hooks.
+
+### Registration Flow
+
+1. **Server sends UDP heartbeat** to master:27900
+2. **Master server sends UDP `\status\` query** back to the game port to verify the server is alive
+3. **Server responds** with full status response (same as LAN query)
+4. **Master adds server** to its list and makes it available to clients
+
+### Master Server Addresses
+
+Addresses in the binary:
 - `0x0095a4fc`: `"stbridgecmnd01.activision.com"` (original Activision, dead since ~2012)
 - `0x0095a594`: same (duplicate)
 - `0x0095a834`: same (duplicate)
 
 The master server sockaddr is stored at `0x00995880`. When the master server hostname doesn't resolve (which it doesn't anymore), this stays zeroed and heartbeats silently fail.
 
-**333networks support**: When a `masterserver.txt` file exists in the game directory with a master server IP, the stock dedi resolves it and populates the sockaddr. Heartbeats are then sent to the 333networks master server (e.g. `81.205.81.173:27900`).
+**333networks support**: When a `masterserver.txt` file exists in the game directory with a hostname or IP, the stock dedi resolves it and populates the sockaddr. Heartbeats are then sent to the 333networks master server (e.g. `81.205.81.173:27900`).
+
+### Verified Master Server Verification Queries (from stock dedi trace)
+
+After the heartbeat, master servers query the dedi back via UDP on port 27901 to verify it's alive:
+
+| Master Server IP | Port | Response Size | Notes |
+|-----------------|------|---------------|-------|
+| 150.230.23.146 | 27901 | 256 bytes | Query at T+16s |
+| 116.202.247.76 | 27901 | 241 bytes | Query at T+25s |
+| 49.13.114.72 | 27901 | 282 bytes | Query at T+5min |
+
+These are `\status\` queries identical to LAN queries — the same response builder handles both. The varying response sizes reflect different player counts at the time of each query (e.g., 256 bytes with 0 players vs 282 bytes with 2 players).
 
 ### Heartbeat Format
 
@@ -225,12 +250,16 @@ With state change notification:
 \heartbeat\<port>\gamename\bcommander\statechanged\<N>
 ```
 
-**Verified from stock dedi trace** (packet #83, sent to `81.205.81.173:27900`):
+**Verified from stock dedi trace** (packet #205987, sent to `81.205.81.173:27900`):
 ```
 \heartbeat\0\gamename\bcommander\statechanged\1
 ```
 
-The `\heartbeat\0` means port 0 — the stock dedi reports its query port as 0. The `\statechanged\1` indicates the first state-change notification (player joined/left or game state changed). In the trace, `rc=-1` (sendto failed), likely because the master server was unreachable.
+**Heartbeat port value**: `\heartbeat\0` — the stock dedi reports port 0. This is the port offset from the base game port, meaning "use the default query port" (22101). The master server uses this to know which port to send verification queries to.
+
+**`\statechanged\1`**: Indicates the first state-change notification (player joined/left or game state changed). The `statechanged` flag tells the master server to re-query the game server for updated info.
+
+**Heartbeat failure**: In the trace, `rc=-1` (sendto returned SOCKET_ERROR). The heartbeat was attempted but the send failed. Despite this, three master servers still queried us — they may have cached the server from a previous session or discovered it through other means (e.g., another client's query traffic).
 
 Sent via `sendto()` to the master server sockaddr at `0x00995880` using the heartbeat socket at `qr_t+0x04`.
 
@@ -243,17 +272,56 @@ Sent via `sendto()` to the master server sockaddr at `0x00995880` using the hear
 - First heartbeat sent immediately (when `qr_t+0xD8` timestamp is 0 or stale > 300,001ms)
 - Heartbeat socket at `qr_t+0x04` must not be `INVALID_SOCKET` (-1)
 
-### Client Master Server Auth
+### Client Master Server Browsing (TCP, Client-Side Only)
 
 **`FUN_006aa4c0`** (SL_master_connect):
 
-TCP connection to master:28964, then:
+**This is a client-only path.** The dedicated server never uses TCP — only clients use this to browse the internet server list.
+
+**Verified from client trace** (TCP hooks captured the complete flow):
+
 ```
-→ Receive: \secure\<challenge>
-→ Send:    \gamename\bcommander\gamever\<ver>\location\0\validate\<hash>\final\\queryid\1.1\
-→ Send:    \list\<filter>\gamename\bcommander\final\
-← Receive: Binary server list (IP:port pairs)
+CLIENT                                              MASTER (81.205.81.173:28900)
+  |                                                    |
+  T+0ms    TCP connect ===============================>|
+  |                                                    |
+  T+6119ms <==== \basic\\secure\LRPOPQ (21 bytes)      |
+  |                                                    |
+  T+6119ms Auth ======================================>|
+  |        \gamename\bcommander\gamever\1.6            |
+  |        \location\0\validate\hMwdTNWS               |
+  |        \final\\queryid\1.1\  (81 bytes)            |
+  |                                                    |
+  T+6119ms List request ==============================>|
+  |        \list\cmp\gamename\bcommander\final\        |
+  |        (36 bytes)                                  |
+  |                                                    |
+  T+6573ms <==== Binary server list (37 bytes)          |
+  |        5 entries × 6 bytes (4=IP + 2=port)         |
+  |        + \final\ terminator                        |
+  |                                                    |
+  T+6623ms Client sends \status\ to first server ====> |  (UDP to 72.206.34.241:29876)
 ```
+
+**Key details from trace:**
+- **Master server port is 28900** (not 28964 as in some GameSpy docs)
+- **Challenge**: 6-char string (e.g. `LRPOPQ`), preceded by `\basic\` prefix
+- **gamever in auth is `1.6`** (string version), not `60` (numeric version used in status responses)
+- **Validate hash**: 8-char string (e.g. `hMwdTNWS`), computed from challenge + secret key via RC4
+- **List filter**: `cmp` — likely a GameSpy comparison/filter string
+- **Binary server list format**: 6 bytes per entry (4-byte IP big-endian + 2-byte port big-endian), terminated by `\final\`
+- **6-second TCP delay**: The `connect()` returned immediately but the challenge wasn't received for ~6 seconds
+
+**Decoded server list from trace:**
+```
+48 CE 22 F1 74 B4 → 72.206.34.241:29876
+48 CE 22 F1 74 B5 → 72.206.34.241:29877
+48 CE 22 F1 74 B6 → 72.206.34.241:29878
+48 CE 22 F1 74 CC → 72.206.34.241:29900
+48 CE 22 F1 56 55 → 72.206.34.241:22101
+```
+
+After receiving the list, the client immediately sends `\status\` UDP queries to each server to get their details for the server browser.
 
 Format string at `0x0095a624`:
 ```
@@ -300,7 +368,7 @@ Filter/list format at `0x0095a5cc`:
 |--------|------|-------|
 | +0x00 | SOCKET | Query socket (receives GameSpy queries) |
 | +0x04 | SOCKET | Heartbeat socket (sends to master server) |
-| +0x12 | char[~48] | Secret key buffer (holds `"Nm3aZ9"` or derived key) |
+| +0x48 | char[~48] | Secret key buffer (holds `"Nm3aZ9"`, Ghidra shows +0x12 with DWORD* typing) |
 | +0x37 | DWORD | Query sequence counter (incremented per query) |
 | +0x38 | DWORD | Fragment counter within current query |
 | +0x3A | byte | Flag (cleared at start of query handling) |
@@ -318,7 +386,8 @@ Filter/list format at `0x0095a5cc`:
 |--------|------|-------|
 | +0x22 | SOCKET | Broadcast socket (for LAN queries) |
 | +0x23 | DWORD | Last activity timestamp (for 3-second timeout) |
-| +0x88 | SOCKET | Individual query socket |
+| +0x2C | char[] | Secret key buffer (holds `"Nm3aZ9"`, used for validate hash) |
+| +0x88 | SOCKET | TCP socket (master server connection) |
 
 ---
 
@@ -371,15 +440,17 @@ Filter/list format at `0x0095a5cc`:
 
 | Address | Name | Description |
 |---------|------|-------------|
-| 0x006aa4c0 | SL_master_connect | TCP to master, challenge-response auth |
+| 0x006aa4c0 | SL_master_connect | TCP to master:28900, challenge-response auth (**client-side only**) |
 
 ### Crypto Functions
 
 | Address | Name | Description |
 |---------|------|-------------|
-| 0x006abf70 | gs_encrypt | RC4-based encryption |
-| 0x006ac020 | gs_encode_char | Single byte encoding for validation |
-| 0x006ac050 | gs_xor_key | XOR key generation from secret + challenge |
+| 0x006ac050 | gs_rc4_cipher | Modified RC4 encrypt (GameSpy QR1 variant, see Section 10) |
+| 0x006abf70 | gs_validate_encode | Base64 encode (3 input bytes → 4 output chars) |
+| 0x006ac020 | gs_base64_char | Base64 character mapping (A-Za-z0-9+/) |
+| 0x006ac1c0 | gs_swap_byte | Trivial byte swap helper for RC4 S-box |
+| 0x0069c3a0 | GameSpy::InitBrowser | Constructs secret key `"Nm3aZ9"` on stack, passes to SL init |
 
 ---
 
@@ -537,9 +608,16 @@ CLIENT (10.10.10.239:59405)                          SERVER (stock dedi)
   |         + batch of 12 ACKs for all game messages   |
   |                                                    |
   T+10084ms                                            |
-  |        <==== HEARTBEAT to 81.205.81.173:27900      |
+  |        ====> HEARTBEAT to 81.205.81.173:27900      |
   |              \heartbeat\0\gamename\bcommander      |
   |              \statechanged\1  (rc=-1, failed)      |
+  |                                                    |
+  T+16s   <==== Master 150.230.23.146:27901 \status\   |
+  |        ====> 256-byte response (0 players)         |
+  T+25s   <==== Master 116.202.247.76:27901 \status\   |
+  |        ====> 241-byte response                     |
+  T+5min  <==== Master 49.13.114.72:27901 \status\     |
+  |        ====> 282-byte response (2 players)         |
 ```
 
 ### Key Observations
@@ -566,7 +644,202 @@ CLIENT (10.10.10.239:59405)                          SERVER (stock dedi)
 
 ---
 
-## 9. Implications for Dedicated Server
+## 9. Verified Internet Server Browsing (from client trace)
+
+Complete client-side master server browsing flow captured via TCP hooks. The client connects to the 333networks master to get a list of online servers, then queries each one individually.
+
+```
+CLIENT                                              MASTER (81.205.81.173:28900)
+  |                                                    |
+  T+0ms    TCP connect ===============================>|
+  |         socket=2116, result=0 (success)            |
+  |                                                    |
+  T+6119ms <==== \basic\\secure\LRPOPQ (21 bytes)      |
+  |         challenge = "LRPOPQ" (6 chars)             |
+  |                                                    |
+  T+6119ms Auth response =============================>|
+  |         \gamename\bcommander\gamever\1.6            |
+  |         \location\0\validate\hMwdTNWS               |
+  |         \final\\queryid\1.1\  (81 bytes)            |
+  |                                                    |
+  T+6119ms List request ==============================>|
+  |         \list\cmp\gamename\bcommander\final\        |
+  |         (36 bytes)                                  |
+  |                                                    |
+  T+6573ms <==== Binary server list (37 bytes)          |
+  |         5 entries × 6 bytes + \final\ terminator   |
+  |                                                    |
+  T+6623ms Client queries each server via UDP =======>  (individual \status\ queries)
+```
+
+### Binary Server List Format
+
+Each entry is 6 bytes: 4-byte IP (big-endian) + 2-byte port (big-endian). List terminated by `\final\`.
+
+**Decoded from trace:**
+```
+48 CE 22 F1 74 B4 → 72.206.34.241:29876
+48 CE 22 F1 74 B5 → 72.206.34.241:29877
+48 CE 22 F1 74 B6 → 72.206.34.241:29878
+48 CE 22 F1 74 CC → 72.206.34.241:29900
+48 CE 22 F1 56 55 → 72.206.34.241:22101
+```
+
+After receiving the list, the client immediately sends `\status\` UDP queries to each server to populate the server browser. Only servers that respond appear in the list.
+
+### Key Details
+
+- **Master port**: TCP 28900 (not 28964 as in some generic GameSpy documentation)
+- **Challenge format**: `\basic\\secure\<6-char-challenge>` — the `\basic\` prefix is always present
+- **Auth gamever**: `"1.6"` (string version), distinct from status response gamever `"60"` (numeric)
+- **List filter**: `"cmp"` — passed as the `%s` in `\list\%s\gamename\%s\final\`
+- **TCP timing**: `connect()` returns immediately but challenge receipt is delayed ~6 seconds (master server processing time)
+- **Internet before LAN**: When both modes are active, the master server query fires first; LAN broadcasts follow ~4 seconds later
+
+---
+
+## 10. Challenge-Response Crypto (GameSpy QR1 SDK)
+
+The validate hash computation used in both server-side `\secure\`/`\validate\` exchange and client-side master server auth. Fully reverse-engineered from the binary — the algorithm is the well-known GameSpy QR1 SDK crypto, widely reimplemented in open-source projects (OpenSpy, gslist, etc.).
+
+### Secret Key
+
+**`"Nm3aZ9"`** — 6 bytes, hardcoded. Constructed on stack in `GameSpy::InitBrowser` (0x0069c3a0):
+```c
+strncpy(local_c, "Nm3aZ9", 7);
+```
+
+Not present as a standalone string in the data section — only exists as a stack-constructed literal. Stored at:
+- `qr_t+0x48` (byte offset, Ghidra shows +0x12 with DWORD* typing) — server-side QR path
+- `ServerList+0x2C` — client-side browsing path
+
+### Algorithm: Modified RC4 + Base64
+
+**Step 1: Modified RC4 Cipher** (`gs_rc4_cipher` at 0x006ac050)
+
+Standard RC4 Key Scheduling Algorithm (KSA): initialize S-box [0..255], permute using key bytes. The **modification** is in the Pseudo-Random Generation Algorithm (PRGA):
+
+```
+Standard RC4:  i = (i + 1) % 256
+GameSpy QR1:   i = (data[n] + 1 + i) % 256
+```
+
+The plaintext byte itself is mixed into the S-box index before encryption. This is the signature difference of GameSpy's QR1 SDK variant. The encryption is in-place — the challenge buffer is modified directly.
+
+**Step 2: Base64 Encode** (`gs_validate_encode` at 0x006abf70)
+
+Standard base64 encoding using the canonical RFC 4648 alphabet (`A-Za-z0-9+/`), implemented via `gs_base64_char` (0x006ac020). Three input bytes produce four output characters. For a 6-byte challenge, output is exactly 8 characters + NUL terminator.
+
+### Complete Flow
+
+```
+Input:  challenge = "LRPOPQ" (6 bytes)
+        secret    = "Nm3aZ9" (6 bytes)
+
+Step 1: gs_rc4_cipher("Nm3aZ9", 6, "LRPOPQ", 6)
+        → 6 encrypted bytes (in-place, overwrites challenge)
+
+Step 2: gs_validate_encode(encrypted, 6, output)
+        → "hMwdTNWS" (8 printable chars)
+
+Output: \validate\hMwdTNWS
+```
+
+### Where It's Used
+
+**Server-side** (`qr_send_final` at 0x006ac950):
+1. Master server sends `\secure\<challenge>` to the game server (UDP query)
+2. Server computes validate hash from challenge + secret key
+3. Server appends `\validate\<hash>` to the status response before `\final\`
+
+**Client-side** (`SL_master_connect` at 0x006aa4c0):
+1. Client connects to master via TCP port 28900
+2. Master sends `\basic\\secure\<challenge>` (21 bytes)
+3. Client computes validate hash: `gs_rc4_cipher(key, 6, challenge, 6)` then `gs_validate_encode(challenge, 6, output)`
+4. Client sends `\gamename\bcommander\gamever\1.6\location\0\validate\<hash>\final\\queryid\1.1\`
+
+Both paths use the identical key and algorithm — the crypto is symmetric.
+
+### Standalone C Implementation
+
+```c
+/* GameSpy QR1 modified RC4 cipher */
+static void gs_rc4_cipher(const char *key, int keyLen,
+                          unsigned char *data, int dataLen) {
+    unsigned char S[256];
+    int i, j = 0, n;
+    unsigned char tmp;
+
+    /* KSA: standard RC4 key scheduling */
+    for (i = 0; i < 256; i++) S[i] = (unsigned char)i;
+    for (i = 0; i < 256; i++) {
+        j = (j + S[i] + (unsigned char)key[i % keyLen]) % 256;
+        tmp = S[i]; S[i] = S[j]; S[j] = tmp;
+    }
+
+    /* PRGA: modified — mixes plaintext byte into index */
+    i = 0; j = 0;
+    for (n = 0; n < dataLen; n++) {
+        i = (data[n] + 1 + i) % 256;       /* GameSpy modification */
+        j = (j + S[i]) % 256;
+        tmp = S[i]; S[i] = S[j]; S[j] = tmp;
+        data[n] ^= S[(S[i] + S[j]) % 256];
+    }
+}
+
+/* Standard base64 encode */
+static const char b64[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+static void gs_validate_encode(const unsigned char *in, int inLen,
+                               char *out) {
+    int i, o = 0;
+    for (i = 0; i < inLen; i += 3) {
+        unsigned int triple = (in[i] << 16)
+            | ((i+1 < inLen ? in[i+1] : 0) << 8)
+            | (i+2 < inLen ? in[i+2] : 0);
+        out[o++] = b64[(triple >> 18) & 0x3F];
+        out[o++] = b64[(triple >> 12) & 0x3F];
+        out[o++] = b64[(triple >>  6) & 0x3F];
+        out[o++] = b64[ triple        & 0x3F];
+    }
+    out[o] = '\0';
+}
+
+/* Compute validate hash from challenge */
+static void gs_compute_validate(const char *challenge,
+                                char *out /* min 9 bytes */) {
+    unsigned char buf[128];
+    int len = strlen(challenge);
+    memcpy(buf, challenge, len);
+    gs_rc4_cipher("Nm3aZ9", 6, buf, len);
+    gs_validate_encode(buf, len, out);
+}
+```
+
+### Calling Into the Binary
+
+Alternatively, call the existing functions at their known addresses:
+
+```c
+typedef void (__cdecl *PFN_gs_rc4)(const char*, int, unsigned char*, int);
+typedef void (__cdecl *PFN_gs_b64)(const unsigned char*, int, char*);
+
+#define GS_RC4_CIPHER  ((PFN_gs_rc4)0x006ac050)
+#define GS_VALIDATE_ENC ((PFN_gs_b64)0x006abf70)
+
+static void compute_validate(const char *challenge, char *out) {
+    unsigned char buf[128];
+    int len = strlen(challenge);
+    memcpy(buf, challenge, len);
+    GS_RC4_CIPHER("Nm3aZ9", 6, buf, len);
+    GS_VALIDATE_ENC(buf, len, out);
+}
+```
+
+---
+
+## 11. Implications for Dedicated Server
 
 ### What Works
 - GameSpy object is created during Phase 2 bootstrap (`UtopiaModule::SetupNetwork`)
@@ -583,17 +856,24 @@ CLIENT (10.10.10.239:59405)                          SERVER (stock dedi)
 6. **The peek-based UDP router** must route `\`-prefixed packets to the QR handler
 
 ### For 333networks Master Server Support
-To register with a modern master server (e.g. 333networks), the dedicated server would need to:
+To register with a modern master server (e.g. 333networks), the dedicated server needs:
 1. Resolve the master server hostname to get a valid sockaddr
 2. Store it at the master server sockaddr location (or pass it to `qr_send_heartbeat`)
 3. Set `GameSpy+0xEF (queryOnly) = 0` to enable heartbeat sending
 4. Ensure the heartbeat socket (`qr_t+0x04`) is created and bound
 5. The heartbeat format `\heartbeat\<port>\gamename\bcommander` is already compatible with 333networks
 
-**Verified**: The stock dedi with a `masterserver.txt` file sends heartbeats to the 333networks master at `81.205.81.173:27900`. The port field in the heartbeat is 0 (`\heartbeat\0`) which may need to be fixed to report the actual game port (22101).
+**Verified**: The stock dedi with a `masterserver.txt` file sends heartbeats to the 333networks master at `81.205.81.173:27900`. The heartbeat was attempted but `sendto()` returned -1 (SOCKET_ERROR). Despite the failed heartbeat, three different 333networks master servers (150.230.23.146, 116.202.247.76, 49.13.114.72) queried the server back on port 27901 — confirming the server was reachable and the master servers knew about it.
+
+**Open question**: Why did the heartbeat `sendto()` fail? Possible causes:
+- The heartbeat socket (`qr_t+0x04`) may not be properly bound
+- Firewall may be blocking outbound UDP to port 27900
+- The `\heartbeat\0` port value (port 0) may confuse something in the send path
 
 ### Current Status
 LAN discovery is functional on both the stock dedi and our headless dedicated server. The GameSpy::Tick processes queries via the QR SDK each frame, and the response builder correctly reads Python globals to report server name, map, player count, and game rules.
+
+Master server registration works via pure UDP heartbeats. The stock dedi with `masterserver.txt` pointing to 333networks sends heartbeats to `81.205.81.173:27900` and receives verification queries from master servers on port 27901. The full flow (heartbeat → verification query → response) is captured in the observer's packet trace.
 
 ### Verified Response Fields (from stock dedi trace)
 | Field | Example Value | Source |
