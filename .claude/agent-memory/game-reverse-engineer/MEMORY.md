@@ -196,3 +196,67 @@
 - **Tractor docking**: 6 modes (HOLD/TOW/PULL/PUSH/DOCK_STAGE_1/DOCK_STAGE_2), ship+0x1E6=IsDocked
 - **Friendly fire**: Full penalty system with progressive warnings + game-over threshold
 - **Opcodes 0x04/0x05 truly dead**; 0x17=DeletePlayerUI, 0x18=PlayerLeftText, 0x1C=SendObjectResponse
+
+## Repair System & Tractor Beam (2026-02-17)
+- See [docs/repair-tractor-analysis.md](../../docs/repair-tractor-analysis.md) for full analysis
+- **RepairSubsystem**: vtable 0x00892e24, size 0xC0, ctor FUN_00565090
+- **NO queue size limit** (OpenBC claims 8 -- WRONG); uses dynamic pool allocator
+- Queue is doubly-linked list at +0xA8(count)/+0xAC(head)/+0xB0(tail)
+- AddSubsystem (FUN_00565520): rejects duplicates, rejects condition<=0.0 (destroyed)
+- Repair() (FUN_0056bd90): `condition += repairPoints / repairComplexity`
+- RepairSubsystemProperty: +0x4C=MaxRepairPoints(float), +0x50=NumRepairTeams(int)
+- RepairSubsystem::Update at 0x005652a0 is **UNDEFINED IN GHIDRA** (vtable slot 25)
+- **TractorBeamSystem**: vtable 0x00893794, size 0x100, ctor FUN_00582080
+- 6 modes: HOLD(0)/TOW(1)/PULL(2)/PUSH(3)/DOCK1(4)/DOCK2(5); default=1(TOW)
+- Mode field at +0xF4; AI config mode at +0xA0
+- TractorBeamSystem::Update at 0x00582460 also **UNDEFINED IN GHIDRA**
+- **TractorBeamProjector**: vtable 0x008936f0, size 0x100, ctor FUN_0057ec70
+- Projector::Update (FUN_00581020): caches maxDamage at +0xA0
+- EnergyWeaponProperty: +0x68=MaxDamage, +0x7C=MaxDamageDistance
+- Galaxy: forward tractor MaxDamage=50.0, aft=80.0, MaxDamageDistance=118.0
+- FriendlyTractorTime/Warning/Max at UtopiaModule +0x4C/+0x50/+0x54
+
+## Weapon Firing Mechanics (2026-02-17)
+- See [docs/weapon-firing-mechanics.md](../../docs/weapon-firing-mechanics.md) for full analysis
+- **Class hierarchy**: Weapon -> EnergyWeapon -> PhaserBank; Weapon subclass -> TorpedoTube
+- **PhaserBank vtable**: 0x00893194, EnergyWeapon: 0x008930D8, TorpedoTube: 0x00893630
+- **Key vtable slots**: +0x78=StopFiring, +0x7C=Fire, +0x84=CanFire, +0x90=SetPowerSetting
+- **Phaser charge**: `charge += recharge_rate * power_level * dt * power_mult [* AI_mult]`
+- **Phaser discharge**: intensity-dependent (LOW/MED/HIGH) at DAT_0089317C/80/84
+- **Property layout**: +0x68=MaxCharge, +0x6C=RechargeRate, +0x70=DischargeRate, +0x74=MinFiringCharge
+- **Weapon +0x88**: is_firing flag; +0xA0: charge_level(phaser) / num_ready(torpedo)
+- **Torpedo reload**: FUN_0057D8A0; ammo check + num_ready++; timer array at +0xAC
+- **Type switch**: FUN_0057B230; unloads all tubes, clears timers; immediate=1 -> NO instant reload
+- **Type switch "lockout"**: implicit (tubes empty after switch, must wait ReloadDelay)
+- **TorpedoTube::Fire**: FUN_0057C9E0; checks CanFire, decrements num_ready, posts ET_TORPEDO_FIRED
+- **Network**: 0x19=TorpedoFire(FUN_0057CB10), 0x1A=BeamFire(FUN_005762B0)
+- **WeaponSystem::UpdateWeapons**: FUN_00584930; per-frame tick, iterates weapons, calls TryFire
+
+## Cloaking Device State Machine (2026-02-17)
+- See [docs/cloaking-state-machine.md](../../docs/cloaking-state-machine.md) for full analysis
+- Vtable 0x00892EAC, ctor FUN_00566d10, tick FUN_0055e500
+- **4 active states**: DECLOAKED(0), CLOAKING(2), CLOAKED(3), DECLOAKING(5)
+- States 1 and 4 are GHOST STATES (checked but never assigned -- dead code)
+- OpenBC spec is WRONG: claims states 0,1,2,3 -- actual values are 0,2,3,5
+- Timer at +0xB4, state at +0xB0, tryingToCloak at +0xAD, isFullyCloaked at +0xAC
+- CloakTime (DAT_008e4e1c) and ShieldDelay (DAT_008e4e20) are CLASS-LEVEL GLOBALS
+- Shields: NOT zeroed during cloak; subsystem disabled, HP preserved, re-enable after ShieldDelay
+- Weapons: NOT directly gated in C++; checked at AI/Python level via IsCloaked()
+- Network: 0x40 flag serializes +0x9C (isOn), client runs local state machine
+- Energy failure: auto-decloak when efficiency < DAT_0088d4ec threshold
+- ET_CLOAKED_COLLISION event exists but is DEAD CODE (0 xrefs)
+
+## Shield System (2026-02-17)
+- See [docs/shield-system.md](../../docs/shield-system.md) for full analysis
+- ShieldClass: vtable 0x00892f34, size 0x15C, ctor FUN_0056a000
+- ShieldProperty: vtable 0x00892fc4, size 0x88, ctor FUN_0056b970
+- **6 facings**: FRONT(0)/REAR(1)/TOP(2)/BOTTOM(3)/LEFT(4)/RIGHT(5); NO_SHIELD=-1
+- Facing determined by max-component projection of ship-local normal (FUN_0056a8d0)
+- curShields[6] at shieldClass+0xA8; maxShields[6] at property+0x60; chargePerSec[6] at property+0x78
+- **Key constant**: DAT_0088bacc = 1/6 (0.16667) -- per-facing share
+- **Area damage**: equal 1/6 distribution, per-facing clamp, overflow to hull (FUN_00593c10)
+- **Directed damage**: shield zone intersection via FUN_004b4b40, deferred hit list processing
+- **Recharge**: BoostShield (FUN_0056a420) converts power to HP using chargePerSecond
+- **Event-driven**: HandleSetShieldState at 0x0056aae0, events 0x0080006d-0x00800071
+- **Cloak interaction**: shield +0x9C set to 0 after ShieldDelay(1.0s), HP preserved, re-enabled on decloak
+- **Unanalyzed range**: 0x0056a210-0x0056aad0 (event handlers, shield tick, RedistributeShields)

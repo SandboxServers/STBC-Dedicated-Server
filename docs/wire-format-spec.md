@@ -491,16 +491,85 @@ Host-specific message dispatch. Used for self-destruct and other host-authority 
 
 ### 0x15 - CollisionEffect (Client -> Server)
 
-**Handler**: `FUN_006a2470`
+**Sender**: Collision detection system via `FUN_006a17c0` (event forwarder, event code `0x00800050`)
+**Handler**: `FUN_006a2470` (Handler_CollisionEffect_0x15)
+**Write method**: `0x005871a0` (CollisionEvent::Write, vtable+0x34)
+**Read method**: `0x00587300` (CollisionEvent::Read, vtable+0x38)
 
-Collision damage relay. Client detects a collision locally and sends this to the host for authoritative damage processing. 84 times in a 15-minute 3-player stock session (4th most common combat opcode).
+Collision damage relay. Client detects a collision locally and sends this to the host for authoritative damage processing. The host validates proximity (bounding sphere check), then re-posts the event as `0x008000fc` (HostCollisionEffect) for damage application. 84 times in a 15-minute 3-player stock session (4th most common combat opcode).
+
+**Serialization chain**: The collision event class (factory ID `0x00008124`, vtable `0x0089395c`) inherits from TGEvent. The Write method calls the base TGEvent Write first, then appends collision-specific data.
 
 ```
-Offset  Size  Type    Field
-------  ----  ----    -----
+Offset  Size  Type    Field                    Notes
+------  ----  ----    -----                    -----
 0       1     u8      opcode = 0x15
-1       4     i32     object_id         (colliding ship)
-+0      var   data    collision params   (damage, position, etc.)
+1       4     i32     event_type_class_id      Always 0x00008124 (collision event factory ID)
+5       4     i32     event_code               Always 0x00800050 (ET_COLLISION_EFFECT)
+9       4     i32v    source_object_id         Other colliding object (0 = environment/NULL)
+13      4     i32v    target_object_id         Ship reporting the collision (BC object ID)
+17      1     u8      contact_count            Number of contact points (typically 1-2)
+[repeated contact_count times:]
+  +0    1     s8      dir_x                    Compressed direction X (signed, normalized * scale)
+  +1    1     s8      dir_y                    Compressed direction Y
+  +2    1     s8      dir_z                    Compressed direction Z
+  +3    1     u8      magnitude_byte           Compressed distance from ship center
+[end repeat]
++0      4     f32     collision_force          IEEE 754 float: impact force magnitude
+```
+
+**Total size**: 22 + contact_count * 4 bytes (typically 26 for 1 contact, 30 for 2)
+
+**Contact point compression** (CompressedVec4_Byte format, `stream->vtable+0x98`):
+
+The Write method at `0x005871a0` transforms each contact point to ship-relative coordinates before compression:
+
+1. **Ship-relative transform**: If the target object exists, contact position is transformed:
+   - Subtract ship NiNode position (NiNode+0x88/0x8C/0x90)
+   - Apply inverse rotation via matrix multiply (`FUN_00813aa0` with NiNode+0x64 rotation matrix)
+   - Scale by `DAT_00888860 / NiNode+0x94` (bounding sphere normalization)
+
+2. **Compression** (`vtable+0xA0` at `0x006d29a0`):
+   - Compute magnitude = sqrt(x^2 + y^2 + z^2)
+   - If magnitude > threshold: normalize each component by (SCALE / magnitude)
+   - Convert normalized components to signed bytes via ftol
+   - Output: 3 signed direction bytes
+
+3. **Magnitude byte** (`vtable+0xAC` at `0x006d2d10`):
+   - Divides magnitude by a reference value (bounding radius)
+   - Multiplies by scale constant at `DAT_0088b9ac`
+   - Converts to unsigned byte via ftol
+
+**Decompression** (Read at `0x00587300`, uses `stream->vtable+0x9C` at `FUN_006d30e0`):
+1. Reads 4 bytes (ReadByte x4)
+2. Gets bounding sphere radius from target object (via `vtable+0xE4` GetBoundingBox, radius at bbox+0x0C)
+3. If target not found: uses 1.0 as default radius; if radius is 0: uses 0.01
+4. Calls `vtable+0xBC` to decompress 4 bytes back to Vec3 using radius as scale
+5. Allocates Vec3 (12 bytes) and stores in contact point array at event+0x2C
+
+**Handler validation** (`Handler_CollisionEffect_0x15` at `0x006a2470`):
+1. Reconstructs the TGEvent from the stream via `FUN_006d6200`
+2. Verifies sender's ship matches one of the collision objects (anti-spoof)
+3. If sender is the source object AND target is also player-controlled: drops the event (deduplication -- the target player will report their own collision)
+4. Validates physical proximity: computes distance between the two objects, subtracts both bounding radii, checks against threshold `DAT_008955c8`
+5. Changes event code from `0x00800050` to `0x008000fc` (HostCollisionEffect)
+6. Posts the modified event to the event manager for host-side damage processing
+
+**Host damage processing** (`FUN_005afad0` = ShipClass::HostCollisionEffectHandler):
+- Iterates contact points, transforms each relative to the ship's NiNode
+- Calls `FUN_005afd70` (damage application) per contact point with the collision force
+- Also posts `0x00800053` event for collision sound/visual effects
+
+**Example decode** (P1, 26 bytes):
+```
+15                    opcode = 0x15 (CollisionEffect)
+24 81 00 00           type_class_id = 0x00008124
+50 00 80 00           event_code = 0x00800050 (ET_COLLISION_EFFECT)
+00 00 00 00           source_obj_id = 0x00000000 (environment collision)
+FF FF FF 3F           target_obj_id = 0x3FFFFFFF (Player 0 ship)
+01                    contact_count = 1
+0D 7E 00 D9           contact[0]: dir=(+13, +126, +0) mag=217
+BB 20 A0 44           force = 1281.02 (float 0x44A020BB)
 ```
 
 ### 0x14 - Destroy Object
@@ -1189,7 +1258,7 @@ Python-level messages (bypass C++ dispatcher entirely via SendTGMessage):
 | 0x12 | SetPhaserLevel | any | FUN_0069fda0 | objectId, event data (→ event 0x008000E0) |
 | 0x13 | HostMsg | C->S | FUN_006A01B0 | host-specific dispatch (self-destruct etc.) |
 | 0x14 | DestroyObject | S->C | FUN_006a01e0 | objectId |
-| 0x15 | CollisionEffect | C->S | FUN_006a2470 | objectId, collision params (damage relay) |
+| 0x15 | CollisionEffect | C->S | FUN_006a2470 | typeClassId(0x8124), eventCode(0x800050), srcObjId, tgtObjId, count, count*cv4_byte(dir+mag), force(f32) |
 | 0x16 | (default) | -- | DEFAULT | Handled by MultiplayerWindow dispatcher, not game jump table |
 | 0x17 | DeletePlayerUI | S->C | FUN_006a1360 | player UI cleanup |
 | 0x18 | DeletePlayerAnim | S->C | FUN_006a1420 | player deletion animation |
