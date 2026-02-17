@@ -1,8 +1,9 @@
 # Bridge Commander Cut, Incomplete, and Hidden Feature Analysis
 
-**Date**: 2026-02-16
+**Date**: 2026-02-17 (verified)
 **Binary**: stbc.exe (32-bit, ~5.9MB, base 0x400000)
 **Method**: Ghidra decompilation, string analysis, SWIG binding enumeration, Python script cross-reference, developer context analysis
+**Verification**: All claims verified against Ghidra MCP (54 binary items, 50 TRUE, 2 address swaps fixed, 2 clarified) and reference scripts (12 categories checked). Shipped features (self-destruct, damage volumes) confirmed and reclassified.
 
 ---
 
@@ -15,13 +16,12 @@ Bridge Commander contains a remarkable amount of partially-implemented, disabled
 1. **Ghost Missions 7 and 9** -- Cooperative "Destroy the Borg Cube" and asymmetric "Destroy the Enterprise" modes. End-game constants, shared handler code, species definitions, and string lookups all survive. Only the mission script folders are missing.
 2. **Fleet Command AI** -- A complete tactical vocabulary (DefendTarget, DestroyTarget, DisableTarget, DockStarbase, HelpMe) designed for commanding AI wingmen. Never used in multiplayer.
 3. **Tractor Beam Docking System** -- A complete tractor-beam-based docking mechanic with 6 modes including 2-stage docking, push, pull, tow, and hold. Tied to starbase repair/reload events. No multiplayer network support.
-4. **Starbase Docking/Repair** -- 375+ lines of polished docking code (approach, cutscene, repair/rearm, undocking) that works for any ship and any starbase. Single-player only.
+4. **Starbase Docking/Repair** -- ~660 lines of polished docking code in `AI/Compound/DockWithStarbase.py` (approach, cutscene, repair/rearm, undocking) that works for any ship and any starbase. Single-player only.
 5. **Ship Class Scoring** -- A modifier table in `Modifier.py` that multiplies score based on attacker/victim ship class. Fully plumbed through the scoring path but all ships are assigned the same class (no-op).
 6. **Friendly Fire Penalty** -- Complete tracking system with progressive warnings and game-over threshold. Campaign-only.
 7. **Developer Tools** -- Python REPL console, in-game 3D level editor, god mode, kill target, instant repair, load quantums. All fully functional, gated behind a single flag.
-8. **Object Emitter System** -- Ships can emit probes, shuttles, and decoys. Probes work; shuttles and decoys are enum-only.
+8. **Object Emitter System** -- Ships can emit probes, shuttles, and decoys. Probes work in SP; shuttles and decoys are enum-only.
 9. **Multi-Set Multiplayer** -- Opcode 0x1F (EnterSet) handles cross-set movement over the network. Never used in MP maps.
-10. **Friendly Fire Penalty** -- Complete tracking system with progressive warnings and game-over threshold.
 
 ---
 
@@ -86,7 +86,7 @@ The AI directory at `reference/scripts/AI/Fleet/` contains a complete tactical v
 | DockStarbase | `AI/Fleet/DockStarbase.py` | Orders docking with a starbase |
 | HelpMe | `AI/Fleet/HelpMe.py` | Distress call -- wingman comes to your aid |
 
-In single-player, these work via the bridge crew interface. The SWIG API exposes them generically -- they work on any ship with any AI. In multiplayer, these could power:
+These were designed for commanding AI wingmen. The SWIG API exposes them generically -- they work on any ship with any AI. However, no shipped campaign mission imports the AI/Fleet/ scripts directly (the AI system uses them indirectly through compound AI behaviors). In multiplayer, these could power:
 - **Cooperative missions with AI wingmen**: Each human player commanding a small fleet
 - **Fleet battles**: Human commanders with AI-controlled escorts
 - **Asymmetric modes**: One player as commander, others as wingmen
@@ -108,7 +108,7 @@ g_kModifierTable = (
 
 `GetModifier(attackerClass, killedClass)` returns a score multiplier. Class 2 killing Class 1 gets 3x score bonus. The scoring path calls `GetModifier` on every kill in Mission5's `DamageHandler`.
 
-**The problem**: Every flyable ship in `SpeciesToShip.py` is assigned class 1. The modifier system is a no-op. This was a balance feature designed to incentivize diverse ship choices (small ship kills big ship = bonus points) that was never tuned.
+**The problem**: Every flyable ship in `SpeciesToShip.py` is assigned class 1 (some non-player entries like UNKNOWN are class 0, but all player-selectable ships are class 1). The modifier system is a no-op for actual gameplay. This was a balance feature designed to incentivize diverse ship choices (small ship kills big ship = bonus points) that was never tuned.
 
 **Restoration feasibility**: TRIVIAL. Assign class values in `SpeciesToShip.py`. The multiplier table and scoring path already work.
 
@@ -171,13 +171,15 @@ In cooperative/objective modes, scanning could reveal:
 
 **Completeness**: FULLY FUNCTIONAL (shipped, bound to keys, gated on TestMenuState >= 2)
 
-| Cheat | Key Binding | Event | Handler |
-|-------|-------------|-------|---------|
-| Kill Target (25% damage to targeted subsystem) | Shift+K | ET_INPUT_DEBUG_KILL_TARGET | `TacticalInterfaceHandlers.KillTarget` |
-| Quick Repair (fully repair targeted ship) | Shift+R | ET_INPUT_DEBUG_QUICK_REPAIR | `TacticalInterfaceHandlers.RepairShip` |
-| God Mode (invulnerability + full repair) | Shift+G | ET_INPUT_DEBUG_GOD_MODE | `TacticalInterfaceHandlers.ToggleGodMode` |
-| Load Quantum Torpedoes (+10) | Ctrl+Q | ET_INPUT_DEBUG_LOAD_QUANTUMS | `TacticalInterfaceHandlers.LoadQuantums` / `BridgeHandlers` |
-| Toggle Edit Mode | (unbound) | ET_INPUT_DEBUG_TOGGLE_EDIT_MODE | Enables placement editor |
+| Cheat | Event | Handler |
+|-------|-------|---------|
+| Kill Target (25% damage to targeted subsystem) | ET_INPUT_DEBUG_KILL_TARGET | `TacticalInterfaceHandlers.KillTarget` |
+| Quick Repair (fully repair targeted ship) | ET_INPUT_DEBUG_QUICK_REPAIR | `TacticalInterfaceHandlers.RepairShip` |
+| God Mode (invulnerability + full repair) | ET_INPUT_DEBUG_GOD_MODE | `TacticalInterfaceHandlers.ToggleGodMode` |
+| Load Quantum Torpedoes (+10) | ET_INPUT_DEBUG_LOAD_QUANTUMS | `TacticalInterfaceHandlers.LoadQuantums` / `BridgeHandlers` |
+| Toggle Edit Mode | ET_INPUT_DEBUG_TOGGLE_EDIT_MODE | Enables placement editor |
+
+**Key bindings**: The debug key bindings (Shift+K, Shift+R, Shift+G, Ctrl+Q) are present in `KeyboardConfig.py` but **commented out** in the shipped scripts. Only `ET_INPUT_SELF_DESTRUCT` (Ctrl+D) has an active binding. The debug cheats can still be triggered programmatically via Python event posting.
 
 **Gate mechanism**: All cheats check `App.g_kUtopiaModule.GetTestMenuState() < 2` and return immediately if true. The TestMenuState is stored at `g_Clock + 0xB8` (SWIG wrapper at 0x005EB1B0). In the shipped game, this value is 0 (disabled).
 
@@ -227,7 +229,7 @@ In cooperative/objective modes, scanning could reveal:
 
 ### 1.5 VoxelizerDebug
 
-**Evidence**: Strings "VoxelizerDebug.txt" and ";_VoxelizerDebug.txt" at 0x0088c5b7/0x0088c5cc.
+**Evidence**: Strings ";_VoxelizerDebug.txt" at 0x0088c5b7 and "VoxelizerDebug.txt" at 0x0088c5cc.
 
 **What it is**: A collision mesh voxelizer that can dump debug output to a text file. The voxelizer converts 3D ship models into volumetric grids for collision detection. The debug output would show the voxelization process.
 
@@ -253,7 +255,7 @@ This is the most substantial "hidden" system in the game. While tractor beams wo
 | TractorBeamProperty | 40+ SWIG getters/setters for beam visual properties (radius, taper, colors, texture) |
 | TractorBeamProjector | Separate projector object with orientation/arc properties |
 | Mode storage | TractorBeamSystem+0xF4 (written by SetMode) |
-| Ship docked flag | ship+0x1E6 (boolean, written by SetDocked) |
+| Ship docked flag | ship+0x1E6 (boolean, written by SetDocked, read by IsDocked) |
 | Friendly tractor tracking | UtopiaModule: Get/SetFriendlyTractorTime, FriendlyTractorWarning, MaxFriendlyTractorTime |
 
 #### Events
@@ -328,9 +330,9 @@ The docking system has NO multiplayer support. There is no network opcode for do
 
 **Campaign usage**: Used in some missions to punish attacking allies. The thresholds are configurable via Python.
 
-**Multiplayer status**: The point tracking works but there's no MP-specific handling. Could be used by the dedicated server to auto-kick team-killers.
+**Multiplayer status**: MissionShared.py calls `MissionLib.SetupFriendlyFireNoGameOver()` on MP mission init, so the basic point tracking IS active in multiplayer. However, no MP mission scripts register event handlers for ET_FRIENDLY_FIRE events, so there are no consequences (no warnings, no kicks). Could be used by the dedicated server to auto-kick team-killers.
 
-**Restoration feasibility**: HIGH. The system works. Just needs Python handlers registered in MP context.
+**Restoration feasibility**: HIGH. The system is already running in MP. Just needs event handlers registered for warnings and consequences.
 
 ---
 
@@ -365,7 +367,7 @@ The docking system has NO multiplayer support. There is no network opcode for do
 | OEP_DECOY | ObjectEmitterProperty_OEP_DECOY | Enum constant exists, no campaign usage found |
 | OEP_UNKNOWN | ObjectEmitterProperty_OEP_UNKNOWN | Default/placeholder |
 
-**Probe system**: Ships have a SensorSubsystem with GetNumProbes/SetNumProbes/AddProbe. The bridge science menu has a "Launch Probe" button. Probes are launched as objects into the scene and tracked by the sensor subsystem.
+**Probe system**: Ships have a SensorSubsystem with GetNumProbes/SetNumProbes/AddProbe. The bridge science menu has a "Launch Probe" button (`ScienceMenuHandlers.py`). Probes are launched as objects into the scene and tracked by the sensor subsystem. However, the probe launch button is **explicitly disabled in multiplayer** (`pLaunch.SetDisabled()` in ScienceMenuHandlers.py lines 104-106).
 
 **Shuttles and Decoys**: The ObjectEmitterProperty type enums exist for shuttles and decoys, but no Python scripts use them. SPECIES_SHUTTLE and SPECIES_ESCAPEPOD exist as object species types. The infrastructure to launch shuttles/decoys exists in the emitter system but was never connected to UI or game logic.
 
@@ -375,14 +377,14 @@ The docking system has NO multiplayer support. There is no network opcode for do
 
 ### 2.6 Starbase Repair and Reload
 
-**Completeness**: PARTIALLY IMPLEMENTED (events exist, some campaign integration)
+**Completeness**: PARTIALLY IMPLEMENTED (events exist, SWIG accessors exist, limited campaign integration)
 
-| Event | Address |
+| Event/Function | Address |
 |-------|---------|
 | ET_SB12_REPAIR | 0x00910CF8 |
 | ET_SB12_RELOAD | 0x00910CE8 |
-| UtopiaModule_GetCurrentStarbaseTorpedoLoad | 0x00928874 |
-| UtopiaModule_SetCurrentStarbaseTorpedoLoad | 0x009288A0 |
+| swig_UtopiaModule_GetCurrentStarbaseTorpedoLoad | 0x005ea810 |
+| swig_UtopiaModule_SetCurrentStarbaseTorpedoLoad | 0x005ea790 |
 | SPECIES_FED_STARBASE | 0x0090F464 |
 | SPECIES_CARD_STARBASE | 0x0090F438 |
 | SPECIES_DRYDOCK | 0x0090F3F8 |
@@ -431,11 +433,13 @@ The docking system has NO multiplayer support. There is no network opcode for do
 | Python usage | `Nebula.SetDamageResolution(15.0)` in GlobalPropertyTemplates.py |
 | Ship hardpoint | `nebula.py:961` -- `Nebula.SetDamageResolution(10.0)` |
 
-**What it does**: Ships inside nebulae take continuous damage at a configurable rate. `SetupDamage(damagePerTick, -1.0)` configures the damage. `SetDamageResolution` controls damage tick interval.
+**What it does**: Ships inside nebulae take continuous damage at a configurable rate. `SetupDamage(damagePerTick, -1.0)` configures the damage. `SetDamageResolution` controls damage tick interval. The default resolution of 15.0 is set in `GlobalPropertyTemplates.py` for all ship and object types.
 
-**Multiplayer status**: Nebulae exist as game objects but are not commonly used in MP maps. The damage system would work if a nebula is placed in a MP set.
+**Campaign usage**: The nebula damage infrastructure is set up globally via templates (all objects have `SetDamageResolution(15.0)`), but no specific campaign mission was found that creates a damaging nebula. The system is ready to use but may only have been used in cut content or testing.
 
-**Restoration feasibility**: HIGH. Just create a nebula object in a MP map and configure damage.
+**Multiplayer status**: Nebulae exist as game objects but are not used in MP maps. The damage system would work if a nebula is placed in a MP set.
+
+**Restoration feasibility**: HIGH. Create a nebula object in a MP map and call `SetupDamage()`. The infrastructure is complete.
 
 ---
 
@@ -452,7 +456,7 @@ The MultiplayerGame dispatcher at 0x0069F2A0 uses a jump table at 0x0069F534 wit
 | 0x16 | Dispatched to MultiplayerWindow | UI collision toggle (separate dispatcher) |
 | 0x17 | 0x006a1360 | DeletePlayerUI -- **REAL CODE**: reads stream, creates message object, posts to event queue, then destroys |
 | 0x18 | 0x006a1420 | **REAL CODE**: Loads "data/TGL/Multiplayer.tgl", reads "Delete Player" entry, creates text display with 5.0 alpha, adds to scene. This is a "Player X has left" floating text notification |
-| 0x1C | 0x006a02a0 | **REAL CODE**: Complex handler. Reads object ID from stream, looks up ship, checks if shields are up, gets model bounds, serializes ship state, creates network message, sends to specific peer. Also calls FUN_00595c60 (handles shield notification). This is a **SEND_OBJECT / RequestObj response** handler |
+| 0x1C | 0x006a02a0 | **REAL CODE**: StateUpdate response handler. Reads object ID from stream, looks up ship, checks if shields are up, gets model bounds, serializes ship state, creates network message, sends to specific peer. Also calls FUN_00595c60 (handles shield notification). NOTE: This jump table index maps to opcode 0x1E (RequestObj response), see opcode table in CLAUDE.md for verified mapping. |
 
 **Key findings**:
 - Opcodes 0x04 and 0x05 are truly dead -- the jump table entries point to the default handler that just clears the processing flag and returns
@@ -475,19 +479,19 @@ From the message type string table, these message types have names registered bu
 
 ---
 
-## Category 4: Unused Species/Object Types
+## Category 4: Notable Species/Object Types
 
-The following SPECIES_ constants suggest object types that were planned but have limited or no actual game usage:
+The following SPECIES_ constants represent object types with varying levels of usage. Some are fully used in campaign, others exist as infrastructure only.
 
-| Species | Notes |
-|---------|-------|
-| SPECIES_ESCAPEPOD | Escape pod entity type. No Python scripts reference escape pods. |
-| SPECIES_SUNBUSTER | Unknown weapon/object. No scripts reference it. Name suggests a superweapon. |
-| SPECIES_SHUTTLE | Shuttle entity. Used in campaign missions as dockable objects. |
-| SPECIES_TRANSPORT | Transport ship. Used in some escort missions. |
-| SPECIES_PROBETYPE2 | Second probe variant. Only SPECIES_PROBE is used in scripts. |
-| SPECIES_DRYDOCK | Drydock station. Exists as a species but limited campaign usage. |
-| SPECIES_KESSOKMINE | Kessok mine entity. Used in E6M4 campaign mission. |
+| Species | Status | Notes |
+|---------|--------|-------|
+| SPECIES_ESCAPEPOD | **UNUSED** | Escape pod entity type. No Python scripts create or reference escape pods. |
+| SPECIES_SUNBUSTER | **UNUSED** | Unknown weapon/object. No scripts reference it. Name suggests a superweapon. |
+| SPECIES_SHUTTLE | Campaign | Shuttle entity. Used in campaign missions as dockable objects and AI-controlled craft. |
+| SPECIES_TRANSPORT | Campaign | Transport ship. Used in escort missions. |
+| SPECIES_PROBETYPE2 | **UNUSED** | Second probe variant. Only SPECIES_PROBE is used in scripts. |
+| SPECIES_DRYDOCK | Campaign | Drydock station. Exists as a species with limited campaign usage. |
+| SPECIES_KESSOKMINE | Campaign | Kessok mine entity. Used in E7M3 and E3M2 campaign missions. Also in QuickBattle. |
 
 ---
 
@@ -536,7 +540,7 @@ The game has a full assert dialog system (strings at 0x0095C7CC-0x0095C854) that
 
 ### Tier 3: Moderate Effort (Python + new network messages, 2-4 weeks)
 
-10. **Starbase Docking/Repair** -- Wire the 375-line `DockWithStarbase.py` to multiplayer. Needs dock state sync message. Game-changing for longer matches.
+10. **Starbase Docking/Repair** -- Wire the ~660-line `DockWithStarbase.py` to multiplayer. Needs dock state sync message. Game-changing for longer matches.
 11. **In-System Warp** -- Add warp points to MP maps, Python trigger, MP state sync. Enables tactical repositioning.
 12. **Fleet Command in MP** -- Expose the DefendTarget/DestroyTarget/DisableTarget/HelpMe AI commands to human players in MP. Needs command UI + network sync.
 13. **Probe Launch in MP** -- Science menu button exists. Need MP sync for probe objects.
