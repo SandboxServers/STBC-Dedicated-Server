@@ -214,6 +214,7 @@ Then opcode 0x01 (single byte).
 - [docs/function-mapping-report.md](docs/function-mapping-report.md) - Function naming coverage: ~6,031 of 18K functions named (33%), script suite docs
 - [docs/gamespy-discovery.md](docs/gamespy-discovery.md) - GameSpy LAN/internet discovery, master server protocol (UDP heartbeat + TCP browsing), QR1 challenge-response crypto
 - [docs/cut-content-analysis.md](docs/cut-content-analysis.md) - Cut/hidden features: ghost missions (Borg Hunt, Enterprise Assault), fleet command AI, tractor docking, self-destruct, dev tools, restoration priorities
+- [docs/disconnect-flow.md](docs/disconnect-flow.md) - Player disconnect flow: 3 detection paths (timeout/graceful/kick), peer deletion convergence, event cascade, cleanup opcodes (0x14/0x17/0x18), Python layer
 
 ## Ghidra Annotation Scripts
 Bulk annotation scripts in `tools/`. Run from Ghidra Script Manager with stbc.exe loaded.
