@@ -215,6 +215,7 @@ Then opcode 0x01 (single byte).
 - [docs/gamespy-discovery.md](docs/gamespy-discovery.md) - GameSpy LAN/internet discovery, master server protocol (UDP heartbeat + TCP browsing), QR1 challenge-response crypto
 - [docs/cut-content-analysis.md](docs/cut-content-analysis.md) - Cut/hidden features: ghost missions (Borg Hunt, Enterprise Assault), fleet command AI, tractor docking, self-destruct, dev tools, restoration priorities
 - [docs/disconnect-flow.md](docs/disconnect-flow.md) - Player disconnect flow: 3 detection paths (timeout/graceful/kick), peer deletion convergence, event cascade, cleanup opcodes (0x14/0x17/0x18), Python layer
+- [docs/collision-effect-protocol.md](docs/collision-effect-protocol.md) - CollisionEffect (opcode 0x15) RE: wire format (22+N*4 bytes), CompressedVec4_Byte contacts, handler validation chain, CollisionEvent class (0x44 bytes), event registration, vtable maps
 
 ## Ghidra Annotation Scripts
 Bulk annotation scripts in `tools/`. Run from Ghidra Script Manager with stbc.exe loaded.
