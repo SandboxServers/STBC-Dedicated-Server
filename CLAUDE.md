@@ -104,36 +104,36 @@ collision damage and subsystem damage. The main multiplayer loop is functional.
 ### Game Opcode Table (complete, verified from jump table + packet traces)
 | Opcode | Name | Handler | Type |
 |--------|------|---------|------|
-| 0x00 | Settings | FUN_0069f9e0 | Game config (gameTime, map, collision) |
-| 0x01 | GameInit | FUN_0069fc00 | Game start trigger |
+| 0x00 | Settings | FUN_00504d30 | Game config (gameTime, map, collision) — MultiplayerWindow dispatcher |
+| 0x01 | GameInit | FUN_00504f10 | Game start trigger — MultiplayerWindow dispatcher |
 | 0x02 | ObjCreate | FUN_0069f620 | Non-team object creation |
 | 0x03 | ObjCreateTeam | FUN_0069f620 | Ship creation with team |
-| 0x04 | Boot | (default) | Kick player |
-| 0x05 | (unused) | (default) | |
-| 0x06 | PythonEvent | FUN_0069fda0 | **Primary event forwarding** (3432/session) |
+| 0x04 | (dead) | DEFAULT | Jump table default; boot sent via TGBootPlayerMessage |
+| 0x05 | (dead) | DEFAULT | Jump table default |
+| 0x06 | PythonEvent | FUN_0069f880 | **Primary event forwarding** (3432/session) |
 | 0x07 | StartFiring | FUN_0069fda0 | Weapon fire begin (2282/session) |
 | 0x08 | StopFiring | FUN_0069fda0 | Weapon fire end |
 | 0x09 | StopFiringAtTarget | FUN_0069fda0 | Stop firing at specific target |
 | 0x0A | SubsysStatus | FUN_0069fda0 | Subsystem toggle (shields, etc.) |
 | 0x0B | AddToRepairList | FUN_0069fda0 | Crew repair assignment |
 | 0x0C | ClientEvent | FUN_0069fda0 | Generic event forward (preserve=0) |
-| 0x0D | PythonEvent2 | FUN_0069fda0 | Alternate Python event path |
+| 0x0D | PythonEvent2 | FUN_0069f880 | Alternate Python event path |
 | 0x0E | StartCloak | FUN_0069fda0 | Cloak engage (event 0x008000E3) |
 | 0x0F | StopCloak | FUN_0069fda0 | Cloak disengage (event 0x008000E5) |
 | 0x10 | StartWarp | FUN_0069fda0 | Warp drive engage |
 | 0x11 | RepairListPriority | FUN_0069fda0 | Repair priority ordering |
 | 0x12 | SetPhaserLevel | FUN_0069fda0 | Phaser power/intensity (event 0x008000E0) |
-| 0x13 | HostMsg | FUN_006a0d90 | Host message broadcast |
+| 0x13 | HostMsg | FUN_006A01B0 | Host message dispatch (self-destruct etc.) |
 | 0x14 | DestroyObject | FUN_006a01e0 | Object destruction |
 | 0x15 | CollisionEffect | FUN_006a2470 | **Collision damage relay** (84/session) |
 | 0x16 | UICollisionSetting | FUN_00504c70 | Collision toggle (MultiplayerWindow dispatcher) |
-| 0x17 | DeletePlayerUI | (handler) | Remove player from scoreboard |
-| 0x19 | TorpedoFire | FUN_0069fe60 | Torpedo launch (897/session) |
-| 0x1A | BeamFire | FUN_006a0340 | Beam weapon hit |
+| 0x17 | DeletePlayerUI | FUN_006a1360 | Remove player from scoreboard |
+| 0x19 | TorpedoFire | FUN_0069f930 | Torpedo launch (897/session) |
+| 0x1A | BeamFire | FUN_0069fbb0 | Beam weapon hit |
 | 0x1B | TorpTypeChange | FUN_0069fda0 | Torpedo type switch |
-| 0x1D | ObjNotFound | FUN_006a0620 | Object lookup failure |
-| 0x1E | RequestObj | FUN_006a07d0 | Request object data |
-| 0x1F | EnterSet | FUN_006a0a20 | Enter game set |
+| 0x1D | ObjNotFound | FUN_006a0490 | Object lookup failure |
+| 0x1E | RequestObj | FUN_006a02a0 | Request object data |
+| 0x1F | EnterSet | FUN_006a05e0 | Enter game set |
 | 0x29 | Explosion | FUN_006a0080 | Explosion damage (S→C only) |
 | 0x2A | NewPlayerInGame | FUN_006a1e70 | Player join handshake |
 

@@ -9,7 +9,7 @@ See also: [message-trace-vs-packet-trace.md](message-trace-vs-packet-trace.md) f
 2. [Stream Primitives](#stream-primitives)
 3. [Compressed Data Types](#compressed-data-types)
 4. [Checksum/NetFile Opcodes (0x20-0x28)](#checksumnetfile-opcodes-0x20-0x28)
-5. [Game Opcodes (0x00-0x2A)](#game-opcodes-0x00-0x2a)
+5. [Game Opcodes (0x02-0x2A)](#game-opcodes-0x02-0x2a)
 6. [State Update (0x1C) - The Big One](#state-update-0x1c---the-big-one)
 7. [Object Replication](#object-replication)
 8. [Python Message Dispatch](#python-message-dispatch)
@@ -233,7 +233,7 @@ Handler: `FUN_006a5df0`
 Offset  Size  Type    Field
 ------  ----  ----    -----
 0       1     u8      opcode = 0x20
-1       1     u8      request_index (0-3)
+1       1     u8      request_index (0x00-0x03, or 0xFF for final round)
 2       2     u16     directory_name_length
 4       var   string  directory_name (e.g. "scripts/")
 +0      2     u16     filter_name_length
@@ -241,38 +241,37 @@ Offset  Size  Type    Field
 +0      bit   bool    recursive_flag
 ```
 
+There are **5 checksum rounds** sent sequentially (server waits for each response before sending the next):
+
+| Round | Index | Directory | Filter | Recursive | Purpose |
+|-------|-------|-----------|--------|-----------|---------|
+| 1 | `0x00` | `scripts/` | `App.pyc` | No | Core application module |
+| 2 | `0x01` | `scripts/` | `Autoexec.pyc` | No | Startup script |
+| 3 | `0x02` | `scripts/ships` | `*.pyc` | **Yes** | All ship definition modules |
+| 4 | `0x03` | `scripts/mainmenu` | `*.pyc` | No | Menu system modules |
+| 5 | `0xFF` | `Scripts/Multiplayer` | `*.pyc` | **Yes** | Multiplayer mission scripts |
+
 Client computes file hashes and responds with 0x21.
 
 ### 0x21 - Checksum Response (Client -> Server)
 
 Handler: `FUN_006a4260` -> `FUN_006a4560` (verify) or `FUN_006a5570` (mismatch)
 
-Two sub-types based on `byte[1]`:
-- If `byte[1] == 0xFF`: new-format response (first-time checksum, handled by main path)
-- If `byte[1] != 0xFF`: continuation response (re-request, handled by `FUN_006a4560`)
+The response echoes the round index from the request:
 
-**First-time format** (byte[1] == 0xFF):
 ```
 Offset  Size  Type    Field
 ------  ----  ----    -----
 0       1     u8      opcode = 0x21
-1       1     u8      request_index (0xFF = first response)
-2       4     u32     file_hash_crc (from FUN_007202e0 = CRC of filename)
-6+      var   data    checksum_data (file hashes)
+1       1     u8      request_index (echoes the request's round index)
+2+      var   data    hash_data (variable length, opaque)
 ```
 
-**Continuation format** (byte[1] != 0xFF):
-```
-Offset  Size  Type    Field
-------  ----  ----    -----
-0       1     u8      opcode = 0x21
-1       1     u8      request_index
-2       2     u16     directory_length
-4       var   string  directory_name
-+0      2     u16     password_length (0 if none)
-+2      var   string  password (if length > 0)
-+0      bit   bool    recursive_flag
-```
+The server handler uses `byte[1]` to route processing:
+- `byte[1] == 0xFF`: final round response (Scripts/Multiplayer), handled by main path
+- `byte[1] != 0xFF`: standard round response, handled by `FUN_006a4560`
+
+Round 2 responses are significantly larger (~400 bytes, fragmented) due to the number of ship `.pyc` files.
 
 ### 0x22 / 0x23 - Checksum Fail (Server -> Client)
 
@@ -322,20 +321,38 @@ Offset  Size  Type    Field
 
 Calls `FUN_006a5860` to continue file transfer sequence or signal completion.
 
+### 0x28 - Checksum Complete (Server -> Client)
+
+No dedicated handler — signals that all checksum rounds have passed. Observed in stock dedi traces immediately before Settings (0x00) and GameInit (0x01).
+
+```
+Offset  Size  Type    Field
+------  ----  ----    -----
+0       1     u8      opcode = 0x28
+```
+
+Single byte, no additional payload.
+
+### 0x24, 0x26 - Unknown/Unused
+
+These opcode slots exist in the NetFile dispatcher range but no handler or packet trace evidence has been found for either.
+
 ---
 
-## Game Opcodes (0x00-0x2A)
+## Game Opcodes (0x02-0x2A)
 
-These are dispatched by the MultiplayerGame ReceiveMessageHandler (at `0x0069f2a0`). The first payload byte is the opcode, which indexes a 41-entry jump table at `0x0069F534` (opcode minus 2).
+These are dispatched by the MultiplayerGame ReceiveMessageHandler (at `0x0069f2a0`). The first payload byte is the opcode, which indexes a 41-entry jump table at `0x0069F534` (opcode minus 2, covering opcodes 0x02-0x2A).
+
+**NOTE**: Opcodes 0x00 and 0x01 are NOT in this jump table. They are handled by the MultiplayerWindow dispatcher (`FUN_00504c10`) which processes them on the client side.
 
 **NOTE**: Opcodes 0x07-0x0F are EVENT FORWARD messages (weapon state changes, cloak, warp), NOT Python messages or combat actions. The actual combat opcodes are 0x19 (TorpedoFire) and 0x1A (BeamFire). Python messages use opcode 0x06/0x0D.
 
-### 0x00 - Settings (Server -> Client)
+### 0x00 - Settings (Server -> Client, MultiplayerWindow dispatcher)
 
 **Sender**: `FUN_006a1b10` (ChecksumCompleteHandler)
 **Client handler**: `FUN_00504d30`
 
-Sent after all 4 checksum rounds pass. Carries game settings and player slot assignment.
+Sent after all 5 checksum rounds pass (rounds 0-3 + 0xFF). Carries game settings and player slot assignment.
 
 ```
 Offset  Size  Type     Field                    Notes
@@ -412,22 +429,11 @@ The `serialized_object` data is produced by calling `obj->vtable[0x10C](buffer, 
 - Weapon loadouts
 - AI state
 
-### 0x04 - Boot Player / Kick (Server -> Client)
+### 0x04 / 0x05 - Dead Opcodes (jump table default)
 
-**Sender**: `FUN_00506170` (BootPlayerHandler, via ET_BOOT_PLAYER event)
-**Context**: Used to disconnect/kick a player
+These opcode slots in the game jump table point to the DEFAULT handler (clears processing flag and returns). They are NOT used for game messages.
 
-```
-Offset  Size  Type    Field
-------  ----  ----    -----
-0       1     u8      sub_cmd = 0x04
-1       1     u8      reason            Boot reason code:
-                                         2 = server full
-                                         3 = game in progress
-                                         4 = kicked by host
-```
-
-Actually this is wrapped in a `TGBootPlayerMessage` which has additional framing.
+**Boot/kick is handled at the transport layer** via `TGBootPlayerMessage` (sent by `FUN_00506170`, the BootPlayerHandler registered for `ET_BOOT_PLAYER`), not as a game opcode.
 
 ### 0x06 / 0x0D - Python Event (Bidirectional)
 
@@ -479,9 +485,9 @@ Offset  Size  Type    Field
 
 ### 0x13 - Host Message
 
-**Handler**: `FUN_006a0d90`
+**Handler**: `FUN_006A01B0`
 
-Host-specific message dispatch. Used for self-destruct and other host-authority actions.
+Host-specific message dispatch. Used for self-destruct and other host-authority actions. Processes damage via `obj+0x2C4` subsystem.
 
 ### 0x15 - CollisionEffect (Client -> Server)
 
@@ -776,7 +782,7 @@ Budget: The serializer checks `stream_position - start_position < 10` to limit s
 ### Flag 0x40 - Cloak State
 
 ```
-+0      1     u8       cloak_active       0 = decloaked, nonzero = cloaked
++0      bit   bool     cloak_active       WriteBit/ReadBit: 0 = decloaked, 1 = cloaked
 ```
 
 Read from `ship[0xB7]+0x9C` (cloaking device subsystem status byte).
@@ -880,7 +886,7 @@ if (flags & 0x10): // speed
     apply to physics
 
 if (flags & 0x40): // cloak state
-    cloak = ReadBit
+    cloak = ReadBit  // bit-packed boolean
     if cloak: FUN_0055f360(cloak_device)  // activate
     else: FUN_0055f380(cloak_device)      // deactivate
 
@@ -1134,7 +1140,7 @@ Opcodes originally discovered from stock-dedi packet captures, now fully identif
 | 0x11 | RepairListPriority | FUN_0069fda0 | Relayed | occasional | Crew repair priority ordering (event 0x008000E1) |
 | 0x12 | SetPhaserLevel | FUN_0069fda0 | Relayed | 33 | Phaser power/intensity setting (event 0x008000E0) |
 | 0x15 | CollisionEffect | FUN_006a2470 | C->S | 84 | Collision damage relay — client detects, host processes |
-| 0x28 | (no handler) | (default case) | S->C | 3 | Falls through jump table — vestigial/unused |
+| 0x28 | ChecksumComplete | (NetFile dispatcher) | S->C | 3 | Signals all checksum rounds passed; sent before Settings |
 
 Python-level messages (bypass C++ dispatcher entirely via SendTGMessage):
 
@@ -1152,15 +1158,22 @@ Python-level messages (bypass C++ dispatcher entirely via SendTGMessage):
 
 ## Summary: Opcode Table
 
-### Game Opcodes (MultiplayerGame Dispatcher at 0x0069F2A0, jump table at 0x0069F534)
+### MultiplayerWindow Dispatcher (FUN_00504c10, handles 0x00/0x01/0x16)
 
 | Opcode | Name | Direction | Handler | Payload Summary |
 |--------|------|-----------|---------|-----------------|
 | 0x00 | Settings | S->C | FUN_00504d30 | gameTime, settings, playerSlot, mapName, checksumFlag |
 | 0x01 | GameInit | S->C | FUN_00504f10 | (empty - just the opcode byte) |
+| 0x16 | UICollisionSetting | S->C | FUN_00504c70 | collisionDamageFlag(bit) |
+
+### Game Opcodes (MultiplayerGame Dispatcher at 0x0069F2A0, jump table at 0x0069F534, opcodes 0x02-0x2A)
+
+| Opcode | Name | Direction | Handler | Payload Summary |
+|--------|------|-----------|---------|-----------------|
 | 0x02 | ObjectCreate | S->C | FUN_0069f620 | type=2, ownerSlot, serializedObject |
 | 0x03 | ObjectCreateTeam | S->C | FUN_0069f620 | type=3, ownerSlot, teamId, serializedObject |
-| 0x04 | BootPlayer | S->C | (inline) | reason code |
+| 0x04 | (dead) | -- | DEFAULT | Jump table default; boot handled at transport layer |
+| 0x05 | (dead) | -- | DEFAULT | Jump table default |
 | 0x06 | PythonEvent | any | FUN_0069f880 | eventCode, eventPayload |
 | 0x07 | StartFiring | any | FUN_0069fda0 | objectId, event data (→ event 0x008000D7) |
 | 0x08 | StopFiring | any | FUN_0069fda0 | objectId, event data (→ event 0x008000D9) |
@@ -1174,20 +1187,20 @@ Python-level messages (bypass C++ dispatcher entirely via SendTGMessage):
 | 0x10 | StartWarp | any | FUN_0069fda0 | objectId, event data (→ event 0x008000ED) |
 | 0x11 | RepairListPriority | any | FUN_0069fda0 | objectId, event data (→ event 0x008000E1) |
 | 0x12 | SetPhaserLevel | any | FUN_0069fda0 | objectId, event data (→ event 0x008000E0) |
-| 0x13 | HostMsg | C->S | FUN_006a0d90 | host-specific dispatch (self-destruct etc.) |
+| 0x13 | HostMsg | C->S | FUN_006A01B0 | host-specific dispatch (self-destruct etc.) |
 | 0x14 | DestroyObject | S->C | FUN_006a01e0 | objectId |
 | 0x15 | CollisionEffect | C->S | FUN_006a2470 | objectId, collision params (damage relay) |
-| 0x16 | UICollisionSetting | S->C | FUN_00504c70 | collisionDamageFlag(bit) |
+| 0x16 | (default) | -- | DEFAULT | Handled by MultiplayerWindow dispatcher, not game jump table |
 | 0x17 | DeletePlayerUI | S->C | FUN_006a1360 | player UI cleanup |
 | 0x18 | DeletePlayerAnim | S->C | FUN_006a1420 | player deletion animation |
 | 0x19 | TorpedoFire | owner->all | FUN_0069f930 | objId, flags, velocity(cv3), [targetId, impact(cv4)] |
 | 0x1A | BeamFire | owner->all | FUN_0069fbb0 | objId, flags, targetDir(cv3), moreFlags, [targetId] |
 | 0x1B | TorpTypeChange | any | FUN_0069fda0 | objectId, event data (→ event 0x008000FD) |
-| 0x1C | StateUpdate | owner->all | FUN_005b21c0 | objectId, gameTime, dirtyFlags, [fields...] |
+| 0x1C | StateUpdate | owner->all | FUN_0069FF50 | objectId, gameTime, dirtyFlags, [fields...] |
 | 0x1D | ObjNotFound | S->C | FUN_006a0490 | objectId (0x3FFFFFFF queries are normal) |
 | 0x1E | RequestObject | C->S | FUN_006a02a0 | objectId (server responds with 0x02/0x03) |
 | 0x1F | EnterSet | S->C | FUN_006a05e0 | objectId, setData |
-| 0x28 | (no handler) | S->C | (default) | 1 byte payload, vestigial/unused |
+| 0x20-0x28 | (default) | -- | DEFAULT | Handled by NetFile dispatcher, not game jump table |
 | 0x29 | Explosion | S->C | FUN_006a0080 | objectId, impact(cv4), damage(cf16), radius(cf16) |
 | 0x2A | NewPlayerInGame | S->C | FUN_006a1e70 | (triggers InitNetwork + object replication) |
 
