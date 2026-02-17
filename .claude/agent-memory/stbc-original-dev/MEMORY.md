@@ -21,10 +21,14 @@ vtable[1]. T&L flag determines SYSTEMMEMORY vs WRITEONLY VB path. Adapter creati
 calls DirectDrawCreateEx internally via GetProcAddress("DDRAW.DLL") which hits the proxy DLL.
 Full analysis in [design-intent.md](design-intent.md).
 
-### Multiplayer Architecture: Server-Authoritative with Delta Compression
-NOT lockstep, NOT peer-to-peer. Host runs full simulation for all ships. Sends delta
-state updates via FUN_005b17f0 (flag byte + changed fields). Clients send inputs.
-Host applies inputs and pushes resulting state.
+### Multiplayer Architecture: Split Authority Model with Delta Compression
+NOT lockstep, NOT fully peer-to-peer, NOT fully server-authoritative. Split model:
+- Server-authoritative: collision damage, object lifecycle, game flow, explosions
+- Owner-authoritative: movement/position (StateUpdate sends POSITIONS not INPUTS),
+  weapon fire (0x19/0x1A), event-forward messages (0x07-0x12)
+- Receiver-local: weapon damage (each client runs DoDamage independently)
+State updates use dirty-flag delta compression with round-robin subsystem/weapon
+budgets (10 bytes/6 bytes per frame).
 
 ### Full Network Protocol Architecture (NEW)
 Two dispatch layers: C++ engine messages (binary, compact) and Python TGMessages
@@ -61,6 +65,14 @@ sequence the stock Python script already performs. Because that patch reimplemen
 behavior instead of calling the original, any future adjustments or side effects of the
 native path can drift, so the safest pattern is to call `_orig_InitObject` inside the
 wrapper and only add instrumentation.
+
+### Server Authority Feasibility Assessment
+Making movement server-authoritative requires changing StateUpdate from position-based
+to input-based -- a fundamental protocol redesign that breaks all clients. Not practical.
+No client-prediction/server-reconciliation infrastructure exists in BC's engine.
+Realistic additions: damage bounds checking, weapon fire rate limiting, plausibility
+validation. Full server-side damage computation introduces desync without prediction.
+See full analysis in conversation dated 2026-02-16.
 
 ## File Index
 - [design-intent.md](design-intent.md) - Detailed architecture analysis and design intent

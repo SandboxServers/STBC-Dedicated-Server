@@ -187,7 +187,12 @@
 - **Crypto**: Modified RC4 (PRGA uses `i = data[n]+1+i` instead of `i = i+1`) + standard Base64 encoding
 - Fully reimplementable; see crypto analysis doc for standalone C code
 
-## Dump Baseline Delta (2026-02-12)
-- See [stock-baseline-analysis.md](stock-baseline-analysis.md) for detailed 4-stage startup baseline
-- Stock host: CurrentGame appears one stage BEFORE starting set/system creation
-- Custom server bypasses canonical menu/start path (direct bootstrap)
+## Cut Content Analysis (2026-02-16)
+- See [docs/cut-content-analysis.md](../../docs/cut-content-analysis.md) for full report
+- **TestMenuState** at g_Clock+0xB8: set to 2 to enable all debug cheats (god mode, kill target, quick repair)
+- **TGConsole**: Full Python REPL, TopWindow.ToggleConsole(), TGConsole.EvalString()
+- **PlacementEditor**: In-game level editor with save/load (requires edit mode)
+- **Self-destruct**: Ctrl+D bound, SELF_DESTRUCT_REQUEST_MESSAGE exists (0 xrefs), handler commented out
+- **Tractor docking**: 6 modes (HOLD/TOW/PULL/PUSH/DOCK_STAGE_1/DOCK_STAGE_2), ship+0x1E6=IsDocked
+- **Friendly fire**: Full penalty system with progressive warnings + game-over threshold
+- **Opcodes 0x04/0x05 truly dead**; 0x17=DeletePlayerUI, 0x18=PlayerLeftText, 0x1C=SendObjectResponse

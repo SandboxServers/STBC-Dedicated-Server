@@ -212,7 +212,8 @@ Then opcode 0x01 (single byte).
 - [docs/nirtti-factory-catalog.md](docs/nirtti-factory-catalog.md) - All 117 NiRTTI factory registrations with addresses
 - [docs/netimmerse-vtables.md](docs/netimmerse-vtables.md) - Vtable maps for 6 core NI classes (NiObject through NiTriShape)
 - [docs/function-mapping-report.md](docs/function-mapping-report.md) - Function naming coverage: ~6,031 of 18K functions named (33%), script suite docs
-- [docs/gamespy-discovery.md](docs/gamespy-discovery.md) - GameSpy LAN discovery, query/response protocol, master server heartbeat, function addresses
+- [docs/gamespy-discovery.md](docs/gamespy-discovery.md) - GameSpy LAN/internet discovery, master server protocol (UDP heartbeat + TCP browsing), QR1 challenge-response crypto
+- [docs/cut-content-analysis.md](docs/cut-content-analysis.md) - Cut/hidden features: ghost missions (Borg Hunt, Enterprise Assault), fleet command AI, tractor docking, self-destruct, dev tools, restoration priorities
 
 ## Ghidra Annotation Scripts
 Bulk annotation scripts in `tools/`. Run from Ghidra Script Manager with stbc.exe loaded.
