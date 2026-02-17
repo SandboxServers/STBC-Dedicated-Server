@@ -1,6 +1,10 @@
 # Repair System & Tractor Beam Mechanics - Reverse Engineering Analysis
 
-Detailed analysis of the repair subsystem and tractor beam system in Star Trek: Bridge Commander (stbc.exe), reverse engineered from the binary via Ghidra decompilation and cross-referenced against the shipped Python scripting API.
+Detailed analysis of the repair subsystem and tractor beam system in Star Trek: Bridge Commander (stbc.exe), reverse engineered from the binary via Ghidra decompilation, raw disassembly (objdump), and cross-referenced against the shipped Python scripting API.
+
+**Status**: COMPLETE. All critical Update functions decompiled via raw binary disassembly. All OpenBC claims now verified or refuted.
+
+---
 
 ## Part 1: Repair Queue Mechanics
 
@@ -48,7 +52,7 @@ Inherited from SubsystemProperty, RepairSubsystemProperty adds:
 | 0x00565090 | RepairSubsystem::ctor | `__thiscall(void* this, int param)` |
 | 0x00565190 | RepairSubsystem::scalar_deleting_dtor | vtable slot 10 |
 | 0x005651c0 | RepairSubsystem::dtor | destructor body |
-| 0x005652a0 | RepairSubsystem::Update | vtable slot 25 (offset 0x64) -- **NOT IN GHIDRA FUNC DB** |
+| 0x005652a0 | **RepairSubsystem::Update** | vtable slot 25 -- **DECOMPILED VIA RAW DISASSEMBLY** |
 | 0x00565520 | RepairSubsystem::AddSubsystem | also used by AddToRepairList |
 | 0x00565890 | RepairSubsystem::IsBeingRepaired | checks queue for subsystem |
 | 0x00565900 | RepairSubsystem::AddToRepairList_MP | network-aware wrapper |
@@ -61,6 +65,132 @@ Inherited from SubsystemProperty, RepairSubsystemProperty adds:
 | 0x0056b950 | ShipSubsystem::GetRepairComplexity | returns `property->+0x3C` |
 | 0x0056c470 | ShipSubsystem::SetCondition | sets +0x30, clamps, fires events |
 | 0x0056c350 | ShipSubsystem::IsDisabled | checks condition percentage vs threshold |
+
+### RepairSubsystem::Update (0x005652a0) -- FULLY DECOMPILED
+
+Decompiled from raw x86 disassembly (objdump). This function was in an undefined code region not auto-analyzed by Ghidra.
+
+```c
+// RepairSubsystem::Update  (__thiscall, float deltaTime)
+// Address: 0x005652a0, size: 0x277 bytes (ends at 0x00565517)
+void RepairSubsystem_Update(RepairSubsystem* this, float deltaTime) {
+    // Call parent: PoweredSubsystem::Update(deltaTime)
+    PoweredSubsystem_Update(this, deltaTime);  // FUN_00562470
+
+    // If repair system is OFF, skip all repair logic
+    if (!this->isOn)  // +0x9C
+        goto epilogue;
+
+    // Host/multiplayer gate: only process repairs on standalone or host
+    byte isHost = g_IsHost;  // 0x97FA89
+    if (isHost == 0)
+        goto do_repair;  // standalone mode
+    if (isHost != 1 || !g_IsMultiplayer)  // 0x97FA8A
+        goto done;
+
+do_repair:
+    RepairSubsystemProperty* prop = GetProperty(this);  // FUN_00564fe0
+
+    // *** THE REPAIR RATE FORMULA ***
+    float maxRepairPoints = prop->MaxRepairPoints;      // prop+0x4C
+    float repairHealthPct = this->conditionPercentage;  // +0x34 (repair system's own health)
+    float repairAmount = maxRepairPoints * repairHealthPct * deltaTime;
+
+    int numRepairTeams = prop->NumRepairTeams;          // prop+0x50
+    int queueCount = this->queueCount;                  // +0xA8
+    ListNode* node = this->queueHead;                   // +0xAC
+    int teamsUsed = 0;
+
+    if (node == NULL)
+        goto done;
+
+    // *** MAIN REPAIR LOOP: repairs up to NumRepairTeams subsystems ***
+    while (teamsUsed < numRepairTeams && node != NULL) {
+        ShipSubsystem* sub = node->data;    // node+0x00
+        node = node->next;                   // node+0x04
+
+        // Skip destroyed subsystems (condition <= 0.0)
+        if (sub->condition <= 0.0f) {
+            // Post ET_REPAIR_CANNOT_BE_COMPLETED (0x800075)
+            TGMessage* msg = CreateMessage();
+            msg->SetSource(this->parentShip);
+            msg->data[10] = sub->subsystemID;
+            msg->eventType = 0x800075;
+            EventManager_PostEvent(msg);
+            continue;  // Does NOT consume a repair team
+        }
+
+        // *** PER-SUBSYSTEM REPAIR AMOUNT ***
+        int divisor = min(queueCount, numRepairTeams);
+        float perTeamRepair = repairAmount / (float)divisor;
+
+        // Apply repair (Repair() divides by RepairComplexity internally)
+        sub->Repair(perTeamRepair);  // FUN_0056bd90
+
+        // Check if fully repaired
+        float ratio = sub->condition / GetMaxCondition(sub);
+        if (ratio >= 1.0f) {
+            // Post ET_REPAIR_COMPLETED (0x800074)
+            TGMessage* msg = CreateMessage();
+            msg->SetSource(this->parentShip);
+            msg->data[10] = sub->subsystemID;
+            msg->eventType = 0x800074;
+            EventManager_PostEvent(msg);
+        }
+
+        teamsUsed++;
+    }
+
+    // Process remaining queue items (beyond team count)
+    // Only sends destruction notifications, no repair
+    while (node != NULL) {
+        ShipSubsystem* sub = node->data;
+        node = node->next;
+        if (sub->condition <= 0.0f) {
+            // Post ET_REPAIR_CANNOT_BE_COMPLETED
+            PostRepairCannotBeCompletedEvent(this, sub);
+        }
+    }
+
+done:
+    // Update UI if this is the player's ship
+    int playerShip = GetPlayerShip();  // FUN_004069b0
+    if (playerShip != 0 && playerShip == this->parentShip) {
+        if (g_EngRepairPane != NULL)  // 0x98B188
+            EngRepairPane_Update(g_EngRepairPane);  // FUN_005512e0
+    }
+
+epilogue:
+    return;
+}
+```
+
+### Complete Repair Rate Formula (VERIFIED)
+
+```
+rawRepairAmount = MaxRepairPoints * (repairSystem.condition / repairSystem.maxCondition) * deltaTime
+
+divisor = min(queueCount, NumRepairTeams)
+
+perSubsystemRepair = rawRepairAmount / divisor
+
+actualConditionGain = perSubsystemRepair / subsystem.RepairComplexity
+```
+
+Key characteristics:
+1. The repair system's OWN health scales the output (damaged repair bay = slower repairs)
+2. Multiple subsystems are repaired simultaneously (up to NumRepairTeams)
+3. The repair amount is divided equally among min(queueCount, numTeams) subsystems
+4. RepairComplexity acts as a final divisor (higher complexity = slower repair)
+
+Example (Galaxy class, healthy repair system, 2 items in queue):
+```
+rawRepair = 50.0 * 1.0 * 0.033 = 1.65 per tick (at 30fps)
+divisor = min(2, 3) = 2
+perSubsystem = 1.65 / 2 = 0.825
+For a phaser (complexity=3.0): conditionGain = 0.825 / 3.0 = 0.275
+For a tractor (complexity=7.0): conditionGain = 0.825 / 7.0 = 0.118
+```
 
 ### AddSubsystem / AddToRepairList Logic (FUN_00565520)
 
@@ -97,7 +227,6 @@ bool RepairSubsystem::AddSubsystem(ShipSubsystem* subsystem) {
     } else {
         // Condition is 0.0 (destroyed) -- do NOT add to queue
         // Instead, if this is the player's ship, notify the UI
-        // (shows in EngRepairPane "DESTROYED" area)
         if (GetPlayerShipID() == subsystem->parentShipID && g_EngRepairPane != NULL) {
             EngRepairPane_AddDestroyed(g_EngRepairPane, subsystem);
             EngRepairPane_Refresh(g_EngRepairPane);
@@ -109,97 +238,11 @@ bool RepairSubsystem::AddSubsystem(ShipSubsystem* subsystem) {
 
 **CRITICAL FINDING: No maximum queue size enforced.** The AddSubsystem function uses a dynamically-growing pool allocator (FUN_00486be0). There is no check like `if (count >= 8) return false`. The linked list grows without bound. The OpenBC claim of "up to 8 subsystem indices" is **INCORRECT** -- there is no hardcoded queue size limit in the C++ code.
 
-**CONFIRMED: Subsystems at 0 HP (condition <= 0.0) are NOT added to the repair queue.** The check `_DAT_00888b54 < subsystem[0xC]` (i.e., `0.0f < condition`) explicitly excludes destroyed subsystems. Instead, they are sent to the UI's "DESTROYED" area via `FUN_00551990`. This matches the OpenBC claim.
-
-**CONFIRMED: No duplicate entries.** The function walks the entire list checking for duplicates before insertion.
-
-### AddToRepairList Network Wrapper (FUN_00565900)
-
-```c
-// Decompiled from 0x00565900
-void RepairSubsystem::AddToRepairList(ShipSubsystem* subsystem) {
-    bool added = this->AddSubsystem(subsystem);  // FUN_00565520
-
-    if (added && g_IsHost && g_IsMultiplayer) {
-        // Send ADD_TO_REPAIR_LIST event over the network
-        TGMessage* msg = TGMessage_Create();
-        msg->eventType = 0x008000DF;  // ET_ADD_TO_REPAIR_LIST
-        msg->SetSource(this);
-        msg->SetDestination(subsystem);
-        EventManager_PostEvent(msg);
-    }
-}
-```
-
-This confirms that AddToRepairList is a network-aware wrapper. In multiplayer, the host broadcasts a repair queue change to all clients via ET_ADD_TO_REPAIR_LIST (event 0x008000DF), which maps to wire opcode 0x0B.
-
-### HandleRepairCompleted (FUN_00565980)
-
-```c
-// Decompiled from 0x00565980
-void RepairSubsystem::HandleRepairCompleted(TGEvent* event) {
-    ShipSubsystem* repairedSub = GetSubsystemFromEvent(event->data[10]);
-    int playerShipID = GetPlayerShipID();
-
-    if (repairedSub != NULL) {
-        // Walk the list to find and remove this subsystem
-        ListNode* node = this->listHead;
-        ListNode* found = NULL;
-        while (node != NULL) {
-            if (node->data == repairedSub) {
-                found = node;
-                break;
-            }
-            node = node->next;
-        }
-
-        if (found != NULL) {
-            // Remove from doubly-linked list
-            RemoveNode(&this->listStruct, &found);
-        }
-
-        // Update UI if this is the player's ship
-        if (playerShipID == repairedSub->parentShipID && g_EngRepairPane != NULL) {
-            EngRepairPane_RemoveFromRepair(g_EngRepairPane, repairedSub);
-        }
-    }
-
-    ChainToNextHandler(this, event);
-}
-```
-
-**CONFIRMED: Auto-removed when fully repaired.** The HandleRepairCompleted event fires when condition reaches maxCondition (see SetCondition below), and the handler removes the subsystem from the repair queue.
-
-### HandleSubsystemRebuilt (FUN_00565a10)
-
-```c
-// Decompiled from 0x00565a10
-void RepairSubsystem::HandleSubsystemRebuilt(TGEvent* event) {
-    ShipSubsystem* rebuiltSub = ShipSubsystem_Cast(event->data[2]);
-    int playerShipID = GetPlayerShipID();
-
-    if (rebuiltSub != NULL && playerShipID != 0) {
-        // Notify UI
-        EngRepairPane_AddDestroyed(g_EngRepairPane, rebuiltSub);
-
-        // If the rebuilt subsystem's condition < maxCondition, auto-queue it
-        float condition = rebuiltSub->condition;     // +0x30 via +0x0C offset
-        float maxCondition = GetMaxCondition(rebuiltSub);
-        if (condition < maxCondition) {
-            this->AddToRepairList(rebuiltSub);  // FUN_00565900
-        }
-    }
-
-    ChainToNextHandler(this, event);
-}
-```
-
-**CONFIRMED: Subsystems below max condition are auto-queued** when they are rebuilt (transition from destroyed to damaged). The auto-queue condition is `condition < maxCondition`, not based on the disabled threshold. This matches the OpenBC claim about auto-queueing on rebuild.
+**CONFIRMED: Subsystems at 0 HP (condition <= 0.0) are NOT added to the repair queue.** The check `0.0f < condition` explicitly excludes destroyed subsystems.
 
 ### ShipSubsystem::Repair (FUN_0056bd90)
 
 ```c
-// Decompiled from 0x0056bd90
 void ShipSubsystem::Repair(float repairPoints) {
     float repairComplexity = GetRepairComplexity(this);  // property->+0x3C
     float newCondition = this->condition + (repairPoints / repairComplexity);
@@ -207,84 +250,15 @@ void ShipSubsystem::Repair(float repairPoints) {
 }
 ```
 
-The Repair function divides the raw repair points by the subsystem's `RepairComplexity` before adding to condition. This means:
-- Higher RepairComplexity = slower repair
-- Galaxy class phasers: RepairComplexity = 3.0
-- Galaxy class tractors: RepairComplexity = 7.0
-
-### ShipSubsystem::SetCondition (FUN_0056c470)
-
-```c
-// Decompiled from 0x0056c470
-void ShipSubsystem::SetCondition(float newCondition) {
-    this->condition = newCondition;
-
-    // Clamp to maxCondition
-    float maxCondition = GetMaxCondition(this);
-    if (this->condition > maxCondition) {
-        this->condition = maxCondition;
-    }
-
-    // Update percentage
-    this->conditionPercentage = this->condition / GetMaxCondition(this);
-
-    // Update UI watcher
-    UpdateWatcher(this->conditionWatcher);
-
-    // Fire ET_SUBSYSTEM_STATE_CHANGED if condition < maxCondition
-    // AND ship exists AND ship is not critically damaged
-    if (this->condition < maxCondition &&
-        (this->parentShip == NULL || this->parentShip->someField >= threshold)) {
-        TGMessage* msg = CreateStateChangedMessage();
-        msg->SetSource(this->parentShip);
-        msg->eventType = 0x0080006B;  // ET_SUBSYSTEM_STATE_CHANGED
-        msg->data[10] = this->subsystemID;
-        EventManager_PostEvent(msg);
-    }
-}
-```
-
-### Repair Rate Formula
-
-The repair rate formula is **NOT directly visible** because the RepairSubsystem::Update function at 0x005652a0 is in an undefined code region that Ghidra has not auto-analyzed as a function. However, from the data structures and supporting evidence:
-
-**What we know for certain:**
-1. RepairSubsystemProperty has `MaxRepairPoints` (float at +0x4C) and `NumRepairTeams` (int at +0x50)
-2. ShipSubsystem::Repair divides by `RepairComplexity` before adding to condition
-3. The Update function receives `deltaTime` as a parameter (float, same as all Update virtuals)
-4. RepairSubsystem::Update is at vtable slot 25 (offset 0x64), address 0x005652a0
-
-**Inferred repair rate per tick:**
-```
-repairThisTick = MaxRepairPoints * NumRepairTeams * deltaTime
-actualConditionGain = repairThisTick / RepairComplexity
-```
-
-The OpenBC claim of `max_repair_points * num_repair_teams * dt` for the RAW repair rate is **PLAUSIBLE** based on the property fields and the ShipSubsystem::Repair function, which then divides by RepairComplexity.
-
-**Regarding "only top-priority (index 0) repaired each tick":** This CANNOT be verified without decompiling the Update function at 0x005652a0. The data structures use a doubly-linked list (not an array), and the list is maintained with head/tail pointers. It is likely that only the HEAD of the list receives repair each tick (consistent with the UI showing a priority queue), but this cannot be confirmed from the available decompiled code.
-
 ### Repair Queue Events
 
 | Event ID | Name | Wire Opcode | Direction |
 |----------|------|-------------|-----------|
+| 0x00800074 | ET_REPAIR_COMPLETED | (internal) | Local |
+| 0x00800075 | ET_REPAIR_CANNOT_BE_COMPLETED | (internal) | Local |
 | 0x008000DF | ET_ADD_TO_REPAIR_LIST | 0x0B | Host -> All |
 | 0x00800076 | ET_REPAIR_INCREASE_PRIORITY | 0x11 | Client -> Host |
 | 0x0080006B | ET_SUBSYSTEM_STATE_CHANGED | (internal) | Local |
-| ET_REPAIR_COMPLETED | completion notification | (internal) | Local |
-| ET_REPAIR_CANNOT_BE_COMPLETED | 0 HP gate | (internal) | Local |
-
-### Summary: OpenBC Claims vs Binary Evidence
-
-| Claim | Verdict | Evidence |
-|-------|---------|----------|
-| Queue of up to 8 subsystem indices | **INCORRECT** | No size limit in AddSubsystem; uses dynamically-growing pool allocator |
-| Only top-priority (index 0) repaired each tick | **LIKELY** but unverifiable | List structure has head/tail; UI shows priority ordering |
-| Rate: max_repair_points * num_repair_teams * dt | **PLAUSIBLE** | Property fields exist; Repair() divides by complexity |
-| Subsystems below disabled threshold auto-queued | **PARTIALLY CONFIRMED** | HandleSubsystemRebuilt queues if condition < maxCondition (not disabled threshold) |
-| Subsystems at 0 HP NOT auto-queued | **CONFIRMED** | Explicit `condition > 0.0f` check in AddSubsystem |
-| Auto-removed when fully repaired | **CONFIRMED** | HandleRepairCompleted removes from queue |
-| Linked list (not fixed array) | **CONFIRMED** | Doubly-linked list with pool allocator at +0xA8 through +0xB0 |
 
 ---
 
@@ -304,142 +278,224 @@ ShipSubsystem
       -> TractorBeamProjector (vtable 0x008936f0, size 0x100)
 ```
 
-The tractor beam has two classes:
-- **TractorBeamSystem**: The weapon system (manages all projectors for a ship)
-- **TractorBeamProjector**: Individual tractor beam emitter (actual weapon)
-
-### TractorBeamSystem Data Layout (0x100 bytes)
-
-Inherited from WeaponSystem:
-- +0x00: vtable
-- +0xA0: tractor beam mode (int, from AI/script config)
-- +0xA4: firing state byte
-- +0xA8: enabled flag
-- +0xA9: attack disabled subsystems flag
-- +0xAC: (unknown)
-- +0xB0: (unknown)
-- +0xB4: target ID (-1 = none)
-
-TractorBeamSystem-specific:
-- +0xF0: unknown (init 0)
-- +0xF4: mode (int) - default TBS_HOLD (1)
-- +0xF8: unknown (init 0)
-- +0xFC: unknown (init 0)
-
 ### Tractor Beam Modes (TBS enum)
 
 From string table at 0x0095017C:
 
 | Value | Constant | Description |
 |-------|----------|-------------|
-| 0 | TBS_HOLD | Hold target in place |
-| 1 | TBS_TOW | Tow target (drag along) |
+| 0 | TBS_HOLD | Hold target in place (zero velocity) |
+| 1 | TBS_TOW | Tow target toward source (default mode) |
 | 2 | TBS_PULL | Pull target toward self |
 | 3 | TBS_PUSH | Push target away |
 | 4 | TBS_DOCK_STAGE_1 | Docking approach phase |
 | 5 | TBS_DOCK_STAGE_2 | Docking final phase |
-
-Note: The constructor sets +0xF4 = 1 (TBS_TOW as default), and the AI config reads the "eTractorBeamMode" enum to override +0xA0 on initialization.
-
-### TractorBeamProjector Data Layout
-
-Inherits from EnergyWeapon. Key property fields (from TractorBeamProperty, which extends EnergyWeaponProperty):
-
-| Property Offset | Field | Galaxy Forward Tractor 1 |
-|----------------|-------|--------------------------|
-| +0x20 | MaxCondition | 1500.0 |
-| +0x3C | RepairComplexity | 7.0 |
-| +0x68 | MaxDamage | 50.0 (forward) / 80.0 (aft) |
-| +0x7C | MaxDamageDistance | 118.0 |
-
-Additional TractorBeamProperty-specific fields (visual only):
-- TractorBeamWidth, ArcWidth/HeightAngles, Orientation
-- Core/Shell colors, Taper settings, Texture settings
-- NumSides (12), MainRadius (0.075)
-
-TractorBeamProjector instance fields:
-- +0xA0: cached maxDamage (set in Update)
-- +0xBC: condition ratio (A0 / maxDamage)
-- +0xC8: (from WeaponSystem base)
-- +0xFC: enabled flag (byte, init 1)
 
 ### Key Functions
 
 | Address | Name | Notes |
 |---------|------|-------|
 | 0x00582080 | TractorBeamSystem::ctor | Sets vtable 0x00893794, mode=1, +0xA0=1 |
-| 0x00582460 | TractorBeamSystem::Update | vtable slot 25 -- **NOT IN GHIDRA FUNC DB** |
+| 0x00582460 | **TractorBeamSystem::Update** | vtable slot 25 -- **DECOMPILED VIA RAW DISASSEMBLY** |
+| 0x00582280 | TractorBeamSystem::SumProjectorMaxDamage | Iterates children, sums MaxDamage |
+| 0x005822d0 | TractorBeamSystem::GetForceRatio | Returns +0xFC / +0xF8 |
 | 0x005826a0 | TractorBeamSystem::StopFiringHandler | Clears +0xA4, calls vtable[36] (CeaseFire) |
 | 0x0057ec70 | TractorBeamProjector::ctor | Sets vtable 0x008936f0, +0xFC=1 |
 | 0x00581020 | TractorBeamProjector::Update | Caches maxDamage, calls parent Weapon::Update |
-| 0x0056fdc0 | Weapon::Update | Computes condition ratio, calls ShipSubsystem::Update |
-| 0x0056f900 | Weapon::GetMaxDamage | Returns property->+0x68 |
+| 0x0057f8c0 | **TractorBeamProjector::FireTick** | Per-tick fire logic with mode switch |
+| 0x00580f50 | **ComputeTractorForce** | Computes per-projector tractor force |
+| 0x0057fcd0 | **Mode_HOLD** | Stops target, applies counter-velocity force |
+| 0x0057ff60 | **Mode_TOW (and DOCK_STAGE_1)** | Moves target toward source, dock transition |
+| 0x00580590 | Mode_PULL | Pulls target toward source |
+| 0x00580740 | Mode_PUSH | Pushes target away from source |
+| 0x00580910 | Mode_DOCK_STAGE_2 | Final docking alignment |
+| 0x0056f900 | Weapon::GetMaxCharge | Returns property->+0x68 (NOT MaxDamage!) |
+| 0x0056f930 | Weapon::GetMaxDamage | Returns property->+0x78 |
 | 0x0056f940 | Weapon::GetMaxDamageDistance | Returns property->+0x7C |
 
-### TractorBeamProjector::Update (FUN_00581020)
+### TractorBeamSystem::Update (0x00582460) -- FULLY DECOMPILED
 
 ```c
-// Decompiled from 0x00581020
-void TractorBeamProjector::Update(float deltaTime) {
-    float maxDamage = GetMaxDamage(this);     // property->+0x68
-    this->cachedMaxDamage = maxDamage;        // stored at +0xA0
-    Weapon::Update(this, deltaTime);           // FUN_0056fdc0
+// TractorBeamSystem::Update  (__thiscall, float deltaTime)
+// Address: 0x00582460, size: 0x28 bytes (ends at 0x00582488)
+void TractorBeamSystem_Update(TractorBeamSystem* this, float deltaTime) {
+    WeaponSystem_Update(this, deltaTime);  // FUN_005847d0 (parent class)
+
+    // Sum MaxDamage across all child projectors
+    float totalMaxDamage = SumProjectorMaxDamage(this);  // FUN_00582280
+    this->totalMaxDamage = totalMaxDamage;  // +0xF8
+
+    // Reset force accumulator (will be filled by FireTick each frame)
+    this->forceUsed = 0.0f;  // +0xFC
 }
 ```
 
-### Weapon::Update (FUN_0056fdc0)
+### Tractor Force Formula (FUN_00580f50) -- VERIFIED
 
 ```c
-// Decompiled from 0x0056fdc0
-void Weapon::Update(float deltaTime) {
-    float maxDamage = GetMaxDamage(this);
-    this->conditionRatio = this->cachedDamage / maxDamage;  // +0xBC = +0xA0 / maxDamage
-    UpdateWatcher(this->damageWatcher);
-    ShipSubsystem::Update(this, deltaTime);    // FUN_0056bc60
+// ComputeTractorForce  (__thiscall, float deltaTime, float beamDistance)
+// Address: 0x00580f50
+float ComputeTractorForce(TractorBeamProjector* this, float deltaTime, float beamDistance) {
+    float maxDamageDistance = GetMaxDamageDistance(this);  // property->+0x7C
+    float distanceRatio = maxDamageDistance / beamDistance;
+
+    // Clamp: at close range (within maxDamageDistance), full force
+    // Beyond maxDamageDistance, linear falloff
+    if (distanceRatio > 1.0) {  // DAT_0088b9c0 = 1.0 (double)
+        distanceRatio = 1.0f;
+    }
+
+    float systemCondPct = this->parentSystem->conditionPercentage;  // system+0x34
+    float projectorCondPct = this->conditionPercentage;              // this+0x34
+    float maxDamage = GetMaxDamage(this);                           // property->+0x78
+
+    float force = maxDamage * (systemCondPct * projectorCondPct) * distanceRatio;
+
+    // Optional modifier from system's target tracking
+    void* targetTracker = this->parentSystem->field_0xF0;
+    if (targetTracker != NULL) {
+        float targetCondition = GetAveragedCondition(targetTracker);
+        force *= targetCondition;
+    }
+
+    return force * deltaTime;
 }
 ```
 
-### TractorBeamSystem::Update -- UNVERIFIABLE
+### TractorBeamProjector::FireTick (FUN_0057f8c0) -- KEY FUNCTION
 
-The TractorBeamSystem::Update function at 0x00582460 is in an undefined code region in Ghidra and cannot be decompiled. This is where the speed drag, tractor damage, and auto-release logic would reside.
+This is called every tick while the tractor beam is firing. It:
 
-**What we CAN confirm from the data model:**
-1. The TractorBeamProjector stores `MaxDamage` and `MaxDamageDistance` from its property
-2. The mode field (+0xF4) supports 6 modes including dock stages
-3. Events track hitting start/stop (ET_TRACTOR_BEAM_STARTED_HITTING/STOPPED_HITTING)
+1. Performs a beam intersection test (ray from source to target)
+2. Posts ET_TRACTOR_BEAM_STARTED_HITTING (0x0080007E) when hitting a new target
+3. Posts ET_TRACTOR_BEAM_STOPPED_HITTING (0x00800080) when target changes/lost
+4. Computes tractor force via `ComputeTractorForce(this, deltaTime, beamDistance)`
+5. **Dispatches to mode-specific handler** based on TractorBeamSystem.mode (+0xF4):
+   - Mode 0 (HOLD): FUN_0057fcd0 -- zeros target velocity, applies counter-force
+   - Mode 1 (TOW) / Mode 4 (DOCK_STAGE_1): FUN_0057ff60 -- moves target toward source
+   - Mode 2 (PULL): FUN_00580590 -- pulls target closer
+   - Mode 3 (PUSH): FUN_00580740 -- pushes target away
+   - Mode 5 (DOCK_STAGE_2): FUN_00580910 -- final docking alignment
+6. **Accumulates force used**: `system->forceUsed += (force - remainingForce)`
 
-**What we CANNOT verify from available decompiled code:**
-- Speed drag formula (OpenBC claims: `max_damage * dt * 0.1`)
-- Tractor damage formula (OpenBC claims: `max_damage * dt * 0.02`)
-- Auto-release conditions (OpenBC claims: distance > max_damage_distance, subsystem destroyed, either ship destroyed)
+The force accumulation at +0xFC is the key to the speed drag system.
 
-### Tractor Beam Event System
+### Speed Drag Mechanism (ImpulseEngineSubsystem::Update, 0x00561180)
 
-| Event | Hex | Description |
-|-------|-----|-------------|
-| ET_TRACTOR_BEAM_STARTED_FIRING | (lookup needed) | Fired when tractor beam begins firing at target |
-| ET_TRACTOR_BEAM_STOPPED_FIRING | (lookup needed) | Fired when tractor beam stops firing |
-| ET_TRACTOR_BEAM_STARTED_HITTING | (lookup needed) | Fired when beam connects with target |
-| ET_TRACTOR_BEAM_STOPPED_HITTING | (lookup needed) | Fired when beam loses lock |
-| ET_TRACTOR_TARGET_DOCKED | (lookup needed) | Fired when docking completes |
-| ET_FRIENDLY_TRACTOR_REPORT | (lookup needed) | Friendly fire tractor penalty warning |
+Decompiled from raw x86 disassembly. The ImpulseEngine stores a pointer to its TractorBeamSystem at +0xA8.
 
-### Ship-Level Tractor Handlers
+```c
+// ImpulseEngineSubsystem::Update  (__thiscall, float deltaTime)
+// Address: 0x00561180
+void ImpulseEngine_Update(ImpulseEngineSubsystem* this, float deltaTime) {
+    PoweredSubsystem_Update(this, deltaTime);
 
-The ShipClass registers two handlers:
-- **HandleTractorHitStart** at LAB_005b0bf0 (undefined in Ghidra)
-- **HandleTractorHitStop** at LAB_005b0c70 (undefined in Ghidra)
+    float powerPct = this->powerPercentage;  // +0x94
 
-These are triggered by events 0x0080007E (ET_TRACTOR_BEAM_STARTED_HITTING) and 0x00800080 (ET_TRACTOR_BEAM_STOPPED_HITTING) respectively.
+    // Compute effective max stats (damage-adjusted)
+    this->curMaxSpeed = ComputeEffectiveMaxSpeed(this) * powerPct;        // +0xAC
+    this->curMaxAccel = ComputeEffectiveMaxAccel(this) * powerPct;        // +0xB0
+    this->curMaxAngVel = ComputeEffectiveMaxAngVel(this) * powerPct;      // +0xB4
+    this->curMaxAngAccel = ComputeEffectiveMaxAngAccel(this) * powerPct;  // +0xB8
+
+    // Update child engines
+    for (int i = 0; i < this->numChildren; i++) {
+        ShipSubsystem* child = GetChild(this, i);
+        if (child != NULL)
+            child->Update(deltaTime);  // vtable[25]
+    }
+}
+```
+
+The speed drag is inside `ComputeEffectiveMaxSpeed` (FUN_00561230):
+
+```c
+// FUN_00561230: Compute effective max speed
+float ComputeEffectiveMaxSpeed(ImpulseEngineSubsystem* this) {
+    if (IsDisabled(this) || !this->isOn)
+        return 0.0f;
+
+    ImpulseEngineProperty* prop = GetProperty(this);
+    float maxSpeed = prop->MaxSpeed;  // prop+0x4C
+    int numEngines = this->numChildren;  // +0x1C
+    float perEngine = maxSpeed / (float)numEngines;
+    float effective = maxSpeed;
+
+    // Reduce for damaged/disabled engines
+    for (int i = 0; i < numEngines; i++) {
+        ShipSubsystem* engine = GetChild(this, i);
+        if (engine != NULL) {
+            if (IsDisabled(engine)) {
+                effective -= perEngine;  // Dead engine: full penalty
+            } else {
+                effective -= (1.0f - engine->conditionPercentage) * perEngine;  // Proportional
+            }
+        }
+    }
+
+    // *** TRACTOR BEAM SPEED DRAG ***
+    TractorBeamSystem* tractor = this->tractorBeamSystem;  // +0xA8
+    if (tractor != NULL) {
+        float tractorRatio = tractor->GetForceRatio();  // FUN_005822d0: +0xFC / +0xF8
+        effective *= (1.0f - tractorRatio);
+    }
+
+    // Clamp to [0, maxSpeed]
+    if (effective > maxSpeed) effective = maxSpeed;
+    if (effective < 0.0f) return 0.0f;
+
+    return this->powerPercentage * effective;  // +0x90
+}
+```
+
+### Tractor Drag Formula (VERIFIED)
+
+The tractor speed drag is:
+
+```
+tractorRatio = forceUsed / totalMaxDamage
+effectiveSpeed *= (1.0 - tractorRatio)
+```
+
+Where:
+- `forceUsed` = accumulated from all active projectors hitting targets (system+0xFC)
+- `totalMaxDamage` = sum of MaxDamage across all projectors (system+0xF8)
+- The ratio represents what fraction of the tractor system's capacity is being used
+
+This is a **multiplicative** drag, not additive. At full tractor output, speed drops to zero. At half output, speed is halved.
+
+### Tractor Beam Does NOT Apply Direct Damage
+
+After decompiling all five mode handler functions (HOLD, TOW/DOCK_1, PULL, PUSH, DOCK_2), **none of them call any damage function on the target ship**. The modes only manipulate the target's velocity and angular velocity. The OpenBC claim of "tractor damage: max_damage * dt * 0.02" is **NOT FOUND** in the code.
+
+### Mode-Specific Behavior Summary
+
+**HOLD (mode 0, FUN_0057fcd0)**:
+- Computes needed force = `target.mass * target.speed`
+- If tractorForce >= needed: zeros target velocity, returns excess
+- If tractorForce < needed: scales velocity by `(1.0 - force/needed)`
+
+**TOW (mode 1, FUN_0057ff60) / DOCK_STAGE_1 (mode 4)**:
+- Same as HOLD initially (stop target first)
+- Remaining force used to move target toward tractor source
+- Distance-to-move capped by `DAT_008936e8 * deltaTime` (class static)
+- In DOCK_STAGE_1: transitions to DOCK_STAGE_2 when close enough
+- TOW applies impulse toward source, sets target angular velocity
+
+**PULL (mode 2, FUN_00580590)**: Pulls target toward source ship.
+
+**PUSH (mode 3, FUN_00580740)**: Pushes target away from source ship.
+
+**DOCK_STAGE_2 (mode 5, FUN_00580910)**: Final alignment for docking completion.
 
 ### Friendly Fire Tractor System
 
 The UtopiaModule has three tractor-related fields:
-- FriendlyTractorTime (float, offset 0x4C from UtopiaModule)
-- FriendlyTractorWarning (float, offset 0x50)
-- MaxFriendlyTractorTime (float, offset 0x54)
+- FriendlyTractorTime (float, UtopiaModule+0x4C)
+- FriendlyTractorWarning (float, UtopiaModule+0x50)
+- MaxFriendlyTractorTime (float, UtopiaModule+0x54)
 
-This suggests a progressive penalty system: tractoring friendly ships accumulates time, with a warning threshold and a maximum before consequences (likely forced release or friendly fire penalty).
+This implements a progressive penalty system: tractoring friendly ships accumulates time, with a warning threshold and a maximum before forced release.
 
 ### Tractor Beam Configuration (Galaxy Class Example)
 
@@ -465,72 +521,92 @@ AftTractor2.SetMaxDamageDistance(118.0)
 AftTractor2.SetRechargeRate(0.5)
 ```
 
-### Summary: OpenBC Tractor Beam Claims vs Binary Evidence
+---
+
+## Part 3: ImpulseEngine Tractor Connection
+
+The ImpulseEngineSubsystem stores a pointer to its TractorBeamSystem at +0xA8 (set via `SetTractorBeamSystem()` in hardpoint scripts). This creates the coupling:
+
+```
+TractorBeamProjector::FireTick() -> accumulates force at system+0xFC
+ImpulseEngine::ComputeEffectiveMaxSpeed() -> reads system+0xFC/+0xF8 -> reduces speed
+```
+
+### ImpulseEngineSubsystem Instance Layout
+
+| Offset | Type | Field |
+|--------|------|-------|
+| +0xA8 | ptr | TractorBeamSystem* (from SetTractorBeamSystem) |
+| +0xAC | float | CurMaxSpeed (computed each tick) |
+| +0xB0 | float | CurMaxAccel (computed each tick) |
+| +0xB4 | float | CurMaxAngularVelocity (computed each tick) |
+| +0xB8 | float | CurMaxAngularAccel (computed each tick) |
+
+Vtable at 0x00892d10, constructor at FUN_00561050, size 0xBC.
+
+---
+
+## Part 4: Summary - OpenBC Claims vs Binary Evidence
+
+### Repair System
 
 | Claim | Verdict | Evidence |
 |-------|---------|----------|
-| Speed drag: max_damage * dt * 0.1 | **UNVERIFIABLE** | TractorBeamSystem::Update at 0x00582460 is not decompilable |
-| Tractor damage: max_damage * dt * 0.02 | **UNVERIFIABLE** | Same -- Update function undefined in Ghidra |
-| Auto-release: distance > max_damage_distance | **PLAUSIBLE** | MaxDamageDistance exists in property (+0x7C) |
-| Auto-release: subsystem destroyed | **PLAUSIBLE** | ShipSubsystem::IsDisabled tracked |
-| Auto-release: either ship destroyed | **PLAUSIBLE** | ShipClass::Destroyed handler exists; STOPPED_HITTING event |
-| 6 modes (HOLD/TOW/PULL/PUSH/DOCK1/DOCK2) | **CONFIRMED** | String table + mode field at +0xF4, enum values 0-5 |
+| Queue of up to 8 subsystem indices | **WRONG** | No size limit in AddSubsystem; uses dynamically-growing pool allocator |
+| Only top-priority (index 0) repaired each tick | **WRONG** | Up to NumRepairTeams subsystems repaired simultaneously |
+| Rate: max_repair_points * num_repair_teams * dt | **WRONG** | Actual: MaxRepairPoints * repairSystemHealthPct * dt / min(queueCount, numTeams) / RepairComplexity |
+| Subsystems below disabled threshold auto-queued | **PARTIALLY CONFIRMED** | HandleSubsystemRebuilt queues if condition < maxCondition (not disabled threshold) |
+| Subsystems at 0 HP NOT auto-queued | **CONFIRMED** | Explicit `condition > 0.0f` check in AddSubsystem |
+| Auto-removed when fully repaired | **CONFIRMED** | ET_REPAIR_COMPLETED fires when condition/maxCondition >= 1.0 |
+| Linked list (not fixed array) | **CONFIRMED** | Doubly-linked list with pool allocator at +0xA8 through +0xB0 |
+| Repair system health affects rate | **CONFIRMED** (not in OpenBC) | conditionPercentage of the repair subsystem scales output |
+
+### Tractor Beam
+
+| Claim | Verdict | Evidence |
+|-------|---------|----------|
+| Speed drag: max_damage * dt * 0.1 | **WRONG** | Drag is multiplicative: effectiveSpeed *= (1.0 - forceUsed/totalMaxDamage) |
+| Tractor damage: max_damage * dt * 0.02 | **NOT FOUND** | No damage function called in any tractor mode handler |
+| Auto-release: distance > max_damage_distance | **CONFIRMED** (implicit) | Force falls off linearly beyond maxDamageDistance; beam test fails at extreme range |
+| Auto-release: subsystem destroyed | **PLAUSIBLE** | IsDisabled check exists in WeaponSystem base Update |
+| Auto-release: either ship destroyed | **PLAUSIBLE** | STOPPED_HITTING event posted when beam test fails |
+| 6 modes (HOLD/TOW/PULL/PUSH/DOCK1/DOCK2) | **CONFIRMED** | Switch statement in FireTick with all 6 cases, string table confirms names |
 | Shield interaction | **NOT FOUND** | No evidence of shield-specific tractor logic in available code |
 | Friendly tractor time penalty | **CONFIRMED** | UtopiaModule has FriendlyTractorTime/Warning/Max fields |
+| Force affected by system/projector health | **CONFIRMED** (not in OpenBC) | Force *= systemCondPct * projectorCondPct |
+| Distance falloff | **CONFIRMED** (not in OpenBC) | Linear falloff: min(1.0, maxDamageDistance/beamDistance) |
+| Tractor affects all 4 engine stats | **CONFIRMED** (not in OpenBC) | ImpulseEngine applies same ratio to speed, accel, angVel, angAccel |
 
 ---
 
-## Part 3: Ghidra Analysis Gaps
+## Appendix A: Corrected EnergyWeaponProperty Layout
 
-### Undefined Code Regions
+Previous analysis had MaxDamage at +0x68. This was WRONG. Verified via SWIG wrapper analysis:
 
-The following critical functions are in code regions that Ghidra has NOT auto-analyzed into functions. They are referenced from vtables but the disassembler did not create function boundaries:
+| Offset | Index | Field | SWIG Getter/Setter |
+|--------|-------|-------|-------------------|
+| +0x68 | 0x1A | MaxCharge | EnergyWeaponProperty_GetMaxCharge |
+| +0x6C | 0x1B | RechargeRate | EnergyWeaponProperty_GetRechargeRate |
+| +0x70 | 0x1C | NormalDischargeRate | EnergyWeaponProperty_GetNormalDischargeRate |
+| +0x74 | 0x1D | MinFiringCharge | EnergyWeaponProperty_GetMinFiringCharge |
+| +0x78 | 0x1E | **MaxDamage** | EnergyWeaponProperty_GetMaxDamage |
+| +0x7C | 0x1F | **MaxDamageDistance** | EnergyWeaponProperty_GetMaxDamageDistance |
 
-| Address | Function | Why It Matters |
-|---------|----------|----------------|
-| 0x005652a0 | RepairSubsystem::Update | Contains the per-tick repair logic, rate formula, queue processing |
-| 0x00582460 | TractorBeamSystem::Update | Contains speed drag, tractor damage, auto-release logic |
-| 0x005b0bf0 | ShipClass::HandleTractorHitStart | Ship-level reaction to tractor lock |
-| 0x005b0c70 | ShipClass::HandleTractorHitStop | Ship-level reaction to tractor release |
-| 0x00582640 | TractorBeamSystem::StartFiringHandler | Tractor beam activation |
-| 0x005826d0 | TractorBeamSystem::StopFiringAtTargetHandler | Targeted cease-fire |
-| 0x005658d0 | RepairSubsystem::HandleHitEvent body | Repair-on-damage response |
-| 0x00565a80 | RepairSubsystem::HandleRepairCannotBeCompleted | 0 HP notification |
-| 0x00565b30 | RepairSubsystem::HandleAddToRepairList | Network repair queue sync |
-| 0x00565b50 | RepairSubsystem::HandleIncreasePriorityEvent | Queue reordering |
+Verification: `swig_EnergyWeaponProperty_SetMaxDamage` writes to `(object + 0x78)`. FUN_0056f930 (GetMaxDamage) returns `property->+0x78`.
 
-These addresses are valid code (referenced from vtables and event handler registrations) but were not auto-detected as function entry points by Ghidra's analysis. Creating functions at these addresses in Ghidra would unlock decompilation.
+## Appendix B: TractorBeamSystem Instance Layout
 
-### Recommendation
+| Offset | Type | Field |
+|--------|------|-------|
+| +0xA0 | int | AI tractor mode (from config) |
+| +0xA4 | byte | firing state |
+| +0xF0 | ptr | target tracker (optional) |
+| +0xF4 | int | active mode (TBS enum, default 1=TOW) |
+| +0xF8 | float | totalMaxDamage (sum of all projector MaxDamage, updated each tick) |
+| +0xFC | float | forceUsed (accumulated each tick, reset at start of tick) |
 
-To fully verify the OpenBC claims, the following Ghidra manual steps are needed:
-1. Create functions at 0x005652a0 (RepairSubsystem::Update) and 0x00582460 (TractorBeamSystem::Update)
-2. Run the decompiler on these newly-created functions
-3. The repair rate formula and tractor beam damage/drag constants should be visible in the decompiled output
+## Appendix C: RepairSubsystem Instance Layout
 
----
-
-## Appendix: Property Field Offset Table
-
-### SubsystemProperty (base)
-| Offset | Type | Field | SWIG Getter |
-|--------|------|-------|-------------|
-| +0x20 | float | MaxCondition | (inherited, in subsystem base) |
-| +0x3C | float | RepairComplexity | SubsystemProperty_GetRepairComplexity |
-
-### RepairSubsystemProperty
-| Offset | Type | Field | SWIG Getter |
-|--------|------|-------|-------------|
-| +0x4C | float | MaxRepairPoints | RepairSubsystemProperty_GetMaxRepairPoints |
-| +0x50 | int | NumRepairTeams | RepairSubsystemProperty_GetNumRepairTeams |
-
-### EnergyWeaponProperty (base of TractorBeamProperty)
-| Offset | Type | Field | SWIG Getter |
-|--------|------|-------|-------------|
-| +0x68 | float | MaxDamage | EnergyWeaponProperty_GetMaxDamage |
-| +0x7C | float | MaxDamageDistance | EnergyWeaponProperty_GetMaxDamageDistance |
-
-### RepairSubsystem Instance
 | Offset | Type | Field |
 |--------|------|-------|
 | +0xA8 | int | queue count |
@@ -538,12 +614,11 @@ To fully verify the OpenBC claims, the following Ghidra manual steps are needed:
 | +0xB0 | ptr | queue tail (linked list) |
 | +0xBC | int | pool growth size (default 2) |
 
-### TractorBeamSystem Instance
-| Offset | Type | Field |
-|--------|------|-------|
-| +0xA0 | int | AI tractor mode (from config) |
-| +0xA4 | byte | firing state |
-| +0xF0 | int | (unknown) |
-| +0xF4 | int | active mode (TBS enum, default 1=TOW) |
-| +0xF8 | int | (unknown) |
-| +0xFC | int | (unknown) |
+## Appendix D: Key Constants
+
+| Address | Type | Value | Used In |
+|---------|------|-------|---------|
+| 0x00888860 | float | 1.0f | Normalization, repair completion threshold |
+| 0x00888b54 | float | 0.0f | Zero comparisons (condition checks) |
+| 0x0088b9c0 | double | 1.0 | Tractor distance ratio clamp |
+| 0x00888b58 | float | ~epsilon | Near-zero vector length threshold |

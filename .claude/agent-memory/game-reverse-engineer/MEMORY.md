@@ -22,40 +22,14 @@
 - See [complete-opcode-table.md](complete-opcode-table.md) for FULL verified opcode table (all 41 entries + Python msg types)
 
 ## RTTI / Type System (2026-02-15)
-- **NO MSVC RTTI** for game/engine code (compiled with /GR-)
-- Only 22 MSVC TypeDescriptors: all CRT/STL + `TGStreamException`
-- Uses **NetImmerse NiRTTI**: custom factory hash table at DAT_009a2b98
-- Registration pattern: `push factory_fn; push "ClassName"; call hash_insert`
-- Example: FUN_007e3670 registers "NiNode" with factory FUN_007e5450
-- ~670 unique C++ classes identified; 129 Ni*, 124 TG*, ~420 game-specific
-- 114 TG classes have SWIG Python bindings (~1340 wrapper methods)
-- Full catalog: [docs/rtti-class-catalog.md](../../docs/rtti-class-catalog.md)
-
-## NiRTTI Factory Registration (COMPLETE, 2026-02-15)
-- **117 classes** registered in DAT_009a2b98 hash table (113 Ni* + 2 TG* + 2 DD*)
-- Full mapping: [docs/nirtti-factory-catalog.md](../../docs/nirtti-factory-catalog.md)
-- Hash table: 37 buckets, 0xC-byte linked-list nodes {className, factoryFn, next}
-- Vtable at PTR_FUN_0088b7c4: hash(+0x04), compare(+0x08), setEntry(+0x0C), deleteEntry(+0x10)
-- Temp vtable PTR_LAB_0088b7d8 used during construction, then swapped to final
-- ALL registrations use identical template code (100% consistent pattern)
-- TG classes (TGDimmerController, TGFuzzyTriShape) share the SAME hash table as Ni classes
-- Consumer: FUN_008176b0 (NiStream::LoadObject) reads NIF class names, looks up factory
-- Error on lookup failure: "NiStream: Unable to find loader for..."
-- Guard flags span 0x0098d298 - 0x009b32f0 (one byte per class, set to 1 after registration)
+- NO MSVC RTTI (compiled /GR-); uses NiRTTI hash table at DAT_009a2b98
+- 117 factory registrations (113 Ni* + 2 TG* + 2 DD*); ~670 classes total
+- Full catalogs: [docs/rtti-class-catalog.md], [docs/nirtti-factory-catalog.md]
 
 ## NetImmerse Vtable Map (2026-02-15)
 - See [docs/netimmerse-vtables.md](../../docs/netimmerse-vtables.md) for FULL analysis
-- **CRITICAL**: NI 3.1 vtable slot 0 = GetRTTI (NOT destructor like Gb 1.2)
-- Destructor (scalar_deleting_dtor) is at slot 10 (+0x28)
-- Slot 11 (+0x2C) = 0x0040da50 = never-overridden no-op across ALL classes
-- NiObject: 12 slots at 0x00898b94 | NiObjectNET: 12 slots at 0x00898c48
-- NiAVObject: 39 slots at 0x00898ca8 | NiNode: 43 slots at 0x00898f2c
-- NiGeometry: 64 slots at 0x00899164 | NiTriShape: 68 slots at 0x00899264
-- Constructor chain: NiObject(007d87a0) -> NiObjectNET(007dac80) -> NiAVObject(007dc0c0)
-- NiObjectNET adds ZERO new virtuals (same 12 as NiObject)
-- NiAVObject adds 27 virtuals (slots 12-38), much more than Gb 1.2's ~14
-- NiNode adds 4 (AttachChild/DetachChild/DetachChildAt/SetAt) at slots 39-42
-- Vtable+0x28 = dtor pattern: `if(param&1) free(this)` = scalar_deleting_destructor
+- **CRITICAL**: NI 3.1 slot 0 = GetRTTI (NOT dtor); slot 10 = dtor (+0x28)
+- NiObject:12 | NiObjectNET:12 | NiAVObject:39 | NiNode:43 | NiGeometry:64 | NiTriShape:68
 
 ## BREAKTHROUGH: Black Screen SOLVED
 - Fix: Replace Mission1.InitNetwork with functional Appc API version
@@ -111,110 +85,74 @@
 | 0x006d2fd0 | ReadCompressedVector4 | Same pattern, 4 params; patched with vtable validation |
 | 0x006cefe0 | StreamReader ctor | Derived; vtable=PTR_LAB_00895c58; base=FUN_006d1fc0 |
 | 0x005b21c0 | ShipStateUpdateReceiver | Processes 0x1C packets; calls FUN_006d2eb0/FUN_006d2fd0 |
+| 0x005652a0 | RepairSubsystem::Update | vtable[25]; repair rate + multi-team loop (raw disasm) |
+| 0x00565520 | RepairSubsystem::AddSubsystem | Rejects dupes + condition<=0; no size limit |
+| 0x0056bd90 | ShipSubsystem::Repair | condition += repairPoints / repairComplexity |
+| 0x00582460 | TractorBeamSystem::Update | vtable[25]; sums MaxDamage, resets forceUsed (raw disasm) |
+| 0x00582280 | TractorBeamSystem::SumProjectorMaxDamage | Iterates children, sums property+0x78 |
+| 0x005822d0 | TractorBeamSystem::GetForceRatio | Returns +0xFC / +0xF8 |
+| 0x0057f8c0 | TractorBeamProjector::FireTick | Mode switch + force accumulation |
+| 0x00580f50 | ComputeTractorForce | maxDamage * condPct * distRatio * dt |
+| 0x00561180 | ImpulseEngineSubsystem::Update | vtable[25]; applies tractor drag (raw disasm) |
+| 0x00561230 | ComputeEffectiveMaxSpeed | Tractor drag: effective *= (1.0-forceRatio) |
+| 0x00561050 | ImpulseEngineSubsystem::ctor | vtable 0x00892d10, size 0xBC |
 
-## SOLVED: 0x1C Bad Pointer (Phase 2 Boot Crash)
-- See [tgl-null-crash.md](tgl-null-crash.md) for full analysis
-- Root cause: FUN_006d1e10 (TGLFile::FindEntry) returns `this+0x1c` as default
-- When TGL file fails to load, `this==NULL`, so returns `0+0x1c = 0x1c`
-- 0x1c passes all `TEST reg,reg / JZ` NULL checks but is an invalid pointer
-- Fix: Patch FUN_006d1e10 with code cave adding `TEST ECX,ECX / JZ return_null`
-- Single-point fix eliminates ALL downstream 0x1C crashes across dozens of callers
+## Solved Crashes & Fixes (see individual memory files for details)
+- **0x1C bad pointer**: TGLFile::FindEntry NULL this -> code cave fix. See [tgl-null-crash.md]
+- **Compressed vector crash**: corrupted vtable -> PatchCompressedVectorRead. See [compressed-vector-crash.md]
+- **Boot player kick**: subsystem hash=0 false positive -> PatchSubsystemHashCheck. See [boot-player-analysis.md]
+- **InitNetwork dupes**: see [initnet-duplicates.md]; **Collision damage**: see [collision-damage.md]
+- **Ship+0x140 NULL**: headless server Path 2, registry empty. See [ship-0x140-analysis.md]
 
-## Bug Fixes Summary
-- **InitNetwork duplicates**: removed manual FUN_006a1e70 call (see [initnet-duplicates.md])
-- **Collision damage missing**: call CreateSystemFromSpecies directly (see [collision-damage.md])
-- **SetClass_Create raw string**: use Appc functional API directly (see [set-creation-analysis.md])
+## Key Pipelines (see individual memory files)
+- Renderer: [renderer-pipeline-analysis.md]; NIF loading: [nif-loading-pipeline.md]
+- Ship creation: [ship-creation-callchain.md]; Subsystems: [subsystem-creation-analysis.md]
+- Ship Creation: FUN_0069f620 -> FUN_005a1f50 -> FUN_005b0e80 (vtable entry, InitObject)
+- TG_CallPythonFunction (FUN_006f8ab0): __import__ + getattr + PyObject_CallObject
+- Wire format: TorpedoFire=0x19, BeamFire=0x1A. See [complete-opcode-table.md]
 
-## Normal Host Flow for System Loading
-- HandleHostStartClicked -> ET_START -> HandleStartGame -> ship select -> StartMission -> CreateSystemFromSpecies
-- FUN_00504890 (ET_START): if MultiplayerGame exists, forwards to C++ handler; else sets up network fresh
+## GameSpy & LAN Discovery (2026-02-16)
+- Game "bcommander", key "Nm3aZ9", master port 27900/28900; QR code is DEAD CODE
+- LAN: UDP broadcast `\status\` to 255.255.255.255:22101-22201
+- Crypto: Modified RC4 + Base64. See [docs/gamespy-master-server.md], [docs/gamespy-crypto-analysis.md]
 
-## DISCONNECT ROOT CAUSE: TGBootPlayerMessage sub-cmd 4 (2026-02-09)
-- See [boot-player-analysis.md](boot-player-analysis.md)
-- Subsystem hash mismatch -> ET_BOOT_PLAYER -> kicks player
-- Server has no ship objects -> hash=0 -> false positive kick
-- FIX: PatchSubsystemHashCheck bypasses when list is NULL
+## Cut Content (2026-02-16)
+- See [docs/cut-content-analysis.md](../../docs/cut-content-analysis.md)
+- TestMenuState(g_Clock+0xB8)=2: all debug cheats. TGConsole: Python REPL. PlacementEditor.
+- Self-destruct: Ctrl+D bound, handler commented out. Tractor docking: 6 modes, ship+0x1E6=IsDocked
+- Friendly fire: progressive penalties. Opcodes 0x04/0x05 truly dead.
 
-## Renderer Pipeline (2026-02-09)
-- See [renderer-pipeline-analysis.md](renderer-pipeline-analysis.md), [renderer-device7-overread.md](renderer-device7-overread.md)
-- Active patches: PatchRendererMethods, PatchSkipDeviceLost, PatchRenderTick, PatchDeviceCapsRawCopy
-
-## Subsystem Creation Chain (2026-02-09)
-- See [subsystem-creation-analysis.md](subsystem-creation-analysis.md) for full analysis
-- See [nif-loading-pipeline.md](nif-loading-pipeline.md) for full NIF->subsystem trace (2026-02-10)
-- PatchSubsystemHashCheck ALREADY bypasses hash when subsystem list is NULL
-
-## NIF Loading Pipeline Analysis (2026-02-10)
-- See [nif-loading-pipeline.md](nif-loading-pipeline.md) for full call chain
-- See [ship-creation-callchain.md](ship-creation-callchain.md) for full HOST-side analysis (2026-02-13)
-
-## Ship+0x140 DamageTarget Analysis (2026-02-15)
-- See [ship-0x140-analysis.md](ship-0x140-analysis.md) for full analysis
-- +0x140 = NiNode for damage coordinate transforms; gate check in DoDamage (FUN_00594020)
-- +0x128/+0x130 = damage handler array/count for ProcessDamage (FUN_00593e50)
-- ALL set by FUN_00591b60 (SetModelName/vtable[0x128]) called via SetupModel SWIG wrapper
-- TWO code paths: registry lookup (0x00980798) success -> sets +0x140; failure -> DOES NOT
-- Root cause: headless server takes Path 2 (registry empty), +0x140 stays NULL
-
-## Ship Creation Call Chain (2026-02-13)
-- FUN_0069f620 (ObjCreateTeam handler) -> FUN_005a1f50 (deserialize) -> FUN_005b0e80 (InitObject)
-- FUN_005b0e80 is a VTABLE ENTRY (never called directly) in Ship ReadStream chain
-- FUN_006f8ab0 (TG_CallPythonFunction) does NOT use PyRun_SimpleString
-  - Uses: FUN_006f7d90 (__import__) + FUN_0074c140 (getattr) + FUN_00776cf0 (PyObject_CallObject)
-  - SHOULD work in TIMERPROC context (different code path)
-- FUN_006f7d90 converts dots to underscores for sys.modules key
-- Possible InitObject failure: import fails, Python exception, or deserialization never reaches vtable
-
-## SOLVED: Compressed Vector Read Crash (2026-02-09)
-- See [compressed-vector-crash.md](compressed-vector-crash.md) for full analysis
-- FUN_006d2eb0 / FUN_006d2fd0: read compressed vectors via 4 vtable calls
-- If vtable corrupted, callee-clean stack params strand 24 bytes -> misaligned ESP -> crash
-- FIX: PatchCompressedVectorRead validates vtable in .rdata range before entering function
-
-## Wire Format Opcode Table CORRECTED (2026-02-09)
-- See [torpedo-beam-network.md](torpedo-beam-network.md), [complete-opcode-table.md](complete-opcode-table.md)
-- TorpedoFire=0x19, BeamFire=0x1A (not 0x09/0x0A as spec said)
-
-## GameSpy Master Server & LAN Discovery (2026-02-16)
-- See [docs/gamespy-master-server.md](../../docs/gamespy-master-server.md) for complete analysis
-- See [docs/gamespy-crypto-analysis.md](../../docs/gamespy-crypto-analysis.md) for challenge-response crypto
-- GameSpy object: 0xF4 bytes at UtopiaModule+0x7C, vtable PTR_FUN_00895564
-- QR (heartbeat) code EXISTS but is **DEAD CODE** -- qr_init at 0x006ab558 never called
-- Static qr_t at 0x0095a740 is zeroed, active flag=0, master sockaddr zeroed
-- Game name: "bcommander", Secret key: "Nm3aZ9", Master port: 27900 (UDP heartbeat), 28900 (TCP browser)
-- Default master: stbridgecmnd01.activision.com, override via masterserver.txt
-- LAN: UDP broadcast to 255.255.255.255, query format `\status\`, port range scan
-- **Crypto**: Modified RC4 (PRGA uses `i = data[n]+1+i` instead of `i = i+1`) + standard Base64 encoding
-- Fully reimplementable; see crypto analysis doc for standalone C code
-
-## Cut Content Analysis (2026-02-16)
-- See [docs/cut-content-analysis.md](../../docs/cut-content-analysis.md) for full report
-- **TestMenuState** at g_Clock+0xB8: set to 2 to enable all debug cheats (god mode, kill target, quick repair)
-- **TGConsole**: Full Python REPL, TopWindow.ToggleConsole(), TGConsole.EvalString()
-- **PlacementEditor**: In-game level editor with save/load (requires edit mode)
-- **Self-destruct**: Ctrl+D bound, SELF_DESTRUCT_REQUEST_MESSAGE exists (0 xrefs), handler commented out
-- **Tractor docking**: 6 modes (HOLD/TOW/PULL/PUSH/DOCK_STAGE_1/DOCK_STAGE_2), ship+0x1E6=IsDocked
-- **Friendly fire**: Full penalty system with progressive warnings + game-over threshold
-- **Opcodes 0x04/0x05 truly dead**; 0x17=DeletePlayerUI, 0x18=PlayerLeftText, 0x1C=SendObjectResponse
-
-## Repair System & Tractor Beam (2026-02-17)
-- See [docs/repair-tractor-analysis.md](../../docs/repair-tractor-analysis.md) for full analysis
+## Repair System & Tractor Beam (2026-02-17, COMPLETE)
+- See [docs/repair-tractor-analysis.md](../../docs/repair-tractor-analysis.md) for full verified analysis
 - **RepairSubsystem**: vtable 0x00892e24, size 0xC0, ctor FUN_00565090
+- **RepairSubsystem::Update** at 0x005652a0: DECOMPILED via raw objdump (undefined in Ghidra)
 - **NO queue size limit** (OpenBC claims 8 -- WRONG); uses dynamic pool allocator
 - Queue is doubly-linked list at +0xA8(count)/+0xAC(head)/+0xB0(tail)
-- AddSubsystem (FUN_00565520): rejects duplicates, rejects condition<=0.0 (destroyed)
-- Repair() (FUN_0056bd90): `condition += repairPoints / repairComplexity`
+- **Repair formula**: `MaxRepairPoints * repairSystemHealthPct * dt / min(queueCount,numTeams) / RepairComplexity`
+- **Multiple subsystems repaired simultaneously** (up to NumRepairTeams) -- OpenBC "only top priority" is WRONG
+- Repair system's OWN health scales output (damaged repair bay = slower repairs)
 - RepairSubsystemProperty: +0x4C=MaxRepairPoints(float), +0x50=NumRepairTeams(int)
-- RepairSubsystem::Update at 0x005652a0 is **UNDEFINED IN GHIDRA** (vtable slot 25)
 - **TractorBeamSystem**: vtable 0x00893794, size 0x100, ctor FUN_00582080
+- **TractorBeamSystem::Update** at 0x00582460: DECOMPILED via raw objdump
 - 6 modes: HOLD(0)/TOW(1)/PULL(2)/PUSH(3)/DOCK1(4)/DOCK2(5); default=1(TOW)
-- Mode field at +0xF4; AI config mode at +0xA0
-- TractorBeamSystem::Update at 0x00582460 also **UNDEFINED IN GHIDRA**
-- **TractorBeamProjector**: vtable 0x008936f0, size 0x100, ctor FUN_0057ec70
-- Projector::Update (FUN_00581020): caches maxDamage at +0xA0
-- EnergyWeaponProperty: +0x68=MaxDamage, +0x7C=MaxDamageDistance
-- Galaxy: forward tractor MaxDamage=50.0, aft=80.0, MaxDamageDistance=118.0
+- Mode at +0xF4; +0xF8=totalMaxDamage (sum all projectors); +0xFC=forceUsed (reset each tick)
+- **Tractor drag**: multiplicative `effectiveSpeed *= (1.0 - forceUsed/totalMaxDamage)` -- OpenBC additive formula WRONG
+- **NO tractor damage**: none of 5 mode handlers call any damage function -- OpenBC claim NOT FOUND
+- **Distance falloff**: `min(1.0, maxDamageDistance/beamDistance)` -- new finding, not in OpenBC
+- **Health scaling**: force *= systemCondPct * projectorCondPct -- new finding
+- **ImpulseEngineSubsystem**: vtable 0x00892d10, ctor FUN_00561050, size 0xBC
+- +0xA8=TractorBeamSystem* (set via SetTractorBeamSystem), couples tractor to engine
+- ComputeEffectiveMaxSpeed at FUN_00561230: applies tractor ratio to all 4 stats
+- **EnergyWeaponProperty CORRECTED**: +0x68=MaxCharge, +0x78=MaxDamage, +0x7C=MaxDamageDistance
 - FriendlyTractorTime/Warning/Max at UtopiaModule +0x4C/+0x50/+0x54
+
+## Ghidra Undefined Code Workaround (2026-02-17)
+- Some vtable entries point to addresses NOT in Ghidra's function database
+- All Ghidra MCP calls (decompile/disassemble/rename/set_prototype) fail on these
+- **Workaround**: `i686-w64-mingw32-objdump -d -M intel --start-address=X --stop-address=Y stbc.exe`
+- PE offset calc: file_offset = (VA - section_VA) + section_file_offset
+- Successfully decompiled: RepairSubsystem::Update, TractorBeamSystem::Update, ImpulseEngine::Update, ComputeEffectiveMaxSpeed
+- DAT_0088b9c0 = **1.0 as DOUBLE** (8 bytes) -- `fcomp QWORD PTR` reads double, not float
 
 ## Weapon Firing Mechanics (2026-02-17)
 - See [docs/weapon-firing-mechanics.md](../../docs/weapon-firing-mechanics.md) for full analysis
