@@ -1025,25 +1025,88 @@ Then encoded: `CompressedFloat16(speed)`.
 
 ### Flag 0x20 - Subsystem States (Round-Robin)
 
-Subsystems are serialized in a round-robin fashion: each update sends a few subsystems starting from where the previous update left off.
+Server-to-client only. Subsystems are serialized in a round-robin fashion from the ship's top-level subsystem linked list (`ship+0x284`). Each update sends a few subsystems starting from where the previous update left off.
 
 ```
-+0      1     u8       start_index         Index of first subsystem in this batch
-[repeated while stream_bytes_written < 10:]
-  +0    1     u8       subsystem_index     Index in the linked list
-  +0    var   data     subsystem_data      Written by subsystem->vtable[0x70](stream, flags)
-[end repeat]
++0      1     u8       start_index         Position in subsystem list where this batch begins
++1      var   data     subsystem_data      Per-subsystem WriteState output (variable length)
 ```
 
-The subsystem linked list is at `ship+0x284` (offset 0xA1 * 4 in the object). When the iterator reaches the end of the list, it wraps around to the beginning.
+**No count field**: the receiver reads subsystem data until the stream is exhausted (`streamPos >= dataLength`).
 
-Each subsystem writes its own state via `vtable[0x70]`. The exact format depends on the subsystem type (hull, shields, sensors, weapons, engines, etc.) but typically includes:
-- Current health percentage
-- Damage state
-- Active/disabled flag
-- Type-specific data (shield facing values, weapon charge, etc.)
+#### Subsystem List Order
 
-Budget: The serializer checks `stream_position - start_position < 10` to limit subsystem data to ~10 bytes per update.
+There is no fixed index table. The `start_index` is a position in the ship's serialization linked list at `ship+0x284`, whose contents and order are determined by the hardpoint script's `LoadPropertySet()` call order. Only **top-level system containers** remain in the list after `LinkAllSubsystemsToParents` (`FUN_005b3e20`) removes children. Individual weapons (phaser banks, torpedo tubes) and engines are serialized **recursively** within their parent's WriteState.
+
+#### Per-Subsystem WriteState Formats (vtable+0x70)
+
+Each subsystem writes variable-length data via `vtable+0x70` (WriteState). Three implementations exist:
+
+**Format 1: Base ShipSubsystem** (`0x0056d320`) — Hull, ShieldGenerator, individual children:
+```
+[condition: u8]           // (int)(currentCondition / GetMaxCondition() * 255.0)
+                          //   this+0x30 / property+0x20 * 255.0; 0xFF=full, 0x00=destroyed
+[child_0 WriteState]      // Recursive: each child writes its own block
+[child_1 WriteState]
+...
+```
+
+**Format 2: PoweredSubsystem** (`0x00562960`) — Sensors, Engines, Weapons, Cloak, Repair, Tractors:
+```
+[base WriteState]                 // Condition byte + recursive children
+if (isOwnShip == 0):             // Remote ship — include power data
+    [hasData: bit=1]             // WriteBit(1)
+    [powerPctWanted: u8]         // (int)(powerPercentageWanted * 100.0); this+0x90, range 0-100
+else:                            // Own ship — owner has local state
+    [hasData: bit=0]             // WriteBit(0)
+```
+
+**Format 3: PowerSubsystem** (`0x005644b0`) — Reactor/Warp Core only:
+```
+[base WriteState]                 // Condition byte + recursive children
+[mainBatteryPct: u8]             // (int)(mainBatteryPower / mainBatteryLimit * 255.0)
+                                 //   this+0xAC / property+0x48; 0xFF=full, 0x00=empty
+[backupBatteryPct: u8]           // (int)(backupBatteryPower / backupBatteryLimit * 255.0)
+                                 //   this+0xB4 / property+0x4C
+```
+PowerSubsystem ALWAYS writes both battery bytes regardless of isOwnShip.
+
+#### Round-Robin Algorithm
+
+From `Ship_WriteStateUpdate` (`0x005b17f0`), the per-object tracking structure at `iVar7+0x30` (cursor) and `iVar7+0x34` (index) persists across ticks:
+
+```
+if cursor == NULL:
+    cursor = ship->subsystemListHead   // ship+0x284
+    index = 0
+initialCursor = cursor
+WriteByte(stream, index)               // startIndex
+
+while (streamPos - budgetStart) < 10:  // 10-byte budget including startIndex
+    subsystem = cursor->data
+    cursor = cursor->next
+    subsystem->WriteState(stream, isOwnShip)
+    index++
+    if cursor == NULL:                 // End of list: wrap
+        cursor = ship->subsystemListHead
+        index = 0
+    if cursor == initialCursor: break  // Full cycle complete
+```
+
+#### Receiver (Flag 0x20 in `FUN_005b21c0`)
+
+```
+startIndex = ReadByte(stream)
+node = ship->subsystemListHead
+for i in range(startIndex): node = node->next  // Skip to start position
+while streamPos < dataLength:
+    subsystem = node->data
+    node = node->next
+    subsystem->ReadState(stream, timestamp)     // vtable+0x74 (inverse of WriteState)
+    if node == NULL: node = ship->subsystemListHead  // Wrap
+```
+
+For detailed subsystem type tables, linked list structure, and Sovereign-class example, see [stateupdate-subsystem-wire-format.md](stateupdate-subsystem-wire-format.md).
 
 ### Flag 0x40 - Cloak State
 
