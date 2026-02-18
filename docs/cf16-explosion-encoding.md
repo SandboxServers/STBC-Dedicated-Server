@@ -121,20 +121,20 @@ float CF16_Decode(uint16_t encoded) {
 [0x29]                        opcode (1 byte)
 [objectID]                    source object ID (uint32, 4 bytes)
 [position]                    CompressedVector4 (variable, ~7 bytes)
-[damage: CF16]                explosion damage (uint16, 2 bytes)
 [radius: CF16]                explosion radius (uint16, 2 bytes)
+[damage: CF16]                explosion damage (uint16, 2 bytes)
 ```
 
 **Sender**: `FUN_00595c60` at `0x00595c60` (`__thiscall`)
 - Iterates the explosion list at `this+0x13C`
-- Reads damage from explosion struct offset `+0x14`
-- Reads radius from explosion struct offset `+0x1C`
+- Reads radius from explosion struct offset `+0x14`
+- Reads damage from explosion struct offset `+0x1C`
 - Called from: `FUN_006a02a0` (RequestObj handler), `Handler_NewPlayerInGame_0x2A`
 
 **Receiver**: `Handler_Explosion_0x29` at `0x006A0080`
 - Dispatched from `MultiplayerGame_ReceiveMessage` jump table
-- Decodes position, then two CF16 values (damage, radius)
-- Creates damage info struct via `FUN_004bbde0`
+- Decodes position, then two CF16 values (radius, damage)
+- Creates ExplosionDamage struct: +0x14=radius, +0x18=radius^2 (precomputed), +0x1C=damage
 - Calls `ProcessDamage` to apply to target ship
 
 ## Precision Analysis: BC Remastered Weapon Type IDs
