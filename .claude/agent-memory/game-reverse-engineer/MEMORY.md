@@ -58,10 +58,16 @@
 - 0x0097FA88=IsClient(0=host), 0x0097FA89=IsHost(1=host), 0x0097FA8A=IsMultiplayer
 - See [stock-baseline-analysis.md](stock-baseline-analysis.md) for full evidence
 
-## 0x1C State Update & Subsystem Analysis (2026-02-09)
-- See [subsystem-state-update-analysis.md](subsystem-state-update-analysis.md)
-- FUN_005b17f0 flags: 0x20=subsystems, 0x80=weapons; ship+0x284=subsystem list
-- Ship creation is client-side; server receives replication via FUN_0069f620
+## 0x1C State Update & Subsystem Wire Format (COMPLETE 2026-02-18)
+- See [docs/stateupdate-subsystem-wire-format.md](../../docs/stateupdate-subsystem-wire-format.md) for FULL analysis
+- **Flag 0x20 = round-robin subsystem health**: walks ship+0x284 linked list (top-level only)
+- **NO fixed index table**: wire byte positions = linked list order = hardpoint AddToSet order
+- **Children REMOVED from 0x284**: individual weapons/engines become children of parent systems
+- **Variable-length per-subsystem**: base writes condition byte + recursively writes children
+- **3 WriteState variants**: Base(0x0056d320), PoweredSS(0x00562960), PowerSS(0x005644b0)
+- **10-byte budget per tick**: round-robin continues across ticks via per-object cursor at tracking+0x30/+0x34
+- **Key linking function**: FUN_005b5030 (LinkSubsystemToParent) removes weapons/engines from 0x284
+- **Sovereign has 11 top-level subsystems** (not 33; 33 includes children)
 
 ## Client Join Message Sequence (CRITICAL ORDER)
 - 0x00 (settings) -> 0x01 (GameInit) -> 0x35 (MISSION_INIT) -> 0x37 (SCORE)
@@ -96,7 +102,17 @@
 | 0x00731bb0 | NiTexture::ctor | Constructor; calls Init at 0x00731d20 |
 | 0x006f4d90 | NiString::Assign(src) | String copy; has NULL check (TEST EBP/JZ) |
 | 0x00504890 | MW::StartGameHandler | ET_START handler; creates WSN or forwards to MultiplayerGame |
-| 0x005b17f0 | Ship network state writer | Writes pos/orient/subsys/weapons to stream |
+| 0x005b17f0 | Ship_WriteStateUpdate | Writes pos/orient/subsys/weapons to stream |
+| 0x005b21c0 | Ship_ReadStateUpdate | Receives and applies state update from network |
+| 0x005b3e20 | Ship_LinkAllSubsystemsToParents | Post-creation: moves children from 0x284 to parent arrays |
+| 0x005b3e50 | Ship_AddSubsystemToLists | Adds subsystem to 0x284 (+ optionally 0x29C) |
+| 0x005b5030 | Ship_LinkSubsystemToParent | Identifies parent, AddChild, removes from 0x284 |
+| 0x0056c5c0 | ShipSubsystem_AddChildSubsystem | Grows child array at +0x20, increments +0x1C |
+| 0x0056d320 | ShipSubsystem_WriteState (base) | Condition byte + recurse children |
+| 0x00562960 | PoweredSubsystem_WriteState | Base + on/off bit + count byte |
+| 0x005644b0 | PowerSubsystem_WriteState | Base + 2 power pct bytes |
+| 0x0056c310 | ShipSubsystem_GetCondition | Returns property+0x20 (float) or 1.0 |
+| 0x0056c570 | ShipSubsystem_GetChildSubsystem | Returns array[index] from +0x20 |
 | 0x004360c0 | GetBoundingBox | vtable[0xE8], computes AABB from NiBound; see [bounding-box-crash.md](bounding-box-crash.md) |
 | 0x00419960 | GetModelBound | vtable[0xE4], returns NiBound*; NOT in Ghidra func DB (tiny function) |
 | 0x006d2eb0 | ReadCompressedVector3 | 3 vtable calls + decode; see [compressed-vector-crash.md] |
