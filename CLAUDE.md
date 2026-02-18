@@ -1,6 +1,6 @@
-# STBC Dedicated Server - Development Context
+# STBC Reverse Engineering - Development Context
 
-Headless dedicated server for Star Trek: Bridge Commander multiplayer, implemented as a DDraw proxy DLL. Cross-compiled from WSL2, drives the game engine via C code + embedded Python 1.5.
+Reverse engineering Star Trek: Bridge Commander to produce behavioral specifications for [OpenBC](https://github.com/SandboxServers/OpenBC), a clean-room reimplementation. Includes a DDraw proxy DLL for runtime instrumentation, Ghidra annotation scripts, and extensive RE documentation. Cross-compiled from WSL2.
 
 ## Repo Layout
 - `src/proxy/ddraw_main.c` - Entry point, includes 7 split files (~6260 lines total)

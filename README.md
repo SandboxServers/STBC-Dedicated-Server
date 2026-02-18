@@ -1,150 +1,165 @@
-# Star Trek: Bridge Commander - Dedicated Server
+# Star Trek: Bridge Commander - Reverse Engineering
 
-A headless dedicated server for Star Trek: Bridge Commander's multiplayer mode, implemented as a DirectDraw proxy DLL.
+Reverse engineering Star Trek: Bridge Commander (2002) to produce complete behavioral specifications for [OpenBC](https://github.com/SandboxServers/OpenBC), a clean-room reimplementation of the game's multiplayer systems.
 
-## How It Works
+## What This Repo Contains
 
-The game loads our `ddraw.dll` thinking it's the DirectDraw runtime. The DLL intercepts rendering calls (returning stubs for headless operation) while bootstrapping the game engine, embedded Python 1.5 scripting, and the multiplayer networking stack. The result is a fully functional game server with no GPU required.
+This is the **dirty room** side of a clean-room RE effort. Everything here touches the original binary (`stbc.exe`, 5.9MB, 32-bit x86) through Ghidra decompilation, runtime instrumentation, and packet captures. Findings are documented here, then distilled into address-free behavioral specs in the OpenBC repo.
 
-14 binary patches fix crash sites and skip renderer-dependent code paths at the x86 instruction level. A crash dump handler (`SetUnhandledExceptionFilter`) logs full diagnostics if anything unexpected occurs.
+### RE Documentation (44 docs)
+
+Detailed analysis of game internals: function call graphs, data structures, wire formats, vtable layouts, state machines, and protocol flows -- all with binary addresses and decompiled code references.
+
+### Ghidra Annotation Scripts (10 scripts)
+
+Automated scripts that name ~6,000 of the game's ~18,000 functions in Ghidra, covering SWIG bindings, Python C API, NiRTTI factories, vtables, and debug strings.
+
+### Decompiled Source (19 organized files, ~15MB)
+
+Ghidra C output organized by subsystem: core engine, game objects, multiplayer, networking, UI, mission logic, etc.
+
+### Decompiled Python Scripts (~1,228 files)
+
+The game's complete Python scripting layer: mission scripts, ship hardpoints, AI behaviors, UI handlers, and multiplayer logic.
+
+### Engine Reference Sources
+
+- **Gamebryo 1.2** full source (the engine BC's NetImmerse 3.1 evolved into)
+- **Gamebryo 2.6** source (later reference)
+- **MWSE** headers (Morrowind Script Extender, ships Gamebryo 1.2 struct definitions)
+- **nif.xml** (NIF file format specification from niftools, covers NI 3.1 field definitions)
+
+### Instrumentation Proxy (historical)
+
+A DDraw proxy DLL (`src/proxy/`) that originally served as a headless dedicated server prototype. It now primarily functions as a runtime instrumentation platform -- injecting function tracers, packet loggers, and binary patches into the running game for live analysis. The proxy intercepts COM interfaces (DirectDraw7, Direct3D7, Surface7) and hooks Winsock calls for packet capture.
+
+## Game Architecture
+
+- **Engine**: NetImmerse 3.1 (predecessor to Gamebryo), DirectDraw 7 / Direct3D 7
+- **Networking**: Winsock UDP (`TGWinsockNetwork`), star topology, GameSpy discovery
+- **Scripting**: Embedded Python 1.5.2 with SWIG 1.x bindings (`App`/`Appc` modules)
+- **Class hierarchy**: 670 RTTI classes (129 NetImmerse, 124 TotallyGames, ~420 game-specific)
+
+## Documentation Index
+
+### Wire Protocol
+| Document | Description |
+|----------|-------------|
+| [wire-format-spec.md](docs/wire-format-spec.md) | Complete UDP wire format: all opcodes, StateUpdate flags, compressed types |
+| [stateupdate-subsystem-wire-format.md](docs/stateupdate-subsystem-wire-format.md) | Subsystem health serialization: linked list order, 3 WriteState formats, round-robin |
+| [network-protocol.md](docs/network-protocol.md) | Protocol architecture, event system, handler dispatch tables |
+| [multiplayer-flow.md](docs/multiplayer-flow.md) | Client/server join flow from LAN discovery through gameplay |
+| [tgmessage-routing.md](docs/tgmessage-routing.md) | TGMessage relay architecture: star topology, opaque payload, no whitelist |
+| [collision-effect-protocol.md](docs/collision-effect-protocol.md) | Opcode 0x15 wire format, CompressedVec4 contacts, collision event class |
+| [cf16-explosion-encoding.md](docs/cf16-explosion-encoding.md) | CF16 compressed float: 8 scales, 4096 mantissa steps, precision analysis |
+| [objcreate-serialization.md](docs/objcreate-serialization.md) | Object creation packet serialization |
+| [message-trace-vs-packet-trace.md](docs/message-trace-vs-packet-trace.md) | Stock dedicated server opcode cross-reference (15-min session) |
+
+### Game Systems
+| Document | Description |
+|----------|-------------|
+| [damage-system.md](docs/damage-system.md) | Complete damage pipeline: collision, weapon, explosion paths, gate checks |
+| [combat-mechanics-re.md](docs/combat-mechanics-re.md) | Shields, cloak, weapons, repair, tractor -- consolidated combat RE |
+| [shield-system.md](docs/shield-system.md) | 6-facing ellipsoid shields, area/directed absorption, power-budget recharge |
+| [cloaking-state-machine.md](docs/cloaking-state-machine.md) | 4-state cloak machine, shield interaction, energy failure auto-decloak |
+| [weapon-firing-mechanics.md](docs/weapon-firing-mechanics.md) | Phaser charge/discharge, torpedo reload, CanFire gates, WeaponSystem loop |
+| [repair-tractor-analysis.md](docs/repair-tractor-analysis.md) | Repair teams (rate formula, complexity), tractor beam (6 modes, speed drag) |
+| [collision-detection-system.md](docs/collision-detection-system.md) | 3-tier collision: sweep-and-prune, bounding sphere, per-type narrow phase |
+| [subsystem-trace-analysis.md](docs/subsystem-trace-analysis.md) | Ship subsystem creation pipeline (traced from stock dedicated server) |
+| [disconnect-flow.md](docs/disconnect-flow.md) | Player disconnect: 3 detection paths, peer deletion, cleanup opcodes |
+| [objcreate-unknown-species-analysis.md](docs/objcreate-unknown-species-analysis.md) | ObjCreate with unknown species: failure modes, crash risks |
+| [cut-content-analysis.md](docs/cut-content-analysis.md) | Cut/hidden features: ghost missions, fleet AI, tractor docking, dev tools |
+
+### Discovery & Crypto
+| Document | Description |
+|----------|-------------|
+| [gamespy-discovery.md](docs/gamespy-discovery.md) | GameSpy LAN/internet discovery, QR1 protocol, master server |
+| [gamespy-master-server.md](docs/gamespy-master-server.md) | Master server protocol (333networks replacement) |
+| [gamespy-crypto-analysis.md](docs/gamespy-crypto-analysis.md) | GameSpy challenge-response cryptography |
+| [alby-rules-cipher-analysis.md](docs/alby-rules-cipher-analysis.md) | AlbyRules! stream cipher: discovery, algorithm, usage |
+
+### Engine Internals
+| Document | Description |
+|----------|-------------|
+| [rtti-class-catalog.md](docs/rtti-class-catalog.md) | Complete RTTI catalog: 670 classes across 3 hierarchies |
+| [gamebryo-cross-reference.md](docs/gamebryo-cross-reference.md) | 129 NI classes cross-referenced against Gb 1.2, MWSE, nif.xml |
+| [nirtti-factory-catalog.md](docs/nirtti-factory-catalog.md) | 117 NiRTTI factory registrations with addresses |
+| [netimmerse-vtables.md](docs/netimmerse-vtables.md) | Vtable maps for core NI classes (NiObject through NiTriShape) |
+| [function-map.md](docs/function-map.md) | Organized map of ~18,000 game functions |
+| [function-mapping-report.md](docs/function-mapping-report.md) | Annotation coverage: ~6,031 functions named (33%) |
+| [decompiled-functions.md](docs/decompiled-functions.md) | Key decompiled function analysis |
+| [swig-api.md](docs/swig-api.md) | SWIG Python binding reference (3,990 wrappers) |
+
+### Proxy & Instrumentation
+| Document | Description |
+|----------|-------------|
+| [architecture-overview.md](docs/architecture-overview.md) | DDraw proxy: COM chain, bootstrap phases, game loop |
+| [dedicated-server.md](docs/dedicated-server.md) | Headless server bootstrap, binary patches, crash handling |
+| [empty-stateupdate-root-cause.md](docs/empty-stateupdate-root-cause.md) | Why headless server sends empty state updates (NIF loading) |
+| [black-screen-investigation.md](docs/black-screen-investigation.md) | Client disconnect investigation (historical) |
+| [veh-cascade-triage.md](docs/veh-cascade-triage.md) | VEH crash recovery: why it was removed |
+
+### Guides
+| Document | Description |
+|----------|-------------|
+| [python-152-guide.md](docs/python-152-guide.md) | Python 1.5.2 survival guide: syntax traps, missing builtins |
+| [binary-patching-primer.md](docs/binary-patching-primer.md) | Code caves, JMP patches, NOPs |
+| [reading-decompiled-code.md](docs/reading-decompiled-code.md) | How to read Ghidra C output |
+| [developer-workflow.md](docs/developer-workflow.md) | Build, deploy, test, debug cycle |
+| [troubleshooting.md](docs/troubleshooting.md) | Symptom-to-cause reference |
+| [lessons-learned.md](docs/lessons-learned.md) | Debugging pitfalls and architecture insights |
+
+## Ghidra Annotation Scripts
+
+Run from Ghidra's Script Manager with `stbc.exe` loaded. Execute in order:
+
+| Script | Functions Named | What It Does |
+|--------|----------------|--------------|
+| `ghidra_annotate_globals.py` | 97 | Labels key globals, functions, and Python module tables |
+| `ghidra_annotate_nirtti.py` | 234 | Names NiRTTI factory + registration functions |
+| `ghidra_annotate_swig.py` | 3,990 | Names SWIG wrapper functions from PyMethodDef tables |
+| `ghidra_annotate_python_capi.py` | 137 | Names Python C API functions, type objects, module inits |
+| `ghidra_annotate_pymodules.py` | 266 | Walks 21 module method tables, names C implementations |
+| `ghidra_annotate_vtables.py` | 1,270 | Auto-discovers 97 vtables: virtuals, ctors, dtors |
+| `ghidra_annotate_swig_targets.py` | 4 | Traces SWIG wrappers to C++ targets |
+| `ghidra_discover_strings.py` | 548 | Names functions from debug strings, adds comments |
+
+**Total: ~6,031 functions named (33% of 18,247)**
+
+## Repo Structure
+
+```
+docs/                   RE analysis documents (44 files)
+tools/                  Ghidra annotation scripts (10 files)
+reference/
+  decompiled/           Ghidra C output (19 organized files, ~15MB)
+  scripts/              Decompiled game Python (~1,228 files)
+engine/
+  gamebyro-1.2-source/  Gamebryo 1.2 full source (reference)
+  gamebyro-2.6-source/  Gamebryo 2.6 source (reference)
+  mwse/                 MWSE headers (Gb 1.2 struct definitions)
+  nif.xml               NIF format spec (V3.1 field definitions)
+src/proxy/              DDraw instrumentation proxy (C source)
+src/scripts/            Python scripts for runtime analysis
+config/                 Server configuration
+game/                   Game installs for live testing (gitignored)
+```
 
 ## Requirements
 
-- **Star Trek: Bridge Commander** (GOG edition tested) installed in `game/server/` and `game/client/`
-- **WSL2** with `i686-w64-mingw32-gcc` cross-compiler (`apt install gcc-mingw-w64-i686`)
-- **Ghidra** with [GhidraMCP](https://github.com/LaurieWired/GhidraMCP) for reverse engineering (optional, for development)
+- **Star Trek: Bridge Commander** (GOG edition tested)
+- **Ghidra** with [GhidraMCP](https://github.com/LaurieWired/GhidraMCP) for decompilation
+- **WSL2** with `i686-w64-mingw32-gcc` (only needed for building the instrumentation proxy)
 
-## Quick Start
+## Build (Instrumentation Proxy)
 
 ```bash
-# Build the proxy DLL
-make build
-
-# Deploy to server game dir and launch
-make run-server
-
-# In another terminal, deploy client scripts and launch client
-make run-client
-
-# View server logs
-make logs-server
+make build          # Cross-compile ddraw.dll
+make deploy-server  # Deploy to game/server/
+make run-server     # Deploy + launch
+make logs-server    # View runtime logs
 ```
 
-## Build Targets
+## Related Projects
 
-| Target | Description |
-|--------|-------------|
-| `make build` | Cross-compile server `ddraw.dll` |
-| `make build-observe` | Cross-compile passive observer `ddraw.dll` |
-| `make deploy` | Deploy to both server and client game dirs |
-| `make deploy-server` | Deploy proxy DLL + server scripts to `game/server/` |
-| `make deploy-client` | Deploy observer DLL + client scripts to `game/client/` |
-| `make deploy-stockdedi` | Deploy observer DLL to stock dedicated server |
-| `make run-server` | Deploy + launch server |
-| `make run-client` | Deploy + launch client |
-| `make run-stockdedi` | Deploy + launch stock dedicated server (baseline comparison) |
-| `make logs-server` | Tail server logs (proxy, packet trace, dedicated init) |
-| `make logs-client` | Tail client debug log |
-| `make logs-stockdedi` | Tail stock dedicated server logs |
-| `make kill` | Kill all running `stbc.exe` processes |
-| `make clean` | Remove build artifacts |
-
-## Project Structure
-
-```
-src/proxy/              DDraw proxy DLL (C source)
-  ddraw_main.c          Main file: patches, game loop, crash handler (~4800 lines)
-  ddraw_ddraw7.c        IDirectDraw7 proxy (display modes, surface creation)
-  ddraw_d3d7.c          IDirect3D7 + IDirect3DDevice7 proxy
-  ddraw_surface7.c      IDirectDrawSurface7 proxy (Lock/Blt stubs)
-  ddraw_proxy.h         Shared structures and declarations
-  ddraw.def             DLL export definitions
-src/scripts/            Python scripts deployed to game
-  Custom/               Checksum-exempt server scripts
-    DedicatedServer.py  Server config and bootstrap (network, systems, settings)
-    ClientLogger.py     Client-side diagnostic hooks
-    Observer.py         Passive event counter (for stock-dedi analysis)
-    StateDumper.py      F12 state dump to file
-  Local.py              Server-side hook (checksum exempt)
-  ClientLocal.py        Client-side hook (deployed as Local.py on client)
-config/                 Server configuration files
-  dedicated.cfg         Trigger file (presence enables dedicated mode)
-docs/                   Reverse engineering notes and protocol documentation
-reference/              Decompiled game code for analysis
-  decompiled/           Ghidra C output (19 organized files, ~15MB)
-  scripts/              Decompiled Python scripts (~1228 files)
-game/                   Live game installs (gitignored)
-  server/               Server game directory
-  client/               Client game directory
-  stock-dedi/           Stock dedicated server (baseline comparison)
-```
-
-## Current Status
-
-**Client disconnects ~3 seconds after ship selection.**
-
-The server boots headless through all 4 phases, clients discover via LAN, checksums pass, and the client reaches ship selection with the player visible on the scoreboard. However, the client disconnects shortly after because the server sends empty StateUpdate packets (flags=0x00 instead of 0x20 with subsystem data). Root cause: NIF ship models can't load without a renderer, so the subsystem list at ship+0x284 is NULL.
-
-See [docs/black-screen-investigation.md](docs/black-screen-investigation.md) for the current investigation and [docs/empty-stateupdate-root-cause.md](docs/empty-stateupdate-root-cause.md) for the technical root cause analysis.
-
-## Technical Details
-
-- **Engine**: NetImmerse 3.1 (predecessor to Gamebryo)
-- **Graphics**: DirectDraw 7 / Direct3D 7 (all stubbed for headless operation)
-- **Networking**: Winsock UDP (`TGWinsockNetwork`), GameSpy LAN discovery
-- **Scripting**: Embedded Python 1.5 with SWIG 1.x bindings
-- **Executable**: 32-bit Windows (`stbc.exe`, ~5.9MB, base 0x400000)
-
-## Documentation
-
-### Getting Started
-| Document | Description |
-|----------|-------------|
-| [architecture-overview.md](docs/architecture-overview.md) | How the proxy DLL works: loading, COM chain, bootstrap, game loop |
-| [developer-workflow.md](docs/developer-workflow.md) | Build, deploy, test, debug cycle end-to-end |
-| [troubleshooting.md](docs/troubleshooting.md) | Symptom-to-cause matrix for known issues |
-
-### Reference
-| Document | Description |
-|----------|-------------|
-| [python-152-guide.md](docs/python-152-guide.md) | Python 1.5.2 survival guide: syntax traps, missing builtins, BC quirks |
-| [binary-patching-primer.md](docs/binary-patching-primer.md) | Code caves, JMP patches, NOPs — how and when to use each |
-| [reading-decompiled-code.md](docs/reading-decompiled-code.md) | How to read Ghidra C output: variables, vtables, constants |
-| [alby-rules-cipher-analysis.md](docs/alby-rules-cipher-analysis.md) | The AlbyRules! stream cipher: discovery, algorithm, implications |
-
-### Protocol & Network
-| Document | Description |
-|----------|-------------|
-| [wire-format-spec.md](docs/wire-format-spec.md) | UDP wire format, opcodes, fragmentation |
-| [network-protocol.md](docs/network-protocol.md) | Protocol architecture, event system, handler tables |
-| [multiplayer-flow.md](docs/multiplayer-flow.md) | Client/server join flow from discovery to gameplay |
-| [message-trace-vs-packet-trace.md](docs/message-trace-vs-packet-trace.md) | Stock-dedi opcode cross-reference |
-
-### Investigation & Analysis
-| Document | Description |
-|----------|-------------|
-| [black-screen-investigation.md](docs/black-screen-investigation.md) | Current issue: client disconnect after ship selection |
-| [empty-stateupdate-root-cause.md](docs/empty-stateupdate-root-cause.md) | Why server sends empty state updates |
-| [veh-cascade-triage.md](docs/veh-cascade-triage.md) | Why VEH crash recovery was removed |
-| [dedicated-server.md](docs/dedicated-server.md) | Bootstrap sequence, active patches, crash handling |
-| [lessons-learned.md](docs/lessons-learned.md) | Debugging pitfalls and architecture insights |
-
-### Engine Reference
-| Document | Description |
-|----------|-------------|
-| [swig-api.md](docs/swig-api.md) | SWIG Python binding reference |
-| [decompiled-functions.md](docs/decompiled-functions.md) | Key function analysis from Ghidra |
-| [function-map.md](docs/function-map.md) | Organized map of ~18K game functions |
-
-## Diagnostic Logs
-
-| Log File | Location | Content |
-|----------|----------|---------|
-| `ddraw_proxy.log` | Server game dir | Main proxy log (boot, patches, game loop events) |
-| `packet_trace.log` | Server game dir | Full packet hex dumps with opcode decoding |
-| `tick_trace.log` | Server game dir | Per-tick CSV (players, packets, timers, memory) |
-| `dedicated_init.log` | Server game dir | Python-side boot and runtime log |
-| `crash_dump.log` | Server game dir | Full crash diagnostics (registers, stack, code bytes) |
-| `client_debug.log` | Client game dir | Client-side handler tracing |
-
-See [CLAUDE.md](CLAUDE.md) for full development context including key globals, address references, and agent workflow.
+- **[OpenBC](https://github.com/SandboxServers/OpenBC)** -- Clean-room reimplementation of BC's multiplayer, built from behavioral specs derived from this RE work
