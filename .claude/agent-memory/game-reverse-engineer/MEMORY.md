@@ -21,6 +21,21 @@
 - See [torpedo-beam-network.md](torpedo-beam-network.md) for corrected opcode table
 - See [swig-method-tables.md](swig-method-tables.md) for App/Appc SWIG method table analysis (3990 entries at 0x008e6438)
 - See [complete-opcode-table.md](complete-opcode-table.md) for FULL verified opcode table (all 41 entries + Python msg types)
+- See [tgmessage-wire-format.md](tgmessage-wire-format.md) for TGMessage Python script message framing
+
+## TGMessage Script Messages (2026-02-17)
+- **Transport type**: 0x32 (same as all game payloads); NOT a separate transport type
+- **MAX_MESSAGE_TYPES = 43** (0x2B); registered at 0x00654f31 in SWIG init
+- Script msg types = MAX_MESSAGE_TYPES + N: CHAT=44(0x2C), SCORE=55(0x37), END_GAME=56(0x38)
+- **No C++ header prepended**: stream bytes ARE the TGMessage payload directly
+- **First payload byte = message type** (written by Python's WriteChar); rest = app-specific data
+- **Always reliable in practice**: stock scripts always call SetGuaranteed(1)
+- **Dispatch**: C++ switch ignores opcodes > 0x2A; Python handlers read type byte themselves
+- **Groups**: "NoMe" = all peers except self, "Forward" = same; created by MultiplayerGame ctor
+- **Key functions**: FUN_006b4c10=SendTGMessage, FUN_006b4de0=SendTGMessageToGroup, FUN_006b4ec0=SendToGroupMembers
+- **TGMessage ctor**: FUN_006b82a0 (0x40 bytes), vtable 0x008958d0, GetType()=0x32
+- **SetDataFromStream** (0x006b8a00): copies stream.GetBuffer()/GetPos() via BufferCopy
+- See [docs/wire-format-spec.md](../../docs/wire-format-spec.md) "Python Message Dispatch" for full analysis
 
 ## RTTI / Type System (2026-02-15)
 - NO MSVC RTTI (compiled /GR-); uses NiRTTI hash table at DAT_009a2b98
@@ -84,7 +99,21 @@
 | 0x00419960 | GetModelBound | vtable[0xE4], returns NiBound*; NOT in Ghidra func DB (tiny function) |
 | 0x006d2eb0 | ReadCompressedVector3 | 3 vtable calls + decode; see [compressed-vector-crash.md] |
 | 0x006d2fd0 | ReadCompressedVector4 | Same pattern, 4 params; patched with vtable validation |
-| 0x006cefe0 | StreamReader ctor | Derived; vtable=PTR_LAB_00895c58; base=FUN_006d1fc0 |
+| 0x006cefe0 | TGBufferStream ctor | Derived; vtable=PTR_LAB_00895c58; base=FUN_006d1fc0 |
+| 0x006b4c10 | TGNetwork::SendTGMessage | __thiscall(this, targetID, msg, opt); 0=broadcast |
+| 0x006b4de0 | TGNetwork::SendTGMessageToGroup | __thiscall(this, groupName, msg) |
+| 0x006b4ec0 | TGNetwork::SendToGroupMembers | Iterates group, sends to each valid peer |
+| 0x006b5080 | TGNetwork::SendHelper | Queues msg to peer, manages reliable seq counters |
+| 0x006b82a0 | TGMessage ctor | Size 0x40, vtable 0x008958d0; GetType()=0x32 |
+| 0x006b8340 | TGMessage::WriteToBuffer | Serializer: type + flags_len + [seq] + payload |
+| 0x006b83f0 | TGMessage::ReadFromBuffer | Factory/deserializer for type 0x32 |
+| 0x006b8530 | TGMessage::GetData | Returns +0x04 (data_ptr), optionally writes +0x08 (len) |
+| 0x006b89e0 | TGMessage::GetBufferStream | Returns singleton at 0x996810 with msg data |
+| 0x006b8a00 | TGMessage::SetDataFromStream | Copies stream buffer into message data |
+| 0x006b4560 | TGWinsockNetwork::Update | Main loop: send states, process incoming, post events |
+| 0x006b52b0 | TGNetwork::GetNextReceivedMsg | Dequeues with reliable ordering + reassembly |
+| 0x006b70d0 | TGNetwork::AddGroup | Registers named group for SendTGMessageToGroup |
+| 0x0069e590 | MultiplayerGame ctor | Creates "NoMe"/"Forward" groups, registers all handlers |
 | 0x005b21c0 | ShipStateUpdateReceiver | Processes 0x1C packets; calls FUN_006d2eb0/FUN_006d2fd0 |
 | 0x005652a0 | RepairSubsystem::Update | vtable[25]; repair rate + multi-team loop (raw disasm) |
 | 0x00565520 | RepairSubsystem::AddSubsystem | Rejects dupes + condition<=0; no size limit |
@@ -109,6 +138,7 @@
 - Renderer: [renderer-pipeline-analysis.md]; NIF loading: [nif-loading-pipeline.md]
 - Ship creation: [ship-creation-callchain.md]; Subsystems: [subsystem-creation-analysis.md]
 - Ship Creation: FUN_0069f620 -> FUN_005a1f50 -> FUN_005b0e80 (vtable entry, InitObject)
+- **ObjCreate unknown species**: relay AFTER local create; empty hull persists; NO rejection. See [docs/objcreate-unknown-species-analysis.md]
 - TG_CallPythonFunction (FUN_006f8ab0): __import__ + getattr + PyObject_CallObject
 - Wire format: TorpedoFire=0x19, BeamFire=0x1A. See [complete-opcode-table.md]
 
@@ -198,3 +228,16 @@
 - 3-tier: sweep-and-prune -> bounding sphere -> per-type narrow; CLIENT-AUTHORITATIVE
 - ProximityManager vtable 0x008942D4; CheckCollision FUN_005671d0 (79K calls/session)
 - Energy: `clamp((force/mass/numContacts)*SCALE+OFFSET, 0, 0.5) * 6000`
+
+## CompressedFloat16 (CF16) Encoding (2026-02-17, CORRECTED)
+- See [docs/cf16-precision-analysis.md](../../docs/cf16-precision-analysis.md) for full analysis
+- **Encoder**: FUN_006d3a90 (__fastcall); **Decoder**: FUN_006d3b30 (__cdecl)
+- Format: [sign:1][scale:3][mantissa:12]; 8 log scales covering [0, 10000)
+- Constants: BASE=0.001 (DAT_00888b4c), MULT=10.0 (DAT_0088c548)
+- **ENC_SCALE=4095.0** (DAT_00895f50), **DEC_SCALE=float32(1/4095)** (DAT_00895f54)
+- NOTE: Decoder uses 1/4095, NOT 1/4096; mantissa 4095 = top of range (symmetric)
+- Encoder truncates (floor), decoder divides by 4095: always slightly LOSSY
+- **Explosion sender**: FUN_00595c60; writes opcode, objID, CV4 pos, CF16 **radius**, CF16 **damage**
+- **Explosion receiver**: 0x006A0080; field order is radius THEN damage (NOT damage then radius)
+- ExplosionDamage struct (0x38): +0x14=radius, +0x18=radius^2, +0x1C=damage
+- **Mod damage identifiers DO NOT survive CF16**: 15.0->14.99, 2063.0->2061.54 (always rounds down)
