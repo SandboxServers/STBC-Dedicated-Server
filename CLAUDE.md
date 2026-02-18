@@ -216,6 +216,11 @@ Then opcode 0x01 (single byte).
 - [docs/cut-content-analysis.md](docs/cut-content-analysis.md) - Cut/hidden features: ghost missions (Borg Hunt, Enterprise Assault), fleet command AI, tractor docking, self-destruct, dev tools, restoration priorities
 - [docs/disconnect-flow.md](docs/disconnect-flow.md) - Player disconnect flow: 3 detection paths (timeout/graceful/kick), peer deletion convergence, event cascade, cleanup opcodes (0x14/0x17/0x18), Python layer
 - [docs/collision-effect-protocol.md](docs/collision-effect-protocol.md) - CollisionEffect (opcode 0x15) RE: wire format (22+N*4 bytes), CompressedVec4_Byte contacts, handler validation chain, CollisionEvent class (0x44 bytes), event registration, vtable maps
+- [docs/combat-mechanics-re.md](docs/combat-mechanics-re.md) - Consolidated combat RE: shields (facing/absorption/recharge), cloak (4-state machine), weapons (phaser charge/torpedo reload), repair (queue/rate formula), tractor (multiplicative drag, no damage), Sovereign HP values, OpenBC corrections
+- [docs/shield-system.md](docs/shield-system.md) - Shield system: 6-facing ellipsoid, max-component facing determination, area vs directed absorption, power-budget recharge, cloak interaction
+- [docs/cloaking-state-machine.md](docs/cloaking-state-machine.md) - Cloak device: states 0/2/3/5 (ghost 1/4), transition timer, shield disable (HP preserved), weapon gating via PoweredSubsystem, energy failure auto-decloak
+- [docs/weapon-firing-mechanics.md](docs/weapon-firing-mechanics.md) - Weapons: phaser charge/discharge/intensity, torpedo reload/type-switch, CanFire gates, WeaponSystem update loop, wire formats
+- [docs/repair-tractor-analysis.md](docs/repair-tractor-analysis.md) - Repair: simultaneous teams, no queue limit, rate formula with RepairComplexity. Tractor: 6 modes (HOLD/TOW/PULL/PUSH/DOCK), multiplicative speed drag, no direct damage
 
 ## Ghidra Annotation Scripts
 Bulk annotation scripts in `tools/`. Run from Ghidra Script Manager with stbc.exe loaded.
