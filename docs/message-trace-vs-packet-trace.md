@@ -47,14 +47,21 @@ These are mutually exclusive by direction.
 Large checksum responses use fragmented reliable delivery:
 
 ```
-Flags byte in 0x32 wrapper:
-  bit 7 (0x80) = Reliable
-  bit 5 (0x20) = Fragmented
-  bit 0 (0x01) = More fragments follow
+Type 0x32 flags_len (LE u16):
+  bits 12-0 = total length (13-bit)
+  bit 13    = fragment flag
+  bit 14    = ordered
+  bit 15    = reliable
+
+When the high byte of flags_len is viewed in hex dumps:
+  0x80 = reliable (bit 15)
+  0x20 = fragmented (bit 13)
+  NOTE: bit 0 of high byte is NOT "more fragments" -- it is bit 8 of the 13-bit length
 
 Fragmented payload layout:
-  [fragment_index][total_fragments][inner_payload...]  (first fragment)
-  [fragment_index][continuation_data...]               (subsequent)
+  [fragment_index][total_fragments][inner_payload...]  (first fragment, frag_idx=0)
+  [fragment_index][continuation_data...]               (subsequent fragments)
+Last fragment detected when all indices 0..total_frags-1 collected (no "more" bit).
 ```
 
 Example: checksum response round 2 = 3 fragments, 412 bytes total:

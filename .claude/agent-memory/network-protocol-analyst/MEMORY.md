@@ -23,10 +23,14 @@
 - BYTE 0 NOT ENCRYPTED (direction flag: 0x01=server, 0x02=client, 0xFF=init)
 - See [encryption-analysis.md](encryption-analysis.md)
 
-### TGNetwork Message Framing (VERIFIED)
-- See [tgnetwork-message-types.md](tgnetwork-message-types.md)
+### TGNetwork Message Framing (CORRECTED 2026-02-17)
+- See [transport-header-format.md](transport-header-format.md) for FULL analysis
 - byte[0]=direction, byte[1]=msg_count, byte[2+]=messages
-- Type 0x01=ACK(4B), Type 0x32=Reliable wrapper
+- **CRITICAL**: Data messages use 16-bit LE flags_len field, NOT separate u8 totalLen + u8 flags
+- Format: `[type:1][flags_len:2 LE][seq:2 LE][payload]`
+- flags_len: bit15=reliable, bit14=priority, bit13=fragment, bit8=more_frags, bits13-0=totalLen
+- ACK (type 0x01) uses DIFFERENT format: `[0x01][seq:2 LE][flags:1]` (4-5 bytes)
+- Previous docs (tgnetwork-message-types.md) have WRONG header format
 
 ### Opcodes 0x35 and 0x37 (IDENTIFIED)
 - **0x35**: Game state after NewPlayerInGame: [maxPlayers][totalSlots][FF][FF]

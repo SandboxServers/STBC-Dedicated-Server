@@ -148,10 +148,17 @@ static void BC_DecryptPacket(const unsigned char *wire, unsigned char *plain, in
 /* ================================================================
  * Packet Decoder - Structured decode of decrypted TGNetwork packets
  *
- * Framing: [dir:1][peer_id:1][sequence:1][messages...]
- * Messages are either raw transport types or 0x32 reliable wrappers.
- * Inside reliable wrappers: [0x32][len][flags][seq_hi][seq_lo][payload]
- * The payload contains game opcodes (0x00-0x1E) or checksum opcodes (0x20-0x27).
+ * Framing: [peer_id:1][msg_count:1][messages...]
+ * Byte 0 (peer_id) is NOT encrypted; bytes 1+ are AlbyRules! decrypted.
+ *
+ * Transport message types (factory table at DAT_009962d4):
+ *   0x00 = TGDataMessage: [0x00][flags_len:2 LE][seq:2?][payload]
+ *          flags_len: 14-bit length, bit14=ordered, bit15=reliable. No fragments.
+ *   0x01 = TGHeaderMessage (ACK): [0x01][seq:2 LE][flags:1][frag_idx:1?]
+ *   0x02-0x05 = Connection management (Connect, ConnectAck, Boot, Disconnect)
+ *   0x32 = TGMessage (base): [0x32][flags_len:2 LE][seq:2?][frag_idx:1?][total:1?][payload]
+ *          flags_len: 13-bit length, bit13=fragment, bit14=ordered, bit15=reliable.
+ *          ALL game opcodes (0x00-0x2A, 0x2C-0x39) are carried as type 0x32 payloads.
  *
  * Implements all compression formats from wire-format-spec.md:
  * - CompressedFloat16 (logarithmic 16-bit float)
@@ -1098,15 +1105,24 @@ static void PktDecodeGameOpcode(FILE* f, unsigned char opcode, PktCursor* c, int
 }
 
 /* --- TGNetwork transport message type names --- */
+/* Factory table at DAT_009962d4 has 7 registered types:
+ *   0x00 = TGDataMessage (14-bit length, no fragment support)
+ *   0x01 = TGHeaderMessage (ACK - fixed 4-5 bytes)
+ *   0x02 = TGConnectMessage
+ *   0x03 = TGConnectAckMessage
+ *   0x04 = TGBootMessage
+ *   0x05 = TGDisconnectMessage
+ *   0x32 = TGMessage base (13-bit length, fragment support, ALL game payloads)
+ */
 static const char* PktTransportName(unsigned char type) {
     switch (type) {
-    case 0x00: return "Keepalive";
+    case 0x00: return "DataMsg";
     case 0x01: return "ACK";
-    case 0x03: return "Connect";
-    case 0x04: return "ConnectData";
-    case 0x05: return "ConnectAck";
-    case 0x06: return "Disconnect";
-    case 0x32: return "Reliable";
+    case 0x02: return "Connect";
+    case 0x03: return "ConnectAck";
+    case 0x04: return "Boot";
+    case 0x05: return "Disconnect";
+    case 0x32: return "GameData";
     default: return NULL;
     }
 }
@@ -1119,34 +1135,43 @@ static void PktDecodeTransportMessage(FILE* f, PktCursor* cur, int frameEnd, int
     msgType = PktReadU8(cur);
 
     if (msgType == 0x32) {
-        /* Reliable message wrapper: [0x32][totalLen][flags][seq_hi?][seq_lo?][payload] */
-        unsigned char totalLen, flags;
+        /* Type 0x32 = TGMessage base class (ALL game data)
+         * Wire: [0x32][flags_len:2 LE][seq:2 LE?][frag_idx:1?][total:1?][payload]
+         * flags_len: bits 12-0 = 13-bit total length (includes 0x32 byte)
+         *            bit 13 (0x20 in hi byte) = fragment
+         *            bit 14 (0x40 in hi byte) = ordered
+         *            bit 15 (0x80 in hi byte) = reliable */
+        unsigned short flagsLen;
+        unsigned short totalLen;
+        unsigned char flagsHi;
         unsigned short seqNum;
         unsigned char innerOpcode;
         int msgStart, innerStart, innerEnd;
+        int isReliable, isFragment;
 
         msgStart = cur->pos - 1; /* position of the 0x32 byte */
         if (!PktHas(cur, 2)) {
-            fprintf(f, "%s[msg %d] Reliable (truncated header)\n", prefix, msgNum);
+            fprintf(f, "%s[msg %d] GameData (truncated header)\n", prefix, msgNum);
             return;
         }
-        totalLen = PktReadU8(cur);
-        flags = PktReadU8(cur);
+        flagsLen = PktReadU16(cur); /* LE uint16 */
+        totalLen = flagsLen & 0x1FFF; /* 13-bit length */
+        flagsHi = (unsigned char)(flagsLen >> 8);
+        isReliable = (flagsLen >> 15) & 1;
+        isFragment = (flagsLen >> 13) & 1;
 
-        if (flags & 0x80) {
-            /* Reliable: has sequence number */
+        if (isReliable) {
             if (!PktHas(cur, 2)) {
-                fprintf(f, "%s[msg %d] Reliable len=%d flags=0x%02X (truncated seq)\n",
-                        prefix, msgNum, totalLen, flags);
+                fprintf(f, "%s[msg %d] GameData len=%d flags=0x%02X (truncated seq)\n",
+                        prefix, msgNum, totalLen, flagsHi);
                 return;
             }
-            seqNum = (unsigned short)(PktReadU8(cur) << 8) | PktReadU8(cur);
-            fprintf(f, "%s[msg %d] Reliable seq=%d len=%d flags=0x%02X",
-                    prefix, msgNum, seqNum, totalLen, flags);
+            seqNum = PktReadU16(cur); /* LE uint16 */
+            fprintf(f, "%s[msg %d] GameData seq=%d len=%d flags=0x%02X",
+                    prefix, msgNum, seqNum, totalLen, flagsHi);
         } else {
-            /* Unreliable: no sequence */
-            fprintf(f, "%s[msg %d] Unreliable len=%d flags=0x%02X",
-                    prefix, msgNum, totalLen, flags);
+            fprintf(f, "%s[msg %d] GameData(unrel) len=%d flags=0x%02X",
+                    prefix, msgNum, totalLen, flagsHi);
             seqNum = 0;
         }
 
@@ -1156,10 +1181,10 @@ static void PktDecodeTransportMessage(FILE* f, PktCursor* cur, int frameEnd, int
         if (innerEnd > frameEnd) innerEnd = frameEnd;
         if (innerEnd < innerStart) innerEnd = innerStart;
 
-        if (flags & 0x20) {
-            /* Fragmented reliable payload:
-             * first: [frag_idx][total_frags][inner_opcode][...]
-             * next : [frag_idx][continuation bytes...] */
+        if (isFragment) {
+            /* Fragmented payload:
+             * frag 0: [0x00][total_frags][inner_opcode][payload...]
+             * frag N: [frag_idx][continuation bytes...] */
             int fragIdx = -1;
             int fragTotal = -1;
             int fragPayloadLen;
@@ -1171,7 +1196,6 @@ static void PktDecodeTransportMessage(FILE* f, PktCursor* cur, int frameEnd, int
 
             fprintf(f, " frag=%d", fragIdx);
             if (fragTotal >= 0) fprintf(f, "/%d", fragTotal);
-            fprintf(f, " more=%d", (flags & 0x01) ? 1 : 0);
 
             if (fragIdx == 0 && cur->pos < innerEnd && PktHas(cur, 1)) {
                 innerOpcode = PktReadU8(cur);
@@ -1198,31 +1222,95 @@ static void PktDecodeTransportMessage(FILE* f, PktCursor* cur, int frameEnd, int
     }
 
     if (msgType == 0x01) {
-        /* ACK message: [01][seq][00][flags] = fixed 4 bytes total */
+        /* TGHeaderMessage (ACK): [0x01][seq:2 LE][flags:1][frag_idx:1?]
+         * flags bit 0 = is_fragment (ACKing a fragment)
+         * flags bit 1 = has_total_frags
+         * Total size: 4 bytes (non-fragment) or 5 bytes (fragment ACK) */
         if (PktHas(cur, 3)) {
-            unsigned char ackSeq = PktReadU8(cur);
-            PktReadU8(cur); /* padding */
-            PktReadU8(cur); /* flags */
-            fprintf(f, "%s[msg %d] ACK seq=%d\n", prefix, msgNum, ackSeq);
+            unsigned short ackSeq = PktReadU16(cur); /* LE uint16 */
+            unsigned char ackFlags = PktReadU8(cur);
+            if ((ackFlags & 1) && PktHas(cur, 1)) {
+                unsigned char fragIdx = PktReadU8(cur);
+                fprintf(f, "%s[msg %d] ACK seq=%d frag=%d\n", prefix, msgNum, ackSeq, fragIdx);
+            } else {
+                fprintf(f, "%s[msg %d] ACK seq=%d\n", prefix, msgNum, ackSeq);
+            }
         } else {
             fprintf(f, "%s[msg %d] ACK (truncated)\n", prefix, msgNum);
         }
         return;
     }
 
-    /* All other transport types: [type][totalLen][data...] */
+    if (msgType == 0x00) {
+        /* Type 0x00 = TGDataMessage: [0x00][flags_len:2 LE][seq:2?][payload]
+         * flags_len: 14-bit length, bit14=ordered, bit15=reliable. No fragments. */
+        unsigned short flagsLen;
+        unsigned short totalLen;
+        unsigned short seqNum;
+        int msgStart, innerEnd;
+        int isReliable;
+
+        msgStart = cur->pos - 1;
+        if (!PktHas(cur, 2)) {
+            fprintf(f, "%s[msg %d] DataMsg (truncated)\n", prefix, msgNum);
+            return;
+        }
+        flagsLen = PktReadU16(cur);
+        totalLen = flagsLen & 0x3FFF; /* 14-bit length */
+        isReliable = (flagsLen >> 15) & 1;
+
+        if (isReliable) {
+            if (!PktHas(cur, 2)) {
+                fprintf(f, "%s[msg %d] DataMsg len=%d (truncated seq)\n", prefix, msgNum, totalLen);
+                return;
+            }
+            seqNum = PktReadU16(cur);
+            fprintf(f, "%s[msg %d] DataMsg seq=%d len=%d\n", prefix, msgNum, seqNum, totalLen);
+        } else {
+            fprintf(f, "%s[msg %d] DataMsg(unrel) len=%d\n", prefix, msgNum, totalLen);
+        }
+
+        innerEnd = msgStart + totalLen;
+        if (innerEnd > frameEnd) innerEnd = frameEnd;
+        if (innerEnd < cur->pos) innerEnd = cur->pos;
+        /* Type 0x00 payload is typically raw data, not game opcodes */
+        if (cur->pos < innerEnd) {
+            int i, rem = innerEnd - cur->pos;
+            fprintf(f, "    data=[");
+            for (i = 0; i < rem && i < 32; i++)
+                fprintf(f, "%02X ", cur->data[cur->pos + i]);
+            if (rem > 32) fprintf(f, "...");
+            fprintf(f, "] (%d bytes)\n", rem);
+        }
+        cur->pos = innerEnd;
+        return;
+    }
+
+    /* Connection management types (0x02-0x05) and unknown types */
     {
         const char* tName = PktTransportName(msgType);
-        int msgStart = cur->pos - 1; /* position of type byte */
         int msgEnd;
+        (void)cur->pos; /* type byte already consumed */
 
+        /* Types 0x02-0x05 have type-specific serialization; for now just dump raw.
+         * We read the next byte as a rough length estimate (may not be accurate
+         * for all types -- their serializers vary). */
         if (PktHas(cur, 1)) {
-            unsigned char msgLen = PktReadU8(cur);
-            msgEnd = msgStart + msgLen;
-            if (msgEnd > frameEnd) msgEnd = frameEnd;
-            if (msgEnd < cur->pos) msgEnd = cur->pos;
-            fprintf(f, "%s[msg %d] %s (0x%02X) len=%d body=%d\n", prefix, msgNum,
-                    tName ? tName : "Transport", msgType, msgLen, msgEnd - cur->pos);
+            unsigned char firstByte = PktReadU8(cur);
+            /* For connect/disconnect msgs the second byte often indicates size.
+             * This is a heuristic; type-specific parsing would be better. */
+            msgEnd = frameEnd; /* consume rest of frame for safety */
+            fprintf(f, "%s[msg %d] %s (0x%02X) byte1=0x%02X remaining=%d\n", prefix, msgNum,
+                    tName ? tName : "Unknown", msgType, firstByte, frameEnd - cur->pos);
+            /* Dump a few bytes for debugging */
+            if (cur->pos < frameEnd) {
+                int i, rem = frameEnd - cur->pos;
+                if (rem > 32) rem = 32;
+                fprintf(f, "    data=[");
+                for (i = 0; i < rem; i++)
+                    fprintf(f, "%02X ", cur->data[cur->pos + i]);
+                fprintf(f, "]\n");
+            }
             cur->pos = msgEnd;
         } else {
             fprintf(f, "%s[msg %d] %s (0x%02X)\n", prefix, msgNum,
@@ -1247,17 +1335,17 @@ static void PktDecodeMessageBlob(FILE* f, const unsigned char* msgData, int msgL
 /* --- Main packet decoder: parses framing and dispatches to opcode decoders --- */
 static void PktDecodePacket(FILE* f, const unsigned char* dec, int len) {
     PktCursor cur;
-    unsigned char dir, msgCount;
+    unsigned char peerId, msgCount;
     const char* dirStr;
     int msgNum;
 
     if (len < 2) return;
 
-    dir = dec[0];
+    peerId = dec[0];   /* 0x01=server, 0x02+=clients, 0xFF=unassigned */
     msgCount = dec[1];
 
-    dirStr = (dir == 0x01) ? "S" : (dir == 0x02) ? "C" : (dir == 0xFF) ? "INIT" : "?";
-    fprintf(f, "  DECODE: dir=%s msgs=%d\n", dirStr, msgCount);
+    dirStr = (peerId == 0x01) ? "S" : (peerId == 0x02) ? "C" : (peerId == 0xFF) ? "INIT" : "?";
+    fprintf(f, "  DECODE: peer=%s(%d) msgs=%d\n", dirStr, peerId, msgCount);
 
     PktCursorInit(&cur, dec, len, 2);
 
@@ -1266,21 +1354,22 @@ static void PktDecodePacket(FILE* f, const unsigned char* dec, int len) {
     }
 }
 
-/* Quick opcode label for the packet header line (legacy compat) */
+/* Quick opcode label for the packet header line */
 static const char* PktIdentifyOpcode(const unsigned char* dec, int len) {
     unsigned char msgType;
     if (len < 3) {
         if (len <= 1) return "";
         return "[short]";
     }
-    msgType = dec[2]; /* first message type byte after [dir][msgCount] */
+    msgType = dec[2]; /* first message type byte after [peer_id][msg_count] */
     switch (msgType) {
-    case 0x00: return "[Keepalive]";
+    case 0x00: return "[DataMsg]";
     case 0x01: return "[ACK]";
-    case 0x03: return "[Connect]";
-    case 0x05: return "[ConnectAck]";
-    case 0x06: return "[Disconnect]";
-    case 0x32: return "[Reliable]";
+    case 0x02: return "[Connect]";
+    case 0x03: return "[ConnectAck]";
+    case 0x04: return "[Boot]";
+    case 0x05: return "[Disconnect]";
+    case 0x32: return "[GameData]";
     }
     return "";
 }
@@ -1334,7 +1423,7 @@ static void PktLog(const char* dir, const struct sockaddr_in* peer,
     label = peer ? PktGetPeerLabel(peer) : "unknown";
 
     /* GameSpy packets start with '\' (0x5C) - plaintext, not encrypted.
-     * TGNetwork game packets start with 0x01/0x02/0xFF - encrypted. */
+     * TGNetwork packets: byte 0 (peer_id) is NOT encrypted, bytes 1+ are AlbyRules! encrypted. */
     isGamePacket = (len > 0 && data[0] != '\\');
 
     if (isGamePacket && len > 1 && len <= (int)sizeof(decBuf)) {
@@ -1437,10 +1526,12 @@ static void PktTraceOpen(void) {
                 "# Session started: %04d-%02d-%02d %02d:%02d:%02d\n"
                 "# Format: [time] #seq DIR peer len=N rc=N [opcode]\n"
                 "# DIR: S->C = server to client, C->S = client to server\n"
-                "# Game packets decrypted with AlbyRules! cipher + structured decode\n"
-                "# Framing: [dir:1][peer:1][msgCount:1][messages...]\n"
-                "# Transport: 0x00=Keepalive 0x01=ACK 0x03=Connect 0x05=ConnectAck 0x06=Disconnect\n"
-                "# Reliable wrapper: [0x32][len][flags][seq_hi][seq_lo][game_opcode][payload]\n"
+                "# Game packets: byte 0 plaintext, bytes 1+ AlbyRules! decrypted\n"
+                "# Framing: [peer_id:1][msg_count:1][messages...]\n"
+                "# Transport types: 0x00=DataMsg 0x01=ACK 0x02=Connect 0x03=ConnectAck\n"
+                "#   0x04=Boot 0x05=Disconnect 0x32=GameData (all game payloads)\n"
+                "# GameData: [0x32][flags_len:2 LE][seq:2?][frag?][game_opcode][payload]\n"
+                "#   flags_len: 13-bit len, bit13=frag, bit14=ordered, bit15=reliable\n"
                 "# Game opcodes: 0x00=Settings 0x01=GameInit 0x02/03=ObjCreate 0x04=Boot\n"
                 "#   0x06/0D=Python 0x07=StartFire 0x08=StopFire 0x09=StopFireAt 0x0A=SubsysStatus\n"
                 "#   0x0E=StartCloak 0x0F=StopCloak 0x10=StartWarp 0x14=DestroyObj\n"

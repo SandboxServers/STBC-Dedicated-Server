@@ -1,7 +1,8 @@
 # TGNetwork Encryption Analysis
 
 ## Summary
-ALL bytes of every UDP game packet are encrypted. There is NO plaintext header.
+Byte 0 (sender player ID) is NOT encrypted. Bytes 1+ are encrypted via stream cipher.
+SendPacket/ReceivePacket explicitly skip byte 0: encrypt(buffer+1, length-1).
 
 ## Cipher Details
 - **Type**: Stream cipher with plaintext feedback (not simple XOR -- each byte affects PRNG state)
@@ -19,16 +20,25 @@ Both encrypt and decrypt call FUN_006c2280 (reset) as their FIRST operation. Thi
 - Each packet starts from the same cipher state
 - Same plaintext always produces same ciphertext (no inter-packet state)
 - The first PRNG output byte XOR happens to be 0x00 with "AlbyRules!" key
-- Byte 0 (player ID) passes through visually unchanged but IS encrypted
 
-## Wire Format (on the wire, encrypted)
+## Encryption Boundary (CONFIRMED from disassembly 2026-02-17)
+- SendPacket (0x006b9870): encrypts buffer+1, length-1 -- byte 0 NOT encrypted
+- ReceivePacket (0x006b95f0): decrypts buffer+1, length-1 -- byte 0 NOT decrypted
+- Byte 0 (player ID) is transmitted in PLAINTEXT on the wire
+- See [transport-layer.md](transport-layer.md) for full transport layer analysis
+
+## Wire Format
 ```
-[encrypted byte 0: sender player ID]
-[encrypted byte 1: message count]
-[encrypted bytes 2..N: concatenated serialized messages]
+[byte 0: sender player ID]  -- PLAINTEXT (not encrypted, skipped by cipher)
+[byte 1: message count]     -- ENCRYPTED
+[bytes 2..N: messages]      -- ENCRYPTED (each starting with type byte as factory table index)
 ```
 
-## Plaintext Format (after decryption)
+Note: The first PRNG output byte with "AlbyRules!" key happens to be 0x00, so even
+if byte 0 WERE encrypted, XOR with 0x00 = identity. The code explicitly skips it anyway
+(encrypt/decrypt called with buffer+1, length-1).
+
+## Plaintext Format (after decrypting bytes 1+)
 ```
 [byte 0: sender player ID] (0x01=server, 0x02=first client, 0xFF=unassigned/-1)
 [byte 1: message count] (0x00-0xFF, typically 0x01)
@@ -48,11 +58,10 @@ Both encrypt and decrypt call FUN_006c2280 (reset) as their FIRST operation. Thi
 2. vtable[0x6c] at 0x006b95f0 (TGWinsockNetwork::ReceivePacket) -- calls recvfrom, decrypts buffer
 3. `FUN_006b5c90` (ProcessIncomingPackets) -- reads byte[0]=senderID, byte[1]=count, dispatches each message via factory table at 0x009962d4
 
-## Unanalyzed Functions (critical gap)
-- 0x006b95f0: TGWinsockNetwork::ReceivePacket (vtable[0x6c]) -- NOT in Ghidra function DB
-- 0x006b9870: TGWinsockNetwork::SendPacket (vtable[0x70]) -- NOT in Ghidra function DB
-- 0x006b9e40: TGWinsockNetwork::DisconnectPeer (vtable[0x74]) -- NOT in Ghidra function DB
-- Entire region 0x006b95f0-0x006b999f is missing from decompiled reference files
+## Previously Unanalyzed Functions (NOW ANALYZED 2026-02-17)
+- 0x006b95f0: TGWinsockNetwork::ReceivePacket -- DISASSEMBLED via objdump, confirmed decrypt(buf+1, len-1)
+- 0x006b9870: TGWinsockNetwork::SendPacket -- DISASSEMBLED via objdump, confirmed encrypt(buf+1, len-1)
+- 0x006b9e40: TGWinsockNetwork::DisconnectPeer (vtable[0x74]) -- still unanalyzed
 
 ## Evidence (packet trace correlation)
 Server sends packet #3 (wire): `01 D7 33 68 C3 BF 76 DB` (8 bytes)

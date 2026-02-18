@@ -12,13 +12,17 @@
  * - Message size (from vtable[5] = GetSize method)
  * - Raw hex dump of decoded message body
  *
- * Known message types (from static analysis):
- *   0x00: FUN_006bc6a0  0x01: FUN_006bd1f0  0x02: FUN_006bdd10
- *   0x03: FUN_006be860  0x04: FUN_006badb0  0x05: FUN_006bf410
- *   0x32: FUN_006b83f0
+ * Registered message types (factory table at DAT_009962d4):
+ *   0x00: TGDataMessage    (FUN_006bc6a0) - 14-bit length, no fragments
+ *   0x01: TGHeaderMessage  (FUN_006bd1f0) - ACK messages
+ *   0x02: TGConnectMessage (FUN_006bdd10)
+ *   0x03: TGConnectAckMsg  (FUN_006be860)
+ *   0x04: TGBootMessage    (FUN_006badb0)
+ *   0x05: TGDisconnectMsg  (FUN_006bf410)
+ *   0x32: TGMessage base   (FUN_006b83f0) - 13-bit length, fragment support
  *
- * The game-layer opcodes (settings, checksums, etc.) are carried
- * as payloads WITHIN these network messages.
+ * All game-layer opcodes (0x00-0x2A, 0x2C-0x39) are carried
+ * as payloads WITHIN type 0x32 messages.
  * ================================================================ */
 #define MSG_FACTORY_TABLE_ADDR  0x009962d4
 #define MSG_FACTORY_TABLE_COUNT 256
@@ -44,7 +48,7 @@ static void MsgTraceOpen(void) {
                 "# Session: %04d-%02d-%02d %02d:%02d:%02d\n"
                 "# Format: [time] #seq MSG type=0xNN size=N vtbl=0xNNNNNNNN\n"
                 "# Followed by hex dump + structured decode of message body\n"
-                "# Known types: 0x00-0x05 (core network), 0x32 (connection mgmt)\n"
+                "# Types: 0x00=DataMsg, 0x01=ACK, 0x02-0x05=ConnMgmt, 0x32=GameData\n"
                 "# Game opcodes are in the transport payload and decoded below when possible\n"
                 "# ============================================================\n\n",
                 st.wYear, st.wMonth, st.wDay,

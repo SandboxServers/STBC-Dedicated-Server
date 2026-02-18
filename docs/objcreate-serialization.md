@@ -10,7 +10,7 @@ These are bidirectional: the host creates objects and relays them to all clients
 
 ## Message Envelope
 
-After TGNetwork framing (`0x32` reliable header + 3-byte header), the game message is:
+After type 0x32 transport framing is stripped (reliable header + flags_len + seq), the game payload is:
 
 ```
 Offset  Size  Type    Field

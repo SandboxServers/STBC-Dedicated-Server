@@ -17,6 +17,7 @@
 - See [client-join-flow.md](client-join-flow.md) for post-checksum message sequence
 - See [stock-baseline-analysis.md](stock-baseline-analysis.md) for stock host vs our server comparison
 - See [encryption-analysis.md](encryption-analysis.md) for TGNetwork encryption/cipher analysis
+- See [transport-layer.md](transport-layer.md) for FULL transport layer: 7 factory types, wire formats, fragments
 - See [torpedo-beam-network.md](torpedo-beam-network.md) for corrected opcode table
 - See [swig-method-tables.md](swig-method-tables.md) for App/Appc SWIG method table analysis (3990 entries at 0x008e6438)
 - See [complete-opcode-table.md](complete-opcode-table.md) for FULL verified opcode table (all 41 entries + Python msg types)
@@ -186,15 +187,14 @@
 
 ## Shield System (2026-02-17)
 - See [docs/shield-system.md](../../docs/shield-system.md) for full analysis
-- ShieldClass: vtable 0x00892f34, size 0x15C, ctor FUN_0056a000
-- ShieldProperty: vtable 0x00892fc4, size 0x88, ctor FUN_0056b970
+- ShieldClass: vtable 0x00892f34, size 0x15C; ShieldProperty: vtable 0x00892fc4, size 0x88
 - **6 facings**: FRONT(0)/REAR(1)/TOP(2)/BOTTOM(3)/LEFT(4)/RIGHT(5); NO_SHIELD=-1
-- Facing determined by max-component projection of ship-local normal (FUN_0056a8d0)
-- curShields[6] at shieldClass+0xA8; maxShields[6] at property+0x60; chargePerSec[6] at property+0x78
-- **Key constant**: DAT_0088bacc = 1/6 (0.16667) -- per-facing share
-- **Area damage**: equal 1/6 distribution, per-facing clamp, overflow to hull (FUN_00593c10)
-- **Directed damage**: shield zone intersection via FUN_004b4b40, deferred hit list processing
-- **Recharge**: BoostShield (FUN_0056a420) converts power to HP using chargePerSecond
-- **Event-driven**: HandleSetShieldState at 0x0056aae0, events 0x0080006d-0x00800071
-- **Cloak interaction**: shield +0x9C set to 0 after ShieldDelay(1.0s), HP preserved, re-enabled on decloak
-- **Unanalyzed range**: 0x0056a210-0x0056aad0 (event handlers, shield tick, RedistributeShields)
+- curShields[6] at +0xA8; maxShields[6] at property+0x60; chargePerSec[6] at property+0x78
+- Area damage: 1/6 per-facing, overflow to hull; Directed: shield zone intersection
+- Cloak: shield disabled (HP preserved), re-enabled after ShieldDelay(1.0s) on decloak
+
+## Collision Detection System (2026-02-17)
+- See [docs/collision-detection-system.md](../../docs/collision-detection-system.md) for full analysis
+- 3-tier: sweep-and-prune -> bounding sphere -> per-type narrow; CLIENT-AUTHORITATIVE
+- ProximityManager vtable 0x008942D4; CheckCollision FUN_005671d0 (79K calls/session)
+- Energy: `clamp((force/mass/numContacts)*SCALE+OFFSET, 0, 0.5) * 6000`

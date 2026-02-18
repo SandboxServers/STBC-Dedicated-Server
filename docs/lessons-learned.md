@@ -83,9 +83,11 @@ which is within the stock's expected window.
 - **message_trace.log captures RECEIVE path only**: It hooks the TGMessage factory at
   deserialization. Every C->S opcode in packet_trace matches message_trace exactly.
   All S->C messages are absent from message_trace.
-- **Fragmented reliable messages**: Large packets (>MTU) use flag bits 0x80 (reliable) +
-  0x20 (fragmented) in the 0x32 transport wrapper. Fragment index byte is misread by the
-  packet trace decoder as a game opcode, producing garbage entries.
+- **Fragmented reliable messages**: Large packets (>MTU) use type 0x32 (TGMessage base class)
+  with flags_len bit 15 (reliable) + bit 13 (fragmented). Fragment 0 carries a total_frags
+  byte and the game opcode; subsequent fragments carry continuation data only.
+  Type 0x32 uses 13-bit length (max 8191), while type 0x00 (TGDataMessage) uses 14-bit
+  length (max 16383) but has NO fragment support.
 - **ObjNotFound (0x1D) for 0x3FFFFFFF is normal**: Stock server does this too. It's a
   query for the "all objects" sentinel, not an error.
 - **Double FUN_006a1e70 call**: The engine internally handles opcode 0x2A (NewPlayerInGame).
