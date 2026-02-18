@@ -224,6 +224,8 @@ Then opcode 0x01 (single byte).
 - [docs/weapon-firing-mechanics.md](docs/weapon-firing-mechanics.md) - Weapons: phaser charge/discharge/intensity, torpedo reload/type-switch, CanFire gates, WeaponSystem update loop, wire formats
 - [docs/repair-tractor-analysis.md](docs/repair-tractor-analysis.md) - Repair: simultaneous teams, no queue limit, rate formula with RepairComplexity. Tractor: 6 modes (HOLD/TOW/PULL/PUSH/DOCK), multiplicative speed drag, no direct damage
 - [docs/cf16-explosion-encoding.md](docs/cf16-explosion-encoding.md) - CF16 format: BASE=0.001, MULT=10.0, 8 scales, 4096 mantissa steps. Explosion sender/receiver. Precision analysis for mod weapon-type IDs (15/25/273/2063). Scale 7 loses integer precision above 1000.
+- [docs/tgmessage-routing.md](docs/tgmessage-routing.md) - TGMessage routing RE: relay-all (no whitelist), opaque payload, star topology, no max type check, mod compatibility (KM/BCR custom types). Two-layer type system (transport vs game opcode)
+- [docs/tgmessage-routing-cleanroom.md](docs/tgmessage-routing-cleanroom.md) - Clean-room behavioral spec for TGMessage routing: no addresses, suitable for reimplementation. Behavioral guarantees, available opcode ranges, known mod allocations
 
 ## Ghidra Annotation Scripts
 Bulk annotation scripts in `tools/`. Run from Ghidra Script Manager with stbc.exe loaded.

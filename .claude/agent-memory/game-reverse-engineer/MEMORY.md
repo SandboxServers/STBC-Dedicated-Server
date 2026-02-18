@@ -23,19 +23,21 @@
 - See [complete-opcode-table.md](complete-opcode-table.md) for FULL verified opcode table (all 41 entries + Python msg types)
 - See [tgmessage-wire-format.md](tgmessage-wire-format.md) for TGMessage Python script message framing
 
-## TGMessage Script Messages (2026-02-17)
-- **Transport type**: 0x32 (same as all game payloads); NOT a separate transport type
-- **MAX_MESSAGE_TYPES = 43** (0x2B); registered at 0x00654f31 in SWIG init
-- Script msg types = MAX_MESSAGE_TYPES + N: CHAT=44(0x2C), SCORE=55(0x37), END_GAME=56(0x38)
-- **No C++ header prepended**: stream bytes ARE the TGMessage payload directly
-- **First payload byte = message type** (written by Python's WriteChar); rest = app-specific data
-- **Always reliable in practice**: stock scripts always call SetGuaranteed(1)
-- **Dispatch**: C++ switch ignores opcodes > 0x2A; Python handlers read type byte themselves
-- **Groups**: "NoMe" = all peers except self, "Forward" = same; created by MultiplayerGame ctor
-- **Key functions**: FUN_006b4c10=SendTGMessage, FUN_006b4de0=SendTGMessageToGroup, FUN_006b4ec0=SendToGroupMembers
-- **TGMessage ctor**: FUN_006b82a0 (0x40 bytes), vtable 0x008958d0, GetType()=0x32
-- **SetDataFromStream** (0x006b8a00): copies stream.GetBuffer()/GetPos() via BufferCopy
-- See [docs/wire-format-spec.md](../../docs/wire-format-spec.md) "Python Message Dispatch" for full analysis
+## TGMessage Routing System (2026-02-17, COMPLETE)
+- See [docs/tgmessage-routing-analysis.md](../../docs/tgmessage-routing-analysis.md) for FULL analysis
+- **TWO SEPARATE TYPE SYSTEMS**: Transport types (7 registered, 256 max) vs Game opcodes (in payload)
+- **Transport factory table**: 256 entries at 0x009962d4, indexed by `byte & 0xFF`
+- **Stock transport types**: 0=game_msg, 1=ACK, 2=keepalive, 3=connect, 4=disconnect, 5=heartbeat, 0x32=base
+- **RELAY-ALL**: Host forwards ALL messages opaquely via FUN_006b51e0 (unconditional broadcast)
+- **No type inspection on relay**: FUN_006bc6a0 (factory) copies payload via BufferCopy without examining
+- **No bounds check on dispatch**: C++ switch at 0x0069f2a0 has NO default case; unknown opcodes fall through silently
+- **Star topology**: All client-to-client traffic goes through host; no direct peer connections
+- **MAX_MESSAGE_TYPES = 0x2B** (43); Python types: CHAT=0x2C, SCORE=0x37, END_GAME=0x38
+- **Mod compatibility**: Custom types (KM=205, BCR=53-57) work because C++ ignores unknown opcodes
+- **"NoMe" group**: All peers except self; routing only, no content filtering
+- **TGNetwork_RegisterMessageType** (0x005e4860): registers TRANSPORT types, not game opcodes; never called from stock Python
+- **Key relay functions**: FUN_006b51e0=BroadcastToOthers, FUN_006b4ec0=SendToGroupMembers
+- **Key receive path**: FUN_006b5c90=ProcessIncoming -> factory lookup -> FUN_006b6ad0=QueueForDispatch
 
 ## RTTI / Type System (2026-02-15)
 - NO MSVC RTTI (compiled /GR-); uses NiRTTI hash table at DAT_009a2b98
