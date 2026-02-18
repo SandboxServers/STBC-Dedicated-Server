@@ -316,7 +316,13 @@ On read, `ReadBit` extracts each bit in order, advancing the count. When all pac
 
 ### CompressedFloat16 (Logarithmic Scale Compression)
 
-Used for: speed values, damage amounts, distances.
+Used for: speed values, damage amounts, distances. Full analysis in [cf16-precision-analysis.md](cf16-precision-analysis.md).
+
+**Constants** (extracted from .rdata):
+- `DAT_00888b4c` (BASE) = 0.001 (float32, hex `3A83126F`)
+- `DAT_0088c548` (MULT) = 10.0 (float32, hex `41200000`)
+- `DAT_00895f50` (ENC_SCALE) = 4095.0 (encoder mantissa multiplier)
+- `DAT_00895f54` (DEC_SCALE) = float32(1/4095) = 0.000244200258... (decoder inverse)
 
 **Encoding** (`FUN_006d3a90`):
 ```
@@ -324,15 +330,16 @@ Input:  float value
 Output: uint16
 
 Format: [sign:1][scale:3][mantissa:12]
-        Bit 15=sign, Bits 14-12=scale exponent, Bits 11-0=mantissa
+        Bit 15=sign, Bits 14-12=scale exponent (0-7), Bits 11-0=mantissa (0-4095)
 
 Algorithm:
 1. If value < 0: set sign bit, negate
 2. Find scale (0-7) such that value < BASE * MULT^scale
-   where BASE = DAT_00888b4c, MULT = DAT_0088c548
-3. Compute mantissa = ftol(value / (range for this scale) * 4096)
-4. If scale overflows (>=8): clamp to scale=7, mantissa=0x1000
-5. Result = (sign_flag * 8 + scale) * 0x1000 + mantissa
+   Scale 0=[0, 0.001), Scale 1=[0.001, 0.01), ..., Scale 7=[1000, 10000)
+3. frac = (value - range_lo) / (range_hi - range_lo)
+4. mantissa = ftol(frac * 4095.0)  // truncate toward zero
+5. If scale overflows (>=8): clamp to scale=7, mantissa=0xFFF
+6. Result = ((sign << 3) | scale) << 12 | mantissa
 ```
 
 **Decoding** (`FUN_006d3b30`):
@@ -342,16 +349,14 @@ Output: float
 
 Algorithm:
 1. mantissa = encoded & 0xFFF
-2. raw_scale = (encoded >> 12)
-3. sign = (raw_scale >> 3) & 1
-4. scale = raw_scale & 0x7 (if sign set, mask to 3 bits)
-5. Compute range boundaries: lo=0, hi=BASE
-   For i in 0..scale: lo=hi, hi=hi*MULT
-6. result = (hi - lo) * mantissa * (1/4096) + lo
-7. If sign: result = -result
+2. sign = (encoded >> 15) & 1
+3. scale = (encoded >> 12) & 0x7
+4. Compute range: lo=0, hi=BASE; for i in 0..scale: lo=hi, hi=lo*MULT
+5. result = (hi - lo) * mantissa * float32(1/4095) + lo
+6. If sign: result = -result
 ```
 
-The constants `DAT_00888b4c` (BASE) and `DAT_0088c548` (MULT) define the logarithmic scale ranges. This gives ~12 bits of precision within each octave, covering a wide dynamic range with only 16 bits.
+8 logarithmic decades from 0 to 10000, each with 4096 discrete levels (~0.022% relative precision per level). The decoder uses `1/4095` (not `1/4096`), making mantissa 4095 decode to exactly the top of the range. Encoding is LOSSY -- values always round down due to truncation. See [cf16-precision-analysis.md](cf16-precision-analysis.md) for full precision tables and [cf16-explosion-encoding.md](cf16-explosion-encoding.md) for explosion opcode analysis and mod weapon-type ID compatibility.
 
 ### CompressedVector3 (Position Delta)
 
@@ -879,19 +884,23 @@ Moves an object into a new "Set" (scene region). If the object doesn't exist loc
 
 ### 0x29 - Explosion / Torpedo Hit
 
-**Handler**: `FUN_006A0080`
+**Sender**: `FUN_00595c60` (iterates explosion list at `this+0x13C`)
+**Handler**: `Handler_Explosion_0x29` at `0x006A0080`
 
 ```
 Offset  Size  Type    Field
 ------  ----  ----    -----
-0       1     u8      opcode (skipped)
-1       4     i32/id  object_id         (ReadInt32v)
-+0      5     cv4     impact_position   CompressedVector4 (with uint16 magnitude)
-+0      2     u16     damage_compressed CompressedFloat16
-+0      2     u16     radius_compressed CompressedFloat16
+0       1     u8      opcode = 0x29
+1       4     i32/id  object_id         (ReadInt32v - target ship)
+5       5     cv4     impact_position   CompressedVector4 (3 dir bytes + CF16 magnitude)
+10      2     u16     radius_compressed CompressedFloat16
+12      2     u16     damage_compressed CompressedFloat16
+Total: 14 bytes
 ```
 
-Creates a shockwave/explosion at the given position with the specified damage and radius.
+Field order verified from sender: radius is written first (from source+0x14), damage second (from source+0x1C). Receiver passes to `ExplosionDamage(pos, radius, damage)` constructor, which stores radius at +0x14, radius^2 at +0x18, and damage at +0x1C. Then calls `ProcessDamage(ship, explosionObj)`.
+
+Both radius and damage are CF16 (lossy). See [cf16-precision-analysis.md](cf16-precision-analysis.md) for precision limits and mod compatibility implications.
 
 ### 0x2A - New Player In Game
 
