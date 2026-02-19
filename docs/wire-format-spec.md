@@ -130,7 +130,7 @@ Offset  Size  Field
 ------  ----  -----
 0       1     type          Always 0x01
 1       2     seq_num       LE uint16 sequence number being ACKed
-3       1     flags         bit 0: is_fragment, bit 1: has_total_frags
+3       1     flags         bit 0: is_fragment, bit 1: is_below_0x32 (msg type category)
 [if is_fragment:]
 4       1     frag_idx      Fragment index of the message being ACKed
 ```
