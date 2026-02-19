@@ -670,11 +670,12 @@ Offset  Size  Type    Field
 | 0x0F | StopCloaking | 0x008000E5 | Cloaking device deactivated | occasional |
 | 0x10 | StartWarp | 0x008000ED | Warp drive activated | occasional |
 | 0x11 | RepairListPriority | 0x008000E1 | Repair priority ordering | occasional |
-| 0x12 | SetPhaserLevel | 0x008000E0 | Phaser power/intensity setting | 33 |
+| 0x12 | SetPhaserLevel | 0x008000E0 | Phaser power/intensity setting — see [dedicated analysis](set-phaser-level-protocol.md) | 33 |
 | 0x1B | TorpedoTypeChange | 0x008000FD | Torpedo type selection changed | occasional |
 
 **Sender/receiver event code pairing**: The sender uses one event code locally, the receiver uses a paired code:
-- D8→D7 (StartFiring), DA→D9, DC→DB, DD→6C, E0→E1, E2→E3, E4→E5, EC→ED, FE→FD
+- D8→D7 (StartFiring), DA→D9, DC→DB, DD→6C, E2→E3, E4→E5, EC→ED, FE→FD
+- **Exception**: 0x12 (SetPhaserLevel) uses the same code 0x008000E0 on both sides (no pairing, no override)
 
 ### 0x13 - Host Message
 
@@ -1586,32 +1587,37 @@ See [subsystem-trace-analysis.md](subsystem-trace-analysis.md) for full trace da
 
 ### Anti-Cheat Hash Field Offsets (from ship+0x27C)
 
-These offsets are used by FUN_005b5eb0 to locate subsystem pointers for hash computation:
+These offsets are used by FUN_005b5eb0 to locate subsystem pointers for hash computation.
+Hashed in this exact order (each slot is NULL-checked; NULL slots are skipped):
 
-| Offset from +0x27C | Subsystem | Hashed Fields |
-|---------------------|-----------|---------------|
-| +0x34 | Sensors | health + properties |
-| +0x38 | Unknown1 | via FUN_005b6330 |
-| +0x3C | Unknown2 | via FUN_005b6330 |
-| +0x40 | Unknown3 | via FUN_005b6330 |
-| +0x44 | Hull | health + 6 shield facings |
-| +0x48 | Shield | overall health |
-| +0x4C | Engine | health + property |
-| +0x50 | Weapons | health + 4 properties |
-| +0x54 | Cloak | health only |
-| +0x58 | Power | via FUN_005b6330 |
-| +0x5C | Repair | health + property |
-| +0x60 | Crew | health only |
+| Hash Order | Offset from +0x27C | Ship Offset | Subsystem | Hash Method | Extra Fields |
+|---|---------------------|-------------|-----------|-------------|--------------|
+| 1 | +0x48 | +0x2C4 | Power Reactor | base_subsystem_hash | none |
+| 2 | +0x44 | +0x2C0 | Shield Generator | base + type-specific | 12 floats: 6 maxShield + 6 chargePerSecond facings |
+| 3 | +0x34 | +0x2B0 | Powered Master | base + type-specific | 5 property floats |
+| 4 | +0x4C | +0x2C8 | Cloak Device | base + type-specific | 1 property float |
+| 5 | +0x50 | +0x2CC | Impulse Engine | base + type-specific | 4 property floats |
+| 6 | +0x54 | +0x2D0 | Sensor Array | base_subsystem_hash | none |
+| 7 | +0x5C | +0x2D8 | Warp Drive | base + type-specific | 1 property float |
+| 8 | +0x60 | +0x2DC | Crew / Unknown-A | base_subsystem_hash | side-effect getter |
+| 9 | +0x38 | +0x2B4 | Torpedo System | weapon_system_hash | children + torpedo types |
+| 10 | +0x3C | +0x2B8 | Phaser System | weapon_system_hash | children |
+| 11 | +0x40 | +0x2BC | Pulse Weapon System | weapon_system_hash | children |
+| 12 | +0x58 | +0x2D4 | Tractor Beam System | weapon_system_hash | children |
+
+**Note**: The Repair subsystem does NOT appear in the hash. See [subsystem-integrity-hash.md](subsystem-integrity-hash.md) for complete analysis.
 
 ---
 
 ## Subsystem Hash (Anti-Cheat)
 
+> **Dead code in multiplayer**: The sender only writes the hash when `isMultiplayer == 0` (single-player), while the receiver only validates it when `isMultiplayer == 1` (multiplayer). These conditions are mutually exclusive — the hash is never both sent and checked in any stock gameplay session. See [subsystem-integrity-hash.md](subsystem-integrity-hash.md) for complete RE analysis.
+
 ### Hash Computation - FUN_005b5eb0
 
-The subsystem hash is a 32-bit accumulator built by XOR-folding float values from all ship subsystems. It serves as a tamper-detection mechanism.
+The subsystem hash is a 32-bit accumulator built by XOR-folding float values from all 12 ship subsystems (see slot table above). It serves as a tamper-detection mechanism that was never functional in multiplayer.
 
-**Algorithm** (`FUN_005b6c10`):
+**Algorithm** (`FUN_005b6c10` — hash_fold):
 ```c
 void hash_fold(float value, uint32* accumulator) {
     bool negative = (value < 0.0f);
@@ -1628,17 +1634,10 @@ void hash_fold(float value, uint32* accumulator) {
 }
 ```
 
-**Components hashed** (from `FUN_005b5eb0`):
-1. **Shield system** (`ship+0x27C+0x48`): overall health
-2. **Hull system** (`ship+0x27C+0x44`): health + 6 shield facing pairs (min/max for each of 6 facings)
-3. **Sensor system** (`ship+0x27C+0x34`): health + several properties
-4. **Engine system** (`ship+0x27C+0x4C`): health + one property
-5. **Weapon system** (`ship+0x27C+0x50`): health + 4 properties
-6. **Cloak system** (`ship+0x27C+0x54`): health only
-7. **Repair system** (`ship+0x27C+0x5C`): health + one property
-8. **Crew system** (`ship+0x27C+0x60`): health only
-9. **Three unknown systems** (`+0x38, +0x3C, +0x40`): via FUN_005b6330
-10. **Power system** (`ship+0x27C+0x58`): via FUN_005b6330
+**Per-subsystem hashing**:
+- **base_subsystem_hash** (FUN_005b6170): 7 property floats + recursive children + 4 boolean sentinels (magic constants) + optional PoweredSubsystem energy field. Called for all 12 slots.
+- **weapon_system_hash** (FUN_005b6330): Wraps base + 2 weapon-system boolean sentinels + per-child individual_weapon_hash + torpedo type data (mirror convolution of script/type names). Called for slots 9–12.
+- **individual_weapon_hash** (FUN_005b6560): 5-way type dispatch (EnergyWeapon, PhaserBank, PulseWeapon, TractorBeamProjector, TorpedoTube) with per-type property floats, vectors, and name hashes.
 
 ### Wire Encoding
 The 32-bit hash is XOR-folded to 16 bits before transmission:
@@ -1646,15 +1645,13 @@ The 32-bit hash is XOR-folded to 16 bits before transmission:
 uint16 wire_hash = (uint16)(hash32 >> 16) ^ (uint16)(hash32 & 0xFFFF);
 ```
 
-### Anti-Cheat Trigger
-On the receiver side (FUN_005b21c0), if:
-1. `has_subsystem_hash` bit is set
-2. AND `isMultiplayer` is true
-3. AND `received_hash != locally_computed_hash`
+### Sender Condition (FUN_005b17f0)
+Within flag 0x01 (POSITION_ABSOLUTE): hash is written ONLY when `isMultiplayer == 0`. In multiplayer, `has_subsystem_hash` byte is always 0.
 
-Then: posts `ET_BOOT_PLAYER` event (code `0x8000F6`) which triggers `BootPlayerHandler` -> sends kick message -> client disconnects.
+### Receiver Condition (FUN_005b21c0)
+Requires BOTH `has_hash != 0` AND `isMultiplayer == 1`. On mismatch: posts `ET_BOOT_PLAYER` event (code `0x8000F6`) → BootPlayerHandler → TGBootPlayerMessage (reason=4) → client kicked.
 
-**Known issue**: If the server has no ship objects (dedicated server), the local hash is 0, which will always mismatch against a client's valid hash, causing false-positive kicks.
+**Dedicated server note**: If the server has no ship objects, the local hash would be 0 (all slots NULL), causing false-positive kicks — but this is moot since the hash is never sent in MP anyway. Our `PatchSubsystemHashCheck` at 0x005b22b5 provides defense-in-depth.
 
 ---
 

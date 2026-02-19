@@ -58,6 +58,19 @@
 - 0x0097FA88=IsClient(0=host), 0x0097FA89=IsHost(1=host), 0x0097FA8A=IsMultiplayer
 - See [stock-baseline-analysis.md](stock-baseline-analysis.md) for full evidence
 
+## Power Distribution Network Path (2026-02-18, COMPLETE)
+- **NO dedicated network message** for power slider changes
+- ET_SUBSYSTEM_POWER_CHANGED (0x0080008c) is LOCAL ONLY -- NOT in MP forwarding table
+- Power percentages propagate via **StateUpdate 0x1C flag 0x20** (PoweredSubsystem::WriteState/ReadState)
+- WriteState: if `isOwnShip==0`, writes `(int)(powerPercentageWanted * 100.0)` as byte
+- ReadState: reconstructs via `byte * 0.01f`, applies via SetPowerPercentageWanted (FUN_00562430)
+- Sign bit encoding: negative byte = subsystem OFF, positive = ON
+- Resolution: 1% steps, range 0-125%, ~1-2s convergence via round-robin
+- Host does NOT validate power percentages -- applies whatever client sends
+- See [docs/power-system.md] "Multiplayer Network Propagation" section
+- Key functions: FUN_00562960 (WriteState), FUN_005629d0 (ReadState), FUN_00562430 (setter)
+- EngPowerCtrl: FUN_0054dde0 (HandlePowerChange), FUN_0054e690 (posts 0x0080008c event)
+
 ## 0x1C State Update & Subsystem Wire Format (COMPLETE 2026-02-18)
 - See [docs/stateupdate-subsystem-wire-format.md](../../docs/stateupdate-subsystem-wire-format.md) for FULL analysis
 - **Flag 0x20 = round-robin subsystem health**: walks ship+0x284 linked list (top-level only)
