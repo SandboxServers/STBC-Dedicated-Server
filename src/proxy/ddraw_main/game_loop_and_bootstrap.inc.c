@@ -799,6 +799,30 @@ static VOID CALLBACK GameLoopTimerProc(HWND hwnd, UINT msg,
         ProxyLog("  PY_DIAG: RunPyCode('pass') OK");
     }
 
+    /* Periodic ACK diagnostic dump every 90 ticks (~3s).
+     * Walks ACK-outbox and retransmit queues for each connected peer
+     * to track fragment ACK state for the fragmented reliable msg bug. */
+    if (tickCount > 0 && (tickCount % 90 == 0)) {
+        int pCount = 0;
+        DWORD pArray = 0;
+        if (wsnPtr && !IsBadReadPtr((void*)(wsnPtr + 0x30), 4))
+            pCount = *(int*)(wsnPtr + 0x30);
+        if (wsnPtr && !IsBadReadPtr((void*)(wsnPtr + 0x2C), 4))
+            pArray = *(DWORD*)(wsnPtr + 0x2C);
+        if (pCount > 0 && pArray) {
+            int pi;
+            for (pi = 0; pi < pCount && pi < 8; pi++) {
+                DWORD pp = 0;
+                if (!IsBadReadPtr((void*)(pArray + pi*4), 4))
+                    pp = *(DWORD*)(pArray + pi*4);
+                if (pp && !IsBadReadPtr((void*)pp, 0xC0)) {
+                    DWORD peerID = *(DWORD*)(pp + 0x18);
+                    DumpPeerTransportQueues(pp, peerID);
+                }
+            }
+        }
+    }
+
     /* Periodic status every ~10s */
     if (time - lastLogTime >= 10000) {
         DWORD clockPtr = 0;

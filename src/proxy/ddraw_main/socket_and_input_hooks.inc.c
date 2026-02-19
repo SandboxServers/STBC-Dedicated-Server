@@ -152,8 +152,38 @@ static VOID CALLBACK ManualInputTimerProc(HWND hwnd, UINT msg,
     (void)hwnd; (void)msg; (void)id; (void)time;
     TryManualStateDump();
     TryFlushPyTrace();
-    /* FTrace dump every ~10s (400 ticks * 25ms = 10s) */
     obsTick++;
+
+    /* Periodic ACK diagnostic dump every 75 obs-ticks (~1.9s).
+     * Walks ACK-outbox and retransmit queues for each connected peer
+     * to track fragment ACK state on the client side. */
+    if (obsTick > 0 && (obsTick % 75 == 0)) {
+        DWORD wsnPtr = 0;
+        if (!IsBadReadPtr((void*)0x0097FA78, 4))
+            wsnPtr = *(DWORD*)0x0097FA78;
+        if (wsnPtr) {
+            int pCount = 0;
+            DWORD pArray = 0;
+            if (!IsBadReadPtr((void*)(wsnPtr + 0x30), 4))
+                pCount = *(int*)(wsnPtr + 0x30);
+            if (!IsBadReadPtr((void*)(wsnPtr + 0x2C), 4))
+                pArray = *(DWORD*)(wsnPtr + 0x2C);
+            if (pCount > 0 && pArray) {
+                int pi;
+                for (pi = 0; pi < pCount && pi < 8; pi++) {
+                    DWORD pp = 0;
+                    if (!IsBadReadPtr((void*)(pArray + pi*4), 4))
+                        pp = *(DWORD*)(pArray + pi*4);
+                    if (pp && !IsBadReadPtr((void*)pp, 0xC0)) {
+                        DWORD peerID = *(DWORD*)(pp + 0x18);
+                        DumpPeerTransportQueues(pp, peerID);
+                    }
+                }
+            }
+        }
+    }
+
+    /* FTrace dump every ~10s (400 ticks * 25ms = 10s) */
     if (obsTick > 0 && (obsTick % 400 == 0)) {
         char label[32];
         wsprintfA(label, "obs_tick_%d", obsTick);

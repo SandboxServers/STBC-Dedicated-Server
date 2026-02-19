@@ -40,6 +40,93 @@ static FTraceHook g_ftHooks[FTRACE_MAX_HOOKS];
 static int g_ftHookCount = 0;
 static BYTE* g_ftTrampBlock = NULL;  /* VirtualAlloc'd RWX block */
 
+/* ================================================================
+ * DumpPeerTransportQueues - walk ACK-outbox and retransmit queues
+ *
+ * Shared by server (GameLoopTimerProc) and client (ManualInputTimerProc)
+ * to dump transport-layer queue state for fragment ACK debugging.
+ *
+ * Queue node layout: [msg_ptr:4][next_ptr:4]
+ * TGMessage fields:  +0x14 seq(u16), +0x18 retx_count(u32),
+ *                    +0x39 frag_idx(u8), +0x3A is_reliable(u8),
+ *                    +0x3C is_fragmented(u8)
+ * TGHeaderMessage:   +0x40 is_below_0x32(u8)
+ * ================================================================ */
+/* Forward declaration for HandleACK hook (defined after InstallFunctionTracer) */
+static void InstallHandleACKHook(void);
+
+#define ACKDIAG_MAX_ENTRIES 10
+
+static void DumpPeerTransportQueues(DWORD peerPtr, DWORD peerID) {
+    DWORD retxHead, retxCount, ackHead, ackCount;
+    DWORD node;
+    int i;
+
+    if (!peerPtr || IsBadReadPtr((void*)peerPtr, 0xC0)) return;
+
+    retxHead  = *(DWORD*)(peerPtr + 0x80);
+    retxCount = *(DWORD*)(peerPtr + 0x98);
+    ackHead   = *(DWORD*)(peerPtr + 0x9C);
+    ackCount  = *(DWORD*)(peerPtr + 0xB4);
+
+    /* Skip peers with empty queues */
+    if (retxCount == 0 && ackCount == 0) return;
+
+    ProxyLog("[ACK-DIAG] peer=%u retxQ=%u ackOutQ=%u", peerID, retxCount, ackCount);
+
+    /* Walk retransmit queue (peer+0x80) */
+    node = retxHead;
+    for (i = 0; i < ACKDIAG_MAX_ENTRIES && node; i++) {
+        DWORD msg;
+        if (IsBadReadPtr((void*)node, 8)) {
+            ProxyLog("[ACK-DIAG]   retx[%d] BAD node 0x%08X", i, node);
+            break;
+        }
+        msg = *(DWORD*)node;
+        if (msg && !IsBadReadPtr((void*)msg, 0x40)) {
+            WORD  seq     = *(WORD*)(msg + 0x14);
+            DWORD retxCnt = *(DWORD*)(msg + 0x18);
+            BYTE  fragIdx = *(BYTE*)(msg + 0x39);
+            BYTE  isRel   = *(BYTE*)(msg + 0x3A);
+            BYTE  isFrag  = *(BYTE*)(msg + 0x3C);
+            float interval = *(float*)(msg + 0x1C);
+            float lastSend = *(float*)(msg + 0x20);
+            ProxyLog("[ACK-DIAG]   retx[%d] msg=0x%08X seq=0x%04X frag=%d idx=%d rel=%d retx=%u intv=%.2f last=%.2f",
+                     i, msg, (unsigned)seq, isFrag, fragIdx, isRel, retxCnt, interval, lastSend);
+        } else {
+            ProxyLog("[ACK-DIAG]   retx[%d] msg=0x%08X (bad/null)", i, msg);
+        }
+        node = *(DWORD*)(node + 4);
+    }
+    if (retxCount > ACKDIAG_MAX_ENTRIES)
+        ProxyLog("[ACK-DIAG]   ... %u more retx entries", retxCount - ACKDIAG_MAX_ENTRIES);
+
+    /* Walk ACK-outbox queue (peer+0x9C) */
+    node = ackHead;
+    for (i = 0; i < ACKDIAG_MAX_ENTRIES && node; i++) {
+        DWORD msg;
+        if (IsBadReadPtr((void*)node, 8)) {
+            ProxyLog("[ACK-DIAG]   ack[%d] BAD node 0x%08X", i, node);
+            break;
+        }
+        msg = *(DWORD*)node;
+        if (msg && !IsBadReadPtr((void*)msg, 0x44)) {
+            WORD  seq     = *(WORD*)(msg + 0x14);
+            DWORD retxCnt = *(DWORD*)(msg + 0x18);
+            BYTE  fragIdx = *(BYTE*)(msg + 0x39);
+            BYTE  isFrag  = *(BYTE*)(msg + 0x3C);
+            BYTE  below32 = *(BYTE*)(msg + 0x40);
+            ProxyLog("[ACK-DIAG]   ack[%d] msg=0x%08X seq=0x%04X frag=%d idx=%d below32=%d retx=%u",
+                     i, msg, (unsigned)seq, isFrag, fragIdx, below32, retxCnt);
+        } else {
+            ProxyLog("[ACK-DIAG]   ack[%d] msg=0x%08X (bad/null)", i, msg);
+        }
+        node = *(DWORD*)(node + 4);
+    }
+    if (ackCount > ACKDIAG_MAX_ENTRIES)
+        ProxyLog("[ACK-DIAG]   ... %u more ack entries", ackCount - ACKDIAG_MAX_ENTRIES);
+}
+
 /* ----------------------------------------------------------------
  * FTraceRecordCall - C callback from caller-tracking trampolines
  *
@@ -532,4 +619,192 @@ static void InstallFunctionTracer(void) {
         ProxyLog("FTrace: installed %d/%d hooks (%d with caller tracking)",
                  installed, g_ftHookCount, tracked);
     }
+
+#ifdef OBSERVE_ONLY
+    InstallHandleACKHook();
+#endif
 }
+
+/* ================================================================
+ * HandleACK Hook (OBSERVE_ONLY / client build)
+ *
+ * Custom argument-capturing hook on FUN_006b64d0 (HandleACK).
+ * Called via DispatchReceivedMessages when an ACK (type 0x01) arrives.
+ *
+ * Prototype: void __stdcall HandleACK(void* ackMsg, void* peer)
+ *   ackMsg = TGHeaderMessage* (ACK fields at +0x14/+0x39/+0x3C/+0x40)
+ *   peer   = peer object ptr (retransmit queue at +0x80, count at +0x98)
+ *
+ * Prologue (7 bytes, clean boundary):
+ *   8B 44 24 08   MOV EAX, [ESP+8]   ; param_2 (peer)
+ *   53            PUSH EBX
+ *   55            PUSH EBP
+ *   56            PUSH ESI
+ *
+ * Trampoline layout (~45 bytes):
+ *   PUSHFD / PUSH EAX,ECX,EDX          ; save caller-saved regs + flags
+ *   MOV EAX, [ESP+0x18]                ; peer (param 2)
+ *   PUSH EAX
+ *   MOV EAX, [ESP+0x18]                ; ackMsg (param 1, shifted by push)
+ *   PUSH EAX
+ *   CALL LogHandleACKEntry             ; __cdecl C callback
+ *   ADD ESP, 8
+ *   POP EDX,ECX,EAX / POPFD            ; restore
+ *   <relocated 7 prologue bytes>
+ *   JMP HandleACK+7
+ * ================================================================ */
+#ifdef OBSERVE_ONLY
+
+#define HANDLEACK_ADDR       0x006b64d0
+#define HANDLEACK_RELOC_LEN  7
+#define HANDLEACK_TRAMP_SIZE 128
+
+static BYTE* g_handleACKTrampoline = NULL;
+static volatile LONG g_handleACKHookCalls = 0;
+
+static void __cdecl LogHandleACKEntry(DWORD ackMsg, DWORD peer) {
+    WORD  ackSeq;
+    BYTE  ackFrag, ackFragIdx, ackBelow32;
+    DWORD retxCount, retxHead;
+    DWORD node;
+    int i;
+
+    InterlockedIncrement(&g_handleACKHookCalls);
+
+    if (!ackMsg || IsBadReadPtr((void*)ackMsg, 0x44)) return;
+    if (!peer  || IsBadReadPtr((void*)peer, 0xC0)) return;
+
+    ackSeq      = *(WORD*)(ackMsg + 0x14);
+    ackFragIdx  = *(BYTE*)(ackMsg + 0x39);
+    ackFrag     = *(BYTE*)(ackMsg + 0x3C);
+    ackBelow32  = *(BYTE*)(ackMsg + 0x40);
+
+    retxCount = *(DWORD*)(peer + 0x98);
+    retxHead  = *(DWORD*)(peer + 0x80);
+
+    ProxyLog("[ACK-HOOK] HandleACK: ack seq=0x%04X frag=%d idx=%d below32=%d | retxQ=%u",
+             (unsigned)ackSeq, ackFrag, ackFragIdx, ackBelow32, retxCount);
+
+    /* Walk first 5 retransmit entries to show what the matching logic will see */
+    node = retxHead;
+    for (i = 0; i < 5 && node; i++) {
+        DWORD msg;
+        if (IsBadReadPtr((void*)node, 8)) break;
+        msg = *(DWORD*)node;
+        if (msg && !IsBadReadPtr((void*)msg, 0x40)) {
+            WORD  mSeq     = *(WORD*)(msg + 0x14);
+            BYTE  mFragIdx = *(BYTE*)(msg + 0x39);
+            BYTE  mFrag    = *(BYTE*)(msg + 0x3C);
+            DWORD mRetx    = *(DWORD*)(msg + 0x18);
+            /* Read vtable to call GetType() — vtable slot 0 returns u8 type.
+             * TGMessage vtable: [0]=GetType, [1]=dtor, [2]=WriteToBuffer, ...
+             * NOT NiObject layout (where slot 0 = GetRTTI). */
+            DWORD vtbl = *(DWORD*)msg;
+            BYTE  mType = 0xFF;
+            if (vtbl && !IsBadReadPtr((void*)vtbl, 4)) {
+                typedef BYTE (__fastcall *pfn_GetType)(void* ecx, void* edx);
+                pfn_GetType pGetType = (pfn_GetType)(*(DWORD*)vtbl);
+                if (pGetType && !IsBadReadPtr((void*)pGetType, 1))
+                    mType = pGetType((void*)msg, NULL);
+            }
+            ProxyLog("[ACK-HOOK]   retx[%d] seq=0x%04X frag=%d idx=%d type=0x%02X retx=%u %s",
+                     i, (unsigned)mSeq, mFrag, mFragIdx, mType, mRetx,
+                     (mSeq == ackSeq && mFrag == ackFrag &&
+                      (!mFrag || mFragIdx == ackFragIdx)) ? "<-- MATCH?" : "");
+        }
+        node = *(DWORD*)(node + 4);
+    }
+}
+
+static void InstallHandleACKHook(void) {
+    BYTE* func = (BYTE*)HANDLEACK_ADDR;
+    BYTE* tramp;
+    DWORD oldProt, callTarget, jmpTarget;
+    int offset = 0;
+
+    static const BYTE expected[HANDLEACK_RELOC_LEN] = {
+        0x8B, 0x44, 0x24, 0x08, 0x53, 0x55, 0x56
+    };
+
+    if (IsBadReadPtr(func, HANDLEACK_RELOC_LEN)) {
+        ProxyLog("HandleACK hook: address not readable");
+        return;
+    }
+    if (memcmp(func, expected, HANDLEACK_RELOC_LEN) != 0) {
+        ProxyLog("HandleACK hook: prologue mismatch (got %02X %02X %02X %02X %02X %02X %02X)",
+                 func[0], func[1], func[2], func[3], func[4], func[5], func[6]);
+        return;
+    }
+
+    tramp = (BYTE*)VirtualAlloc(NULL, HANDLEACK_TRAMP_SIZE,
+                                 MEM_COMMIT | MEM_RESERVE,
+                                 PAGE_EXECUTE_READWRITE);
+    if (!tramp) {
+        ProxyLog("HandleACK hook: VirtualAlloc failed");
+        return;
+    }
+    memset(tramp, 0xCC, HANDLEACK_TRAMP_SIZE);
+    g_handleACKTrampoline = tramp;
+
+    /* Build trampoline */
+    tramp[offset++] = 0x9C;                       /* PUSHFD */
+    tramp[offset++] = 0x50;                       /* PUSH EAX */
+    tramp[offset++] = 0x51;                       /* PUSH ECX */
+    tramp[offset++] = 0x52;                       /* PUSH EDX */
+
+    /* MOV EAX, [ESP+0x18] — peer (param 2, shifted by 4 saves) */
+    tramp[offset++] = 0x8B; tramp[offset++] = 0x44;
+    tramp[offset++] = 0x24; tramp[offset++] = 0x18;
+
+    tramp[offset++] = 0x50;                       /* PUSH EAX (arg2: peer) */
+
+    /* MOV EAX, [ESP+0x18] — ackMsg (param 1, was +0x14, shifted by push) */
+    tramp[offset++] = 0x8B; tramp[offset++] = 0x44;
+    tramp[offset++] = 0x24; tramp[offset++] = 0x18;
+
+    tramp[offset++] = 0x50;                       /* PUSH EAX (arg1: ackMsg) */
+
+    /* CALL LogHandleACKEntry */
+    tramp[offset] = 0xE8;
+    callTarget = (DWORD)LogHandleACKEntry - ((DWORD)(tramp + offset) + 5);
+    *(DWORD*)(tramp + offset + 1) = callTarget;
+    offset += 5;
+
+    /* ADD ESP, 8 (clean up cdecl args) */
+    tramp[offset++] = 0x83; tramp[offset++] = 0xC4; tramp[offset++] = 0x08;
+
+    /* Restore registers */
+    tramp[offset++] = 0x5A;                       /* POP EDX */
+    tramp[offset++] = 0x59;                       /* POP ECX */
+    tramp[offset++] = 0x58;                       /* POP EAX */
+    tramp[offset++] = 0x9D;                       /* POPFD */
+
+    /* Relocated prologue (7 bytes) */
+    memcpy(tramp + offset, func, HANDLEACK_RELOC_LEN);
+    offset += HANDLEACK_RELOC_LEN;
+
+    /* JMP back to HandleACK + 7 */
+    tramp[offset] = 0xE9;
+    jmpTarget = (HANDLEACK_ADDR + HANDLEACK_RELOC_LEN) - ((DWORD)(tramp + offset) + 5);
+    *(DWORD*)(tramp + offset + 1) = jmpTarget;
+    offset += 5;
+
+    /* Patch original function: JMP to trampoline + NOP pad */
+    if (!VirtualProtect(func, HANDLEACK_RELOC_LEN, PAGE_EXECUTE_READWRITE, &oldProt)) {
+        ProxyLog("HandleACK hook: VirtualProtect failed");
+        return;
+    }
+    func[0] = 0xE9;
+    *(DWORD*)(func + 1) = (DWORD)tramp - ((DWORD)func + 5);
+    func[5] = 0x90;
+    func[6] = 0x90;
+    VirtualProtect(func, HANDLEACK_RELOC_LEN, oldProt, &oldProt);
+
+    ProxyLog("HandleACK hook: installed at 0x%08X -> tramp 0x%08X (%d bytes)",
+             HANDLEACK_ADDR, (DWORD)tramp, offset);
+}
+
+#else
+/* Server build: no HandleACK hook needed */
+static void InstallHandleACKHook(void) { /* no-op */ }
+#endif /* OBSERVE_ONLY */

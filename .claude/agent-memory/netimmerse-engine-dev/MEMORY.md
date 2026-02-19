@@ -1,182 +1,116 @@
-# NetImmerse Engine Dev - Agent Memory
+# NetImmerse Engine Dev Agent Memory
 
-## Project: STBC Dedicated Server (DDraw Proxy DLL)
-Cross-compiled from WSL2, drives STBC headlessly via C code + embedded Python 1.5.
+## Project Scope
+STBC dedicated server RE — NetImmerse 3.1 / Gamebryo 1.2 engine internals.
+Decompiled source at: `reference/decompiled/11_tgnetwork.c` (7334 lines)
 
-## Key Architecture Findings
+## TGMessage / TGHeaderMessage Vtable Layout
+- Base vtable: `0x008958d0`  TGMessage (0x40 bytes)
+- +0x00 (slot 0): GetType() — returns message type u8
+- +0x04 (slot 1): scalar_deleting_dtor — called as `(*vtable[4])(1)`
+- +0x08 (slot 2): WriteToBuffer(buf, maxSize) — returns bytes written
+- +0x0c (slot 3): unknown predicate (supersedes another message?)
+- +0x10 (slot 4): IsOrdered() or similar — returns non-zero if ordering enforced
+- +0x14 (slot 5): GetSize() — returns serialized byte size (used to advance buffer ptr)
+- +0x18 (slot 6): Clone() — FUN_006b8610, allocs+copies message
+- +0x1c (slot 7): FragmentMessage(&count, maxSize) — FUN_006b8720
 
-### Manual State Dump Bridge (2026-02-12)
-- Dedicated-server C trigger path can raise `AttributeError` when calling
-  `Custom.StateDumper.dump_state(...)` directly, even after module import.
-- Embedded Python 1.5.2 package attribute exposure is unreliable across contexts;
-  robust call pattern is `import sys` + `sys.modules['Custom.StateDumper']`.
-- Keep manual dump trigger in C using `PyRun_String`, but resolve module from
-  `sys.modules` before invoking `dump_state` to match stock behavior.
+TGHeaderMessage vtable: `0x008959ac` (0x44 bytes, adds is_below_0x32 at +0x40)
 
-### CurrentGame Wrapper Mismatch in Dumps (2026-02-12)
-- Stock-dedi in-game dumps expose `CurrentGame` as SWIG object:
-  `<C Game instance at ...>` with `this/thisown` and callable methods.
-- Custom dedicated dump shows `CurrentGame` as raw pointer string:
-  `_<addr>_p_Game` with `0 attributes` in StateDumper output.
-- Indicates Python wrapper surface differs by runtime path; object exists natively
-  but introspection parity with stock is reduced in custom bootstrap state.
-- Reference `reference/scripts/App.py` confirms stock wrapper behavior:
-  `Game_GetCurrentGame` wraps `Appc.Game_GetCurrentGame` into `GamePtr`.
-- Added dedicated-side compat shim in `Custom/DedicatedServer.py` to wrap key
-  raw builtin returns (`Game_GetCurrentGame`, `TopWindow_GetTopWindow`,
-  `MultiplayerGame_Cast`, `Game_GetCurrentPlayer`) to Ptr objects.
+Other vtables:
+- `0x0089598c` — another message type (reliable+ordered by default, +0x3a=1, +0x3b=1)
+- `0x008959cc` — yet another type (TGConnectMessage?)
 
-### Event Type Constants (from constructor at FUN_0069e590)
-- `0x60001` = ET_NETWORK_MESSAGE_EVENT (ReceiveMessageHandler)
-- `0x60003` = ET_NETWORK_DISCONNECT
-- `0x60004` = ET_NETWORK_NEW_PLAYER (NewPlayerHandler)
-- `0x60005` = ET_NETWORK_DELETE_PLAYER
-- `0x8000e6` = ET_CHECKSUM_COMPLETE_PER_PLAYER -> ChecksumCompleteHandler (FUN_006a1b10)
-- `0x8000e7` = ET_SYSTEM_CHECKSUM_FAILED -> SystemChecksumFailedHandler
-- `0x8000e8` = ET_SYSTEM_CHECKSUM_PASSED -> SystemChecksumPassedHandler
-- `0x8000f1` = ET_NEW_PLAYER_IN_GAME -> NewPlayerInGameHandler (FUN_006a1e70)
-- See [event-types.md](event-types.md) for full list
+## Factory Table at 0x009962d4
+Type byte indexes into this table (each entry = 4-byte function ptr):
+- Type 0 (TGDataMessage): `FUN_006bc6a0` — proper function
+- Type 1 (TGHeaderMessage/ACK): `LAB_006bd1f0` — code label, not named function!
+- Type 2: `LAB_006bdd10` — code label
+- Type 3 (TGConnectAckMessage): `FUN_006be860`
+- Type 4 (TGBootMessage): `FUN_006badb0`
+- Type 5 (TGDisconnectMessage): `FUN_006bf410`
 
-### Critical Flow: ChecksumComplete -> InitNetwork (REVISED)
-1. NetFile fires `0x8000e6` (per-player checksum done)
-2. ChecksumCompleteHandler (FUN_006a1b10) sends opcode 0x00 (settings) + 0x01 (ready)
-3. Client receives opcode 0x00/0x01, processes, sends ack opcode back
-4. Server ReceiveMessageHandler (LAB_0069f2a0) at offset 0x0069f30d
-   **directly calls** FUN_006a1e70 (NOT via event system!)
-5. FUN_006a1e70 calls Python InitNetwork(playerID) via FUN_006f8ab0
-6. InitNetwork sends MISSION_INIT_MESSAGE with system/limits
-7. Client receives MISSION_INIT_MESSAGE -> BuildMission1Menus -> ship select
+Types 1 and 2 use raw code labels — Ghidra didn't identify them as function entries.
+The ACK deserializer is at 0x006bd1f0 but not shown in decompiled output.
 
-### Key Insight: InitNetwork trigger is opcode-driven, NOT event-driven
-- FUN_006a1e70 is called directly from ReceiveMessageHandler opcode switch (xref 0x0069f30d)
-- 0x8000f1 is only CREATED by FUN_006a1e70 itself (re-broadcast) and constructor (host)
-- 0x8000e8 / SystemChecksumPassedHandler does NOT fire 0x8000f1
-- The C-side harness InitNetwork scheduling may be DOUBLE-CALLING because native code
-  already handles it when the client ack opcode arrives
-- See [native-handoff-analysis.md](native-handoff-analysis.md) for full dispatch map
+## TGMessage Constructor (FUN_006b82a0)
+Sets: +0x3d = 1 (field_3D = "ready to send"), retx_count at +0x2c(param[0xb]) = 1,
+intervals at +0x34(0xd)=1.0, +0x30(0xc)=1.0
 
-### SOLVED: Black Screen
-Fixed by replacing Mission1.InitNetwork with Appc functional API version (raw SWIG).
-Client now gets ship selection UI and can fly in-game.
+TGHeaderMessage constructor (FUN_006bd120):
+- Calls TGMessage base ctor
+- Sets param[0xc]=0, param[0xb]=0 (overrides retx interval)
+- Sets param[0xd]=0x3f2aa64c (~0.667 seconds max interval)
+- Sets *(u8*)(param+0x10)=1 → byte offset 0x40 = is_below_0x32 defaults to 1
 
-### SOLVED: Server Crash During InitNetwork
-**Root cause: Python GIL violation.** HeartbeatThread (background) calls PyRun_String
-for 15s diagnostics at the exact same time GameLoopTimerProc (main thread) fires
-InitNetwork via PyRun_String. Python 1.5.2's allocator at 0x0099C478 has zero thread
-safety. Concurrent malloc/free corrupts free lists -> cascading crashes.
-- See [crash-analysis-initnetwork.md](crash-analysis-initnetwork.md) for full details
-- See [memory-allocator.md](memory-allocator.md) for allocator structure
-- **Fix: Remove ALL Python API calls from HeartbeatThread**
+## field_3D (+0x3d) Behavior
+In SendOutgoingPackets (FUN_006b55b0), the first-send queue iterates messages.
+`if (piVar10 + 0x3d == 0)` → message is SKIPPED (not serialized).
+Normal TGMessage has field_3D=1 (from constructor), so always sent.
+This field is NOT the bug — ACK messages also have field_3D=1.
 
-### Ship Selection Disconnect (First Connect Fails, Second Works)
-- See [ship-selection-disconnect-analysis.md](ship-selection-disconnect-analysis.md)
-- **Root cause**: SetClass_Create() returns raw SWIG pointer, .SetRegionModule() fails
-- No Set on server -> FUN_006a1e70 skips object sync loop (DAT_0097e9cc == 0)
-- Client ship creation (opcode 0x02) arrives but server has no Set to place it in
-- Second connection may work due to cached Python module state or partial init
-- **Fix**: Use Appc functional API for Set creation (SetClass_Create + SetClass_SetRegionModule)
+## Sequence Counter Management (Receive Side)
+In DispatchReceivedMessages (FUN_006b5f70), line 3626:
+`*(short *)(iVar1 + 0x24) = (short)piVar2[5] + 1;`
+This sets peer.expected_seq = msg.seq + 1 for EACH reliable message dispatched.
+Fragmented messages share the same seq — so ALL three fragments advance the counter
+by 1 from seq+0 → seq+1 → ... this is seq+1 from the last one processed.
+Each fragment has the SAME seq, so expected_seq ends up at seq+1 after all 3.
 
-### Phase 2 Crash: 0x1C Used as Pointer
-- See [phase2-crash-analysis.md](phase2-crash-analysis.md) for full details
-- **Root cause**: `FUN_006D1E10` (TGL entry lookup) returns `this+0x1C` as sentinel
-- When TGL object is NULL (load failed), sentinel = `0+0x1C = 0x1C` (non-NULL but invalid)
-- 0x1C passes NULL checks but crashes on dereference at `[0x1C+8]` = address 0x24
-- Three crash sites: 0x006F4DA1 (handled), 0x006F4EEC, 0x00731D43 (unhandled)
-- **Best fix**: patch at source in FUN_00504F10 to null-check TGL load result
-- TGL = "Totally Games Layout" - UI descriptor format loaded from data/TGL/*.tgl
+## QueueForDispatch Sequence Check (FUN_006b6ad0)
+Line 4125-4131: If incoming_seq - expected_seq is outside (-0x4001, +0x3fff):
+→ message is DESTROYED (delete + return). No ACK is generated for out-of-window messages.
 
-### CURRENT: Client Disconnect After Ship Selection
-- See [game-over-analysis.md](game-over-analysis.md) for analysis
-- See [nif-loading-analysis.md](nif-loading-analysis.md) for NIF/subsystem pipeline
-- Root cause: server sends empty StateUpdate packets (flags=0x00 instead of 0x20)
-- NIF ship models don't fully load without GPU -> subsystem list at ship+0x284 NULL
-- PatchNetworkUpdateNullLists correctly clears flags to prevent garbage, but client
-  expects subsystem data and disconnects after ~3 seconds without it
-- FUN_005b17f0 = NetworkObjectStateUpdate: builds per-tick state packets for each ship
-- FUN_004360c0 = GetBoundingBox: vtable[57]=GetWorldBound() returns NiBound*
+## Fragment First-Send Queue Ordering (IMPORTANT!)
+In SendHelper (FUN_006b5080), lines 2737-2764:
+- is_ordered == 0: fragments appended to TAIL (normal order)
+- is_ordered == 1: fragments inserted at HEAD (reverse order: frag 2, 1, 0 sent first)
 
-### NIF Loading & Subsystem Creation Pipeline (2026-02-13)
-- See [nif-loading-analysis.md](nif-loading-analysis.md) for full analysis
-- Network ship path: FUN_005b0e80 -> Python `SpeciesToShip.InitObject(self, iType)`
-- InitObject: GetShipFromSpecies -> LoadModel -> SetupModel -> LoadPropertySet -> SetupProperties
-- `LoadModel()` calls `g_kLODModelManager.Create()` + `AddLOD(nif_path)` + `Load()`
-- `Load()` triggers NiStream::Load (FUN_008176b0) - pure file I/O
-- `SetupModel(name)` associates LODModel with ship (provides "Scene Root" NiNode)
-- `AddToSet` (FUN_006c9520) searches for "Scene Root" node by name comparison
-- `SetupProperties()` (FUN_005b3fb0) creates subsystems from property set
-- Hardpoints are PURE PYTHON data (no NIF dependency)
-- Subsystem creation is PURE C++ allocation (no renderer dependency)
-- **ONLY dependency on NIF: "Scene Root" node name for AddToSet linking**
-- If NiStream::Load succeeds, entire subsystem chain follows automatically
+## Retransmit Queue: ONE MESSAGE PER TICK
+In SendOutgoingPackets (FUN_006b55b0), lines 3065-3095:
+The retransmit loop sends AT MOST ONE MESSAGE per peer per tick, then `break`s.
+ACK-outbox loop sends ALL ACKs (no break after each).
 
-### Renderer Pipeline
-- See [renderer-restoration-analysis.md](renderer-restoration-analysis.md) for full analysis
-- Pipeline runs fully (PatchSkipRendererSetup removed)
-- PatchDeviceCapsRawCopy prevents the 236-byte raw memcpy from Device7
-- Dev_EnumTextureFormats enumerates pixel formats for pipeline object creation
-- NIF loading is DECOUPLED from renderer for geometry/transforms/bounds
-- NiBound computed CPU-side from vertex data in NiAVObject::UpdateWorldBound()
-- Subsystems/weapons come from Python hardpoint files, NOT NIF scene graph
-- loadspacehelper.CreateShip: LoadModel -> ShipClass_Create -> LoadPropertySet -> SetupProperties
-- FUN_007c3480 pipeline objects: +0xb8 texmgr, +0xbc rendstate, +0xc0 shader, +0xc4 geom-accum
+## ACK Retransmit Count Limit
+ACK-outbox entries with retransmit_count >= 3 are NOT sent in the normal pass.
+Second pass at lines 3199-3228: ACKs with count > 2 only sent if data was also sent
+or peer is disconnecting. After count > 8, ACK is destroyed.
 
-### Key Engine Classes Identified
-- `FUN_006D1E10` = TGL::FindEntry(name) - binary search by hash, returns entry or this+0x1C
-- `FUN_006D03D0` = TGL::Load(path, flag) - loads .tgl file from disk
-- `FUN_006F4D90` / `FUN_006F4EE0` = wstring assign (two variants, with/without NULL check)
-- `FUN_00731BB0` = TGAnimAction constructor (0x94 bytes, vtable PTR_FUN_00896E60)
-- `FUN_00731D20` = TGAnimAction::Init - reads wstring param at [param+8] for length
-- `FUN_00734F70` = Animation name lookup in linked list at 0x0099D8E0
-- `FUN_005054B0` = Scene graph navigation + window setup (vtable calls 0x11C, 0x160)
+## TGWinsockNetwork::Update Tick Order (FUN_006b4560)
+For connected state (iVar8==3):
+1. SendOutgoingPackets (FUN_006b55b0) — ACK-outbox, retransmit, first-send
+2. ProcessIncomingMessages (FUN_006b5c90) — deserialize UDP packets
+3. DispatchReceivedMessages (FUN_006b5f70) — type switch dispatch
 
-## Build
-- `make build` cross-compiles ddraw.dll from WSL2
-- `make deploy` kills stbc.exe, copies dll+scripts+config
-- `make run` = deploy + launch
+This means: retransmits are sent BEFORE incoming ACKs are processed.
 
-## Files
-- `src/proxy/ddraw_main.c` - ALL C code (~3600 lines)
-- `src/scripts/Custom/DedicatedServer.py` - Python automation
-- `reference/decompiled/09_multiplayer_game.c` - MP game logic
-- `reference/decompiled/10_netfile_checksums.c` - Checksums + NewPlayerInGameHandler
-- `reference/decompiled/11_tgnetwork.c` - Network layer
+## Peer Object Layout (FUN_006c08d0, 0xC0 bytes)
+Key fields between +0x30 and +0x64 (peer timestamp/state gap):
+- +0x2C (param[0xb]): last_activity_time (DAT_0099c6bc at init)
+- +0x30 (param[0xc]): last_connect_time (DAT_0099c6bc at init)
+- +0x34 through +0x60: all init to 0 (no hidden state found)
+- +0x64: first-send queue head (param[0x19])
 
-## Strategic: Standalone Server Feasibility
-- See [standalone-server-analysis.md](standalone-server-analysis.md)
-- STBC MP is client-authoritative message relay (NOT server-authoritative simulation)
-- Standalone server ~5K-8K lines C, no engine/Python/game-data needed
-- Strategy: finish proxy first (research), then standalone from protocol spec (release)
-- Clean room: write protocol spec from captures, implement from spec only
+## Type 0x32 Boundary Rationale
+Two seq counter pairs: (peer+0x24/+0x26) for types < 0x32, (peer+0x28/+0x2A) for >= 0x32.
+Purpose: separate "game data" messages from "control/setup" messages.
+Types < 0x32 are game gameplay messages; >= 0x32 appear to be lobby/session setup.
+See QueueForDispatch (FUN_006b6ad0) lines 4117-4123.
 
-## Headless Approaches Analysis (2026-02-09)
-- See [headless-approaches-analysis.md](headless-approaches-analysis.md)
-- NI 3.1 has NO headless/null renderer (NiHeadlessRenderer = Gamebryo 2.3+)
-- NIF loading (NiStream::Load at FUN_008176b0) does NOT need renderer
-- NiBound computed CPU-side; needs NiAVObject::Update() called after load
-- **Best approach: Fix proxy COM to let pipeline objects build (7/10 feasibility)**
-- Pipeline constructors (FUN_007d4950/007d2230/007ccd10/007d11a0) call COM methods
-- If proxy returns D3D_OK for all, pipeline objects at 0xB8-0xC4 become non-NULL
-- Non-NULL pipeline = NIF loading works = bounds valid = state packets correct
-- **Fallback: Hook bounds injection after ship creation (5/10 feasibility)**
+## Key Functions
+- FUN_006b5080: SendHelper — fragments, seq assignment, first-send enqueue
+- FUN_006b55b0: SendOutgoingPackets — 3-queue send loop
+- FUN_006b5c90: ProcessIncomingMessages — receive + ACK creation
+- FUN_006b5f70: DispatchReceivedMessages — type switch
+- FUN_006b61e0: HandleReliableReceived — creates per-fragment ACKs
+- FUN_006b64d0: HandleACK — searches retransmit queue
+- FUN_006b6ad0: QueueForDispatch — seq check + reassembly trigger
+- FUN_006b6cc0: ReassembleFragments — 256-slot array, collects by frag_idx
+- FUN_006b8720: FragmentMessage — splits, sets is_fragmented/frag_idx
+- FUN_006b8550: TGMessage::CopyConstructor — copies ALL fields incl +0x3b
+- FUN_006c08d0: Peer object constructor (0xC0 bytes)
+- FUN_006b7410: CreatePeer — allocates 0xC0 bytes, sorted insert into peer array
 
-## Network Serialization (FULLY REVERSED)
-- See [serialization-formats.md](serialization-formats.md) for complete reference
-- TGBufferStream class: vtable at 0x00895C58, base at 0x00895D60
-- Position-based serialization (caller knows field order), NO type tags
-- Compressed vectors: direction as 3 signed bytes (x127), magnitude as uint16 (log10)
-- Magnitude encoding: [S:1][E:3][M:12], base-10 ranges from 0.001 to 10000
-- State update (opcode 0x1C): dirty-flag delta compression, 8 field types
-- Object IDs: uint32, assigned by server, looked up via hash table
-- Bool packing: up to 5 bools per byte (3-bit count in high bits)
-- Subsystem/weapon state: round-robin serialization (N items per tick, wraps)
-
-## Dedicated State-Init Parity (2026-02-12)
-- Stock dump #2 module surface is much wider than custom server (349 vs 270 parsed modules in this capture).
-- Missing-on-server set includes `Systems.Multi1*`, `ships*`, and multiple episode/name modules; stock includes these after normal start flow.
-- Both stock and server report `CurrentGame` and non-null `g_pStartingSet`/`g_pDatabase` in post-start state, so object existence alone is not parity.
-- Custom server MissionShared has dedicated-only start globals (`g_bGameStarted`, `g_iPlayerLimit`, `g_iSystem`, `g_iTimeLimit`) consistent with forced/shortcut startup.
-
-## Stage Boundary for Valid Dedicated Runtime (2026-02-12)
-- Canonical stock transition to active dedicated world occurs between system-select and scoreboard.
-- Module delta d3->d4 is exactly system package load: `Systems.Multi1*`, `ships*`, `Multiplayer.Systems`, `Systems.Utils` (+14 modules).
-- If server has `g_pStartingSet` but lacks those modules, set creation likely did not follow stock species->system initialization path.
+## Decompiled Source Files
+- `reference/decompiled/11_tgnetwork.c` — TGWinsockNetwork (7334 lines)
+- `reference/decompiled/12_data_serialization.c` — peer ctor, TGDataMessage serialization

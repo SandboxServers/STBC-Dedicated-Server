@@ -227,12 +227,14 @@ Then opcode 0x01 (single byte).
 - [docs/tgmessage-routing.md](docs/tgmessage-routing.md) - TGMessage routing RE: relay-all (no whitelist), opaque payload, star topology, no max type check, mod compatibility (KM/BCR custom types). Two-layer type system (transport vs game opcode)
 - [docs/tgmessage-routing-cleanroom.md](docs/tgmessage-routing-cleanroom.md) - Clean-room behavioral spec for TGMessage routing: no addresses, suitable for reimplementation. Behavioral guarantees, available opcode ranges, known mod allocations
 - [docs/stateupdate-subsystem-wire-format.md](docs/stateupdate-subsystem-wire-format.md) - Subsystem health wire format: linked list order (not fixed table), hierarchical WriteState (3 formats), round-robin serializer, CT_ type constants, Sovereign example
-- [docs/fragmented-ack-bug.md](docs/fragmented-ack-bug.md) - Fragmented reliable message ACK bug: transport layer RE, per-fragment ACK logic, 3 per-peer queues, TGMessage/TGHeaderMessage layouts, runtime hypotheses
+- [docs/fragmented-ack-bug.md](docs/fragmented-ack-bug.md) - Fragmented reliable message ACK bug: transport layer RE, per-fragment ACK logic, 3 per-peer queues, TGMessage/TGHeaderMessage layouts, runtime evidence of ACK-outbox accumulation
+- [docs/ack-outbox-deadlock.md](docs/ack-outbox-deadlock.md) - ACK-outbox deadlock: two-pass processing, retx 3-8 dead zone, 512-byte buffer (no overflow), memory leak + game data starvation + O(N) dedup degradation in long sessions
 - [docs/power-system.md](docs/power-system.md) - Power/reactor system RE: 3-class architecture (PowerSubsystem/PoweredSubsystem/Powered master), battery/conduit model, 1-second sim tick, health-scaled main conduit, per-ship power tables (46 ships), per-subsystem consumption tables, AdjustPower algorithm
 - **OpenBC**: `../OpenBC/docs/power-system.md` - Clean-room power system spec: reactor→battery→conduit→consumer model, 3 draw modes, graceful degradation, faction design philosophy, complete ship/subsystem power tables
 - [docs/subsystem-integrity-hash.md](docs/subsystem-integrity-hash.md) - Subsystem integrity hash RE: hash_fold algorithm, 12-slot hash order, base/weapon/individual weapon dispatch, boolean sentinel constants, dead code in MP (sender=SP-only, receiver=MP-only), wire encoding
 - [docs/set-phaser-level-protocol.md](docs/set-phaser-level-protocol.md) - SetPhaserLevel (opcode 0x12) RE: 18-byte wire format, TGCharEvent class (0x2C bytes, factory 0x105), sender/receiver asymmetry, generic event forward group, phaser intensity (LOW/MED/HIGH)
 - **OpenBC**: `../OpenBC/docs/set-phaser-level-wire-format.md` - Clean-room SetPhaserLevel spec: 18-byte fixed message, phaser intensity enum, generic event forward pattern, Python API
+- **OpenBC**: `../OpenBC/docs/ack-outbox-deadlock.md` - Clean-room ACK-outbox deadlock spec: two-pass processing bug, three degradation effects, reimplementation guidance (single-pass + hash map dedup)
 
 ## Ghidra Annotation Scripts
 Bulk annotation scripts in `tools/`. Run from Ghidra Script Manager with stbc.exe loaded.

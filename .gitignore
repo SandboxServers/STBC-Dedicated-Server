@@ -33,3 +33,5 @@ Thumbs.db
 *.swo
 *~
 .claude/agents/stbc-original-dev.md
+
+books/*

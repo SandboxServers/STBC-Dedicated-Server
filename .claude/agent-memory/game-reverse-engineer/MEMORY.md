@@ -208,6 +208,18 @@
 - **EnergyWeaponProperty CORRECTED**: +0x68=MaxCharge, +0x78=MaxDamage, +0x7C=MaxDamageDistance
 - FriendlyTractorTime/Warning/Max at UtopiaModule +0x4C/+0x50/+0x54
 
+## Fragmented Reliable ACK Bug (2026-02-19, Ghidra-VERIFIED)
+- See [docs/fragmented-ack-bug.md](../../docs/fragmented-ack-bug.md) for FULL analysis
+- **ACK factory at 0x006bd1f0**: NOT in Ghidra func DB; decompiled via raw objdump
+- Factory correctly deserializes seq/is_fragmented/is_below_0x32/frag_idx from wire
+- HandleACK (0x006b64d0): 4-field matching logic is provably correct
+- ProcessIncomingMessages (0x006b5c90): ACK gets is_reliable=0, skips ACK-of-ACK creation
+- QueueForDispatch (0x006b6ad0): ACK routes to unreliable queue (this+0x70), no seq filtering
+- DispatchReceivedMessages (0x006b5f70): type 1 dispatches to HandleACK correctly
+- **ALL static code paths verified correct -- bug requires runtime instrumentation to diagnose**
+- ACK-outbox has retransmit limit of 3 sends per ACK entry
+- TGHeaderMessage: vtable 0x008959ac, size 0x44, GetType()=0x01, ctor 0x006bd120
+
 ## Ghidra Undefined Code Workaround (2026-02-17)
 - Some vtable entries point to addresses NOT in Ghidra's function database
 - All Ghidra MCP calls (decompile/disassemble/rename/set_prototype) fail on these

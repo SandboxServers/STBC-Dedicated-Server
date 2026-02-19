@@ -1,7 +1,7 @@
 # Player Disconnect Flow
 
 Reverse-engineered from stbc.exe via Ghidra decompilation, source code analysis, and packet trace inspection.
-Confidence: **High** for code paths (verified against decompiled functions); **Unverified** for runtime behavior (no actual disconnect captured in available traces — all test sessions ended without player disconnects).
+Confidence: **High** for code paths (verified against decompiled functions); **Verified** for graceful disconnect runtime behavior (wire trace captured 2026-02-19, stock-dedi loopback session).
 
 ## Overview
 
@@ -15,10 +15,10 @@ TIMEOUT PATH (~45 seconds):
     └─ creates TGBootPlayerMessage (bootReason=1)
     └─> FUN_006b75b0 (peer deletion)
 
-GRACEFUL DISCONNECT (transport 0x06):
+GRACEFUL DISCONNECT (transport 0x05):
   ProcessIncomingPackets (FUN_006b5c90)
-    └─ receives transport message type 0x06
-    └─ dispatches to FUN_006b6a70
+    └─ receives transport message type 0x05
+    └─ dispatches to FUN_006b6a20
     └─ reads peer ID from message
     └─> FUN_006b75b0 (peer deletion)
 
@@ -76,11 +76,11 @@ The timeout threshold is stored at a global (DAT_0088bd58), compared against `cu
 | +0xB8 | float | Disconnect timestamp |
 | +0xBC | byte | IsDisconnected flag (0=active, 1=disconnected) |
 
-### 1.2 Graceful Disconnect (Transport Message 0x06)
+### 1.2 Graceful Disconnect (Transport Message 0x05)
 
-**Handler**: FUN_006b6a70
+**Handler**: FUN_006b6a20 (dispatched from FUN_006b5f70, type 5 case)
 
-When a client cleanly exits (ALT+F4, menu quit), it sends transport message type 0x06 (Disconnect). This is handled in the transport layer's message dispatch switch (FUN_006b6420, case 4):
+When a client cleanly exits (ALT+F4, menu quit), it sends transport message type 0x05 (DisconnectMessage). This is verified on the wire — see Section 9 for the captured disconnect packet. The handler:
 
 ```c
 // FUN_006b6a70 — Graceful disconnect handler
@@ -375,15 +375,15 @@ In the headless dedicated server, the mission scripts may not register their Pyt
 
 **Impact**: Low. The Python handler only rebuilds the UI player list, which is irrelevant for a headless server. Score dictionaries are preserved regardless.
 
-### 7.3 No Disconnect Captured in Available Traces
+### 7.3 Disconnect Trace Evidence
 
-Neither the 34-minute battle trace (2.6M lines, 3 players) nor the stock-dedi loopback trace (4,343 lines) captured an actual player disconnect. All findings about the runtime disconnect flow are based on decompiled code analysis, not packet-trace verification.
+**Graceful disconnect captured** in the 2026-02-19 stock-dedi loopback trace (22,119 lines, ~91-second session). See Section 9 for full wire trace analysis.
 
-Observed trace evidence:
+Prior trace evidence:
 - **0x17 DeletePlayerUI**: 6 instances in battle trace, 1 in stock-dedi — **all at join time** (reuse of player slots), not disconnect
 - **0x18 DeletePlayerAnim**: 0 instances in either trace
 - **0x14 DestroyObject**: Observed for ship destruction (combat kills), not specifically for disconnect-triggered removal
-- **Transport 0x06 Disconnect**: 0 instances in either trace
+- **Transport 0x05 Disconnect**: 1 instance captured (2026-02-19 trace, packet #1764)
 
 ## 8. Key Functions
 
@@ -391,7 +391,7 @@ Observed trace evidence:
 |---------|------|------|
 | FUN_006b4560 | TGNetwork_Update | WSN tick: timeout detection, keepalive, packet processing |
 | FUN_006b5c90 | ProcessIncomingPackets | Receives UDP packets, dispatches transport messages |
-| FUN_006b6a70 | GracefulDisconnectHandler | Handles transport 0x06: calls FUN_006b75b0 |
+| FUN_006b6a20 | GracefulDisconnectHandler | Handles transport 0x05: calls FUN_006b75b0 |
 | FUN_006b75b0 | PeerDeletion | Convergence point: marks peer, posts 0x60005 event |
 | FUN_006b7660 | PeerArrayRemove | Actually removes peer from array, calls destructor |
 | FUN_006b7590 | PeerCleanupFallback | Alternative cleanup when peer not found in array |
@@ -403,6 +403,92 @@ Observed trace evidence:
 | FUN_006a1420 | DeletePlayerAnim | Opcode 0x18 handler: "Player X has left" text |
 | FUN_00506170 | BootPlayerHandler | MultiplayerWindow: initiates kick/boot |
 | FUN_00401cc0 | BinarySearchPeerArray | Binary search helper used by FUN_006b75b0 |
+
+## 9. Verified Graceful Disconnect (Wire Trace, 2026-02-19)
+
+**Source**: stock-dedi loopback trace, OBSERVE_ONLY proxy build (zero patches). Session: client connects at 11:37:53, disconnects at 11:39:24 (~91 seconds of gameplay).
+
+### 9.1 Pre-Disconnect Activity
+
+Last game data packets (PythonEvents seq=39, 40) at 11:39:21.416. Client ACKs for seq=39 and seq=40 are retransmitted 3 times (11:39:21.419, 22.085, 22.753) — this is the ACK-outbox accumulation bug (see [fragmented-ack-bug.md](fragmented-ack-bug.md)).
+
+### 9.2 Disconnect Packet (Client → Server)
+
+```
+#1764 C->S Peer#0(127.0.0.1:60271) len=20 [Disconnect]
+Decrypted:
+  0000: 02 03 05 0A C0 02 00 02 0A 0A 0A EF 01 27 00 00  |.............'..|
+  0010: 01 28 00 00                                      |.(..|
+DECODE: peer=C(2) msgs=3
+  [msg 0] Disconnect (0x05) byte1=0x0A
+  [msg 1] ACK seq=39
+  [msg 2] ACK seq=40
+```
+
+**Wire format breakdown**:
+- `02` — peer_id (client = 2)
+- `03` — msg_count (3 transport messages in this packet)
+- `05` — **transport type 0x05 = DisconnectMessage** (verified)
+- `0A C0 02 00 02 0A 0A 0A EF` — disconnect payload (9 bytes, content TBD)
+- `01 27 00 00` — stale ACK for seq=39 (type 0x01, seq LE 0x0027, flags 0x00, non-fragmented)
+- `01 28 00 00` — stale ACK for seq=40
+
+**Key observation**: The disconnect message is **multiplexed** with stale ACKs from the ACK-outbox in a single UDP packet. The ACK-outbox accumulation bug means every outbound packet — including the disconnect — carries all accumulated stale ACKs.
+
+### 9.3 Server ACK Response
+
+Server immediately responds with an ACK for the disconnect (seq=2, low-type):
+
+```
+#1765 S->C len=6 [ACK]
+  01 01 01 02 00 02
+DECODE: peer=S(1) msgs=1
+  [msg 0] ACK seq=2
+```
+
+The server then **retransmits this ACK 7 times** over ~4 seconds:
+
+| Packet | Time | Content |
+|--------|------|---------|
+| #1765 | 11:39:24.854 | ACK seq=2 |
+| #1766 | 11:39:25.519 | ACK seq=2 |
+| #1767 | 11:39:26.187 | ACK seq=2 |
+| #1768 | 11:39:26.853 | ACK seq=2 |
+| #1769 | 11:39:27.520 | ACK seq=2 |
+| #1770 | 11:39:28.188 | ACK seq=2 |
+| #1771 | 11:39:28.855 | ACK seq=2 |
+
+Interval: ~0.67 seconds between retransmits. This is the ACK-outbox accumulation bug again — the server's ACK for the disconnect message is never removed from its outbox, so it retransmits until the peer entry is eventually cleaned up.
+
+### 9.4 GameSpy Heartbeat
+
+Immediately after the disconnect retransmits stop:
+
+```
+#1772 S->C Peer#1(81.205.81.173:27900) len=47 GAMESPY_HEARTBEAT
+  \heartbeat\0\gamename\bcommander\statechanged\1
+```
+
+The `statechanged=1` signals to the master server that the server's player count has changed (player disconnected). This is the **only externally-visible artifact** of a disconnect.
+
+### 9.5 Complete Verified Graceful Disconnect Timeline
+
+```
+11:39:21.416  Last game data: PythonEvent seq=39, seq=40 (S→C)
+11:39:21.419  Client ACKs seq=39, seq=40 (C→S) — first send
+11:39:22.085  Client retransmits ACKs seq=39, seq=40 (stale ACK bug)
+11:39:22.753  Client retransmits ACKs again
+11:39:24.851  Client sends DISCONNECT (0x05) + stale ACKs (C→S)
+11:39:24.854  Server ACKs disconnect (seq=2) (S→C)
+11:39:25.519  Server retransmits ACK seq=2
+   ... 5 more retransmits at ~0.67s intervals ...
+11:39:28.855  Last ACK retransmit
+11:39:29.016  GameSpy heartbeat with statechanged=1
+```
+
+Total disconnect processing time: **~4.2 seconds** from disconnect message to GameSpy notification. The ~3.3-second gap between the last game data and the disconnect message is the client's shutdown sequence (saving state, closing UI, etc.).
+
+---
 
 ## Appendix: Complete Disconnect Sequence (Timeout Path)
 
