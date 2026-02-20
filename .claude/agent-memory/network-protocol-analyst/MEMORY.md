@@ -76,6 +76,18 @@
 - +0xAC: CompressVec4Byte (calls +0xA0, adds magnitude byte)
 - +0xBC: DecompressVec4Byte (4 bytes -> Vec3 + magnitude)
 
+## Collision Damage Comparison (2026-02-19)
+- See [collision-damage-trace-comparison.md](collision-damage-trace-comparison.md)
+- **ROOT CAUSE 1**: Stock server sends 14 PythonEvent (0x06) after collision (eventCode 0x00008129 + 0x00000101)
+  - These trigger client-side AddDamage (18 DoDamage_FromPosition calls) = actual ship destruction
+  - OpenBC sends ZERO PythonEvents -> client only gets 4 collision contact DoDamage (not lethal)
+- **ROOT CAUSE 2**: Server-side ship+0x284 subsystem list order differs from client
+  - Stock cycles: startIdx 0,2,6,8,10 | OpenBC cycles: startIdx 0,5,7,9
+  - DeferredInitObject creates subsystems in wrong order -> client misreads subsystem bytes
+  - This causes shield/hull/PTG flickering on client HUD
+- **OpenBC sends 0x29 Explosion (2x)** but stock does NOT for same collision scenario
+- CollisionEffect (0x15) sent identically by both servers (2x each)
+
 ## Files Reference
 - `docs/wire-format-spec.md` - Complete opcode table + wire formats
 - `docs/message-trace-vs-packet-trace.md` - Stock packet cross-reference

@@ -35,3 +35,5 @@ Thumbs.db
 .claude/agents/stbc-original-dev.md
 
 books/*
+
+logs/*

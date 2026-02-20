@@ -645,6 +645,12 @@ The fragment ACK bug (fragments retransmitting despite correct ACKs) and the ack
 
 2. **ACK-outbox leak**: ACK entries in the outbox are NEVER removed, regardless of whether they're fragment ACKs or non-fragment ACKs. Every ACK ever created stays in the outbox forever, growing the per-packet overhead monotonically.
 
+### Valentine's Day Battle Trace (2026-02-14)
+
+A 34-minute, 3-player active combat session (136 MB / 2.6M lines) was analyzed for fragment ACK evidence. **Zero fragmented ACK entries were found in client packets** across the entire trace. All observed ACK messages were non-fragmented (4-byte ACKs, flags byte with bit 0 = 0).
+
+This provides additional evidence that the fragment ACK bug (Bug 1) and the ACK-outbox accumulation bug (Bug 2) are **distinct issues**. The fragment retransmission pattern observed in the 91-second Feb 19 trace (where fragmented reliable messages retransmit endlessly) is either session-phase dependent (only occurs during the initial checksum/settings exchange) or was not triggered during the Valentine's Day combat session. In either case, the ACK-outbox accumulation observed in the Valentine's Day trace is entirely from non-fragmented ACK entries.
+
 ---
 
 ## Function Reference
