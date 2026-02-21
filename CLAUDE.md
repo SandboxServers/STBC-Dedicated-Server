@@ -249,6 +249,7 @@ Then opcode 0x01 (single byte).
 - [docs/gameplay/collision-shield-interaction.md](docs/gameplay/collision-shield-interaction.md) - Collision-shield: directional absorption, two-step damage
 - [docs/gameplay/self-destruct-pipeline.md](docs/gameplay/self-destruct-pipeline.md) - Self-destruct: opcode 0x13, 3 execution paths, PowerSubsystem cascade
 - [docs/gameplay/objcreate-unknown-species-analysis.md](docs/gameplay/objcreate-unknown-species-analysis.md) - ObjCreate with unknown species: failure modes, crash risks
+- [docs/gamemode-system.md](docs/gamemode-system.md) - Gamemode/mission system RE: two-layer architecture, scoring, wire formats, team system, end/restart flow
 
 ### Engine
 - [docs/engine/rtti-class-catalog.md](docs/engine/rtti-class-catalog.md) - 670 classes: 129 NI, 124 TG, ~420 game (RTTI extraction)
@@ -267,6 +268,7 @@ Then opcode 0x01 (single byte).
 - [docs/guides/swig-api.md](docs/guides/swig-api.md) - SWIG function reference
 - [docs/guides/lessons-learned.md](docs/guides/lessons-learned.md) - Debugging techniques, pitfalls, protocol discoveries
 - [docs/troubleshooting.md](docs/troubleshooting.md) - Symptom-to-cause quick reference
+
 
 ### Analysis
 - [docs/analysis/collision-trace-comparison.md](docs/analysis/collision-trace-comparison.md) - Stock dedi vs OpenBC: byte-level wire format comparison, 6 behavioral gaps
@@ -292,6 +294,7 @@ Then opcode 0x01 (single byte).
 - **OpenBC**: `../OpenBC/docs/wire-formats/delete-player-ui-wire-format.md` - Clean-room DeletePlayerUI (0x17) wire format
 - **OpenBC**: `../OpenBC/docs/wire-formats/delete-player-anim-wire-format.md` - Clean-room DeletePlayerAnim (0x18) wire format + TGL crash risk
 - **OpenBC**: `../OpenBC/docs/wire-formats/event-forward-wire-format.md` - Clean-room GenericEventForward (0x07-0x12, 0x1B) group spec
+- **OpenBC**: `../OpenBC/docs/gamemode-system.md` - Clean-room gamemode spec: scoring rules, wire formats, team system, end/restart flow, server implementation requirements, state tracking
 
 ## Ghidra Annotation Scripts
 Bulk annotation scripts in `tools/`. Run from Ghidra Script Manager with stbc.exe loaded.
