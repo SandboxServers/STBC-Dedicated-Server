@@ -10,7 +10,11 @@ the host. The host validates the report, then applies authoritative collision da
 broadcasts visual effects. The message contains a serialized `CollisionEvent` object
 (TGEvent class type `0x8124`) with compressed contact points and a force magnitude.
 
-**Direction**: Client -> Host
+**C→S only**: The server never relays CollisionEffect (0x15) packets. The server processes
+collision reports locally and distributes damage results to all clients via PythonEvent
+(opcode 0x06) messages. Confirmed across 138,695 packets in a 33.5-minute stock dedi trace.
+
+**Direction**: Client -> Host (C→S only; server processes locally, never relays)
 **Handler**: `Handler_CollisionEffect_0x15` at `0x006a2470`
 **Write method**: `CollisionEvent::WriteToStream` at `0x005871a0` (vtable+0x34)
 **Read method**: `CollisionEvent::ReadFromStream` at `0x00587300` (vtable+0x38)

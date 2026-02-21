@@ -64,8 +64,9 @@ collision damage and subsystem damage. The main multiplayer loop is functional.
 - First connection always times out (client must reconnect) — stock-dedi does NOT have this issue
 - `scoring dict fix rc=-1` - Python code for SCORE_MESSAGE send has an error
 - Server's own ship object (player 0) still sends flags=0x00 (harmless — host's dummy ship)
-- 0x35 GameState byte[1]: we send 0x01, stock sends 0x09 (lobby slot count)
 - Double NewPlayerInGame: engine handler + our GameLoopTimerProc both fire
+- SCORE_CHANGE (0x36) not sent for weapon kills on stock dedi — may be a stock BC bug (collision kills work)
+- PythonEvent 0x010C (45% of combat PythonEvents) — undocumented, needs Ghidra RE
 
 ### Key Fixes Applied (in ddraw_main.c split files)
 1. **TGL FindEntry NULL fix** - code cave at 0x006D1E10, returns NULL when ECX is NULL
@@ -123,7 +124,7 @@ collision damage and subsystem damage. The main multiplayer loop is functional.
 | 0x10 | StartWarp | FUN_0069fda0 | Warp drive engage |
 | 0x11 | RepairListPriority | FUN_0069fda0 | Repair priority ordering |
 | 0x12 | SetPhaserLevel | FUN_0069fda0 | Phaser power/intensity (event 0x008000E0) |
-| 0x13 | HostMsg | FUN_006A01B0 | Host message dispatch (self-destruct etc.) |
+| 0x13 | HostMsg | FUN_006A01B0 | Self-destruct request (client→host, 1-byte, no payload) |
 | 0x14 | DestroyObject | FUN_006a01e0 | Object destruction |
 | 0x15 | CollisionEffect | FUN_006a2470 | **Collision damage relay** (84/session) |
 | 0x16 | UICollisionSetting | FUN_00504c70 | Collision toggle (MultiplayerWindow dispatcher) |
@@ -239,8 +240,13 @@ Then opcode 0x01 (single byte).
 - [docs/set-phaser-level-protocol.md](docs/set-phaser-level-protocol.md) - SetPhaserLevel (opcode 0x12) RE: 18-byte wire format, TGCharEvent class (0x2C bytes, factory 0x105), sender/receiver asymmetry, generic event forward group, phaser intensity (LOW/MED/HIGH)
 - **OpenBC**: `../OpenBC/docs/set-phaser-level-wire-format.md` - Clean-room SetPhaserLevel spec: 18-byte fixed message, phaser intensity enum, generic event forward pattern, Python API
 - **OpenBC**: `../OpenBC/docs/ack-outbox-deadlock.md` - Clean-room ACK-outbox deadlock spec: two-pass processing bug, three degradation effects, reimplementation guidance (single-pass + hash map dedup)
+- [docs/self-destruct-pipeline.md](docs/self-destruct-pipeline.md) - Self-destruct pipeline RE: opcode 0x13 (1-byte wire format), 3 execution paths (SP/host/client), DoDamageToSelf via PowerSubsystem, death cascade, scoring (no kill credit, team penalty), gate checks (god mode, damage disabled)
+- **OpenBC**: `../OpenBC/docs/self-destruct-system.md` - Clean-room self-destruct spec: opcode 0x13 wire format, 3 execution paths, power subsystem cascade, scoring rules, AI/script alternatives, server implementation notes
 - [docs/pythonevent-wire-format.md](docs/pythonevent-wire-format.md) - PythonEvent (opcode 0x06) RE: polymorphic TGStreamedObject transport, 3 event classes (TGSubsystemEvent/TGCharEvent/ObjectExplodingEvent), 3 producers, collision→repair chain, event type override table
 - **OpenBC**: `../OpenBC/docs/pythonevent-wire-format.md` - Clean-room PythonEvent spec: polymorphic event transport, 3 factory types, collision damage chain, ~14 messages per collision, server implementation notes
+- [docs/ship-death-lifecycle.md](docs/ship-death-lifecycle.md) - Ship death in MP: Explosion (0x29) + ObjCreateTeam (0x03) respawn, DestroyObject (0x14) NOT used, SCORE_CHANGE anomaly
+- [docs/stock-trace-analysis.md](docs/stock-trace-analysis.md) - Ground truth from stock dedi traces: 10 findings, opcode frequency tables, doc corrections applied
+- **OpenBC**: `../OpenBC/docs/ship-death-lifecycle.md` - Clean-room ship death/respawn spec: explosion broadcast + respawn, no destroy message for ship deaths
 
 ## Ghidra Annotation Scripts
 Bulk annotation scripts in `tools/`. Run from Ghidra Script Manager with stbc.exe loaded.

@@ -781,6 +781,11 @@ Finds the object by ID, then either:
 - If object has no owner (`obj[8] == NULL`): calls cleanup + destroy
 - If object has owner: calls `owner->vtable[0x5C](object_id)` to notify
 
+> **Stock trace note**: Not observed in stock MP traces (0 occurrences across 138,695 packets
+> in a 33.5-minute combat session with 59 ship deaths). Ships die via Explosion (0x29) +
+> ObjCreateTeam (0x03) respawn. DestroyObject may only be used for non-ship objects or
+> player disconnects.
+
 ### 0x17 - Delete Player UI
 
 **Handler**: `FUN_006A1360`
@@ -1766,8 +1771,8 @@ Python-level messages (bypass C++ dispatcher entirely via SendTGMessage):
 | 0x11 | RepairListPriority | any | FUN_0069fda0 | objectId, event data (→ event 0x00800076) |
 | 0x12 | SetPhaserLevel | any | FUN_0069fda0 | objectId, event data (→ event 0x008000E0) |
 | 0x13 | HostMsg | C->S | FUN_006A01B0 | host-specific dispatch (self-destruct etc.) |
-| 0x14 | DestroyObject | S->C | FUN_006a01e0 | objectId |
-| 0x15 | CollisionEffect | C->S | FUN_006a2470 | typeClassId(0x8124), eventCode(0x800050), srcObjId, tgtObjId, count, count*cv4_byte(dir+mag), force(f32) |
+| 0x14 | DestroyObject | S->C | FUN_006a01e0 | objectId. **Not observed in stock MP ship deaths** — ships die via 0x29+0x03 |
+| 0x15 | CollisionEffect | C->S | FUN_006a2470 | typeClassId(0x8124), eventCode(0x800050), srcObjId, tgtObjId, count, count*cv4_byte(dir+mag), force(f32). **C→S only, server never relays** |
 | 0x16 | (default) | -- | DEFAULT | Handled by MultiplayerWindow dispatcher, not game jump table |
 | 0x17 | DeletePlayerUI | S->C | FUN_006a1360 | player UI cleanup |
 | 0x18 | DeletePlayerAnim | S->C | FUN_006a1420 | player deletion animation |
@@ -1780,7 +1785,7 @@ Python-level messages (bypass C++ dispatcher entirely via SendTGMessage):
 | 0x1F | EnterSet | S->C | FUN_006a05e0 | objectId, setData |
 | 0x20-0x28 | (default) | -- | DEFAULT | Handled by NetFile dispatcher, not game jump table |
 | 0x29 | Explosion | S->C | FUN_006a0080 | objectId, impact(cv4), damage(cf16), radius(cf16) |
-| 0x2A | NewPlayerInGame | S->C | FUN_006a1e70 | (triggers InitNetwork + object replication) |
+| 0x2A | NewPlayerInGame | C->S | FUN_006a1e70 | Client sends to server after ship selection. **Direction verified C→S from stock traces** |
 
 ### Python-Level Messages (via SendTGMessage, bypass C++ dispatcher)
 

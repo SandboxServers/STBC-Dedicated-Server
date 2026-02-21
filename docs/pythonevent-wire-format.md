@@ -418,6 +418,9 @@ When two ships collide, the host generates approximately **14 PythonEvent messag
 The exact count varies with collision geometry and whether subsystems are already
 in the repair queue (duplicates are rejected by `FUN_00565520`).
 
+> **Stock trace confirmation**: A 33.5-minute 3-player combat session with 84 collisions
+> produced 3,825 PythonEvents total. Per-collision event counts of 12-14 confirmed.
+
 ### Worked Example from Stock Dedi Packet Trace
 
 A single collision between two ships produced these 14 messages in sequence:
@@ -567,6 +570,16 @@ All collision-path PythonEvents are **host-generated, server-to-client only**.
 | 0x008000FC | ET_HOST_COLLISION_EFFECT | (internal only) | Client-reported collision |
 | 0x00800053 | ET_COLLISION_DAMAGE | (internal only) | Auto-repair trigger |
 | 0x00800070 | ET_SUBSYSTEM_DAMAGED | (internal only) | Damage tracking |
+| 0x0000010C | (undocumented) | Unknown | **45% of all PythonEvents in combat** (1,718 of 3,825 in 33.5-min battle trace). Sent as both 0x06 S→C and 0x0D C→S. Needs Ghidra RE to identify ET_ constant mapping. |
+
+## Collision Chain Event Count (Verified from Stock Traces)
+
+Stock dedi traces confirm exactly **12-14 PythonEvents per collision**:
+- 1 ET_WEAPON_HIT (0x8129) or equivalent per-ship damage event
+- 11 ET_SUBSYSTEM_DAMAGED (0x0101) repair-list additions
+- 2 delayed events (repair completion / re-queuing)
+
+Total count varies with collision geometry and pre-existing repair queue state.
 
 ## Related Documents
 
