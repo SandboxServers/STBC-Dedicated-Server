@@ -1131,19 +1131,82 @@ This is an **object ID comparison**, not a connection ID comparison. When the ho
 
 ---
 
+## Power Mode Assignments (COMPLETE)
+
+The `powerMode` field at PoweredSubsystem+0xA0 controls which battery pool a subsystem draws from. There are exactly 3 modes:
+
+| Mode | Name | Draw Function | Behavior |
+|------|------|---------------|----------|
+| 0 | Main-first | FUN_00563a70 | Draw from main battery (+0xA4); overflow to backup (+0xA8) |
+| 1 | Backup-first | FUN_00563bb0 | Draw from backup battery (+0xB4 via +0xAC); overflow to main (+0xA4 via +0xB4) |
+| 2 | Backup-only | FUN_00563cb0 | Draw exclusively from backup battery (+0xB4); NO fallback |
+
+### Per-Subsystem Mode Assignments
+
+Verified by exhaustive binary search for `mov DWORD PTR [reg+0xA0], N` in the PoweredSubsystem inheritance chain:
+
+| Subsystem | Constructor | powerMode | Rationale |
+|-----------|-------------|-----------|-----------|
+| PoweredSubsystem (base) | FUN_00562240 | 0 (main-first) | Default for all consumers |
+| ImpulseEngineSubsystem | FUN_00561050 | 0 (inherited) | Normal power draw |
+| SensorSubsystem | FUN_00566d10 | 0 (inherited) | Normal power draw |
+| PhaserSystem | FUN_00573c90 | 0 (inherited) | Normal power draw |
+| TorpedoSystem | FUN_0057b020 | 0 (inherited) | Normal power draw |
+| PulseWeaponSystem | (inherits WeaponSystem) | 0 (inherited) | Normal power draw |
+| ShieldGenerator | (inherits PoweredSubsystem) | 0 (inherited) | Normal power draw |
+| WarpEngineSubsystem | (inherits PoweredSubsystem) | 0 (inherited) | Normal power draw |
+| RepairSubsystem | (inherits PoweredSubsystem) | 0 (inherited) | Normal power draw |
+| **TractorBeamSystem** | FUN_00582080 | **1 (backup-first)** | Draws from backup battery first, then main |
+| **CloakingSubsystem** | FUN_0055e2b0 | **2 (backup-only)** | Draws exclusively from backup battery |
+
+**Key findings:**
+- Only **2 of 11** subsystem types override the default power mode
+- The **cloaking device** is the only subsystem that uses mode 2 (backup-only). This means cloaking can ONLY run while the backup battery has charge. Once backup is depleted, cloaking receives zero power and the auto-decloak energy failure triggers.
+- The **tractor beam** uses mode 1 (backup-first), preferring backup batteries but falling back to main power if backup is depleted. This preserves main battery charge for combat systems while the tractor is active.
+- All combat and essential systems (weapons, shields, engines, sensors) use mode 0 (main-first), drawing from the main battery pool.
+
+### Shield Recharge Special Path
+
+ShieldClass::Update (FUN_0056a230) contains a hardcoded call to `DrawFromBackupBattery` (FUN_00563bb0) outside the normal powerMode switch. This occurs in the **dead-shield recharge path**: when the shield subsystem itself is dead (IsDead returns true) but individual facings need recharge power, the shield draws directly from backup batteries. This is NOT driven by the powerMode field -- it bypasses the switch entirely.
+
+```
+ShieldClass::Update:
+  if accumulated_time >= INTERVAL (constant at 0x8E529C):
+    if NOT dead AND enabled (+0x9C):
+      // Normal path: per-facing calculation with 0.85 factor
+      // Uses powerMode switch via base PoweredSubsystem::Update
+    else:
+      // Dead/disabled path: loop 6 facings
+      for each facing:
+        if facing NOT dead:
+          // DIRECT call to DrawFromBackupBattery (bypasses powerMode)
+          power = EPS->DrawFromBackupBattery(chargeRate * SHIELD_CONSTANT)
+          // Then recharge this facing
+          // Then return excess via AddToBackupBattery (FUN_005638d0)
+```
+
+This design means damaged shields preferentially consume backup batteries during recovery, preserving main battery charge for active combat systems. The 0.85 constant at `0x892FBC` (`0x3EA8F5C3 = 0.33` is the random phase, `0x3F59999A = 0.85` is the charge factor) scales the normal charge rate.
+
+### Design Philosophy
+
+The three-mode system creates a power priority hierarchy:
+1. **Main battery** (mode 0): Reserved for combat-critical systems (weapons, shields, engines, sensors). These get first access to the primary power reservoir.
+2. **Backup battery** (mode 1): Tractor beams draw from backup first. This prevents tractor operations from draining combat power unless backup is exhausted.
+3. **Backup-only** (mode 2): Cloaking is completely isolated from the main power grid. It can only operate while the backup battery has charge, creating a natural time limit on cloak duration and making it impossible for cloaking to starve combat systems.
+
+This is consistent with Star Trek engineering: backup/auxiliary power for stealth and utility systems, primary power for weapons and shields.
+
+---
+
 ## Open Questions
 
 1. **Event IDs**: 0x80006c likely = "power state changed", 0x800072 = "subsystem disabled", 0x800073 = "subsystem enabled", 0x8000dd = "powered subsystem state changed". Need Ghidra verification.
 2. **PowerProperty ownership**: The PowerProperty (type 0x813E) creates the "Powered" master (+0x2B0). The "Power" reactor at +0x2C4 (type 0x8138) may use a different generic property. Need to trace `SetupFromProperty` for both. *(Partially answered: SetupFromProperty at FUN_005636d0 initializes battery levels from property+0x48 and +0x4C. Batteries start full at spawn.)*
-3. **Default powerMode values**: Which subsystems default to mode 0/1/2? The cloaking device likely defaults to mode 2 (backup only) given the backup-heavy power design. Base PoweredSubsystem ctor initializes +0xA0 to 0 (mode 0 = main-first). *(Confirmed: ctor sets mode 0 for all subsystems. Specific overrides in SetupFromProperty need verification.)*
+3. ~~**Default powerMode values**: Which subsystems default to mode 0/1/2?~~ **ANSWERED**: See "Power Mode Assignments" section below. Only 2 subsystems override the default: CloakingSubsystem (mode 2, backup-only) and TractorBeamSystem (mode 1, backup-first). All others inherit mode 0 (main-first) from the PoweredSubsystem base constructor.
 4. ~~**FUN_005636D0** (PoweredMaster::SetupFromProperty): How does it initialize battery levels from property? Are batteries full at spawn?~~ **ANSWERED**: Yes. `mainBatteryPower = property+0x48` (MainBatteryLimit), `backupBatteryPower = property+0x4C` (BackupBatteryLimit). Batteries start at maximum capacity.
 5. **Conduit scaling correction**: Need to verify which conduit is health-scaled. The analysis shows MainConduit scaled via FUN_005634f0 (property+0x50 * condPct) and BackupConduit raw via FUN_00563520 (property+0x54). This needs Ghidra confirmation.
 
-1. **Event IDs**: 0x80006c likely = "power state changed", 0x800072 = "subsystem disabled", 0x800073 = "subsystem enabled", 0x8000dd = "powered subsystem state changed". Need Ghidra verification.
-2. **PowerProperty ownership**: The PowerProperty (type 0x813E) creates the "Powered" master (+0x2B0). The "Power" reactor at +0x2C4 (type 0x8138) may use a different generic property. Need to trace `SetupFromProperty` for both.
-3. **Default powerMode values**: Which subsystems default to mode 0/1/2? The cloaking device likely defaults to mode 2 (backup only) given the backup-heavy power design. Base PoweredSubsystem ctor likely initializes +0xA0 to 0.
-4. **FUN_005636D0** (PoweredMaster::SetupFromProperty, slot 22): How does it initialize battery levels from property? Are batteries full at spawn?
-5. **Conduit scaling correction**: Need to verify which conduit is health-scaled. The analysis shows MainConduit scaled via FUN_005634f0 (property+0x50 * condPct) and BackupConduit raw via FUN_00563520 (property+0x54). This needs Ghidra confirmation.
+*(Duplicate open questions removed — see above for current status.)*
 
 ---
 
