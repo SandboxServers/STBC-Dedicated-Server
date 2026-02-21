@@ -263,8 +263,16 @@ After the handler re-posts the event as `ET_HOST_OBJECT_COLLISION` (0x008000FC):
 1. **ShipClass::HostCollisionEffectHandler** (0x005afad0):
    - If multiplayer: creates secondary event `0x00800053` for effect broadcast
    - Iterates contact points, transforms each relative to the ship's NiNode
-   - Calls `FUN_005afd70` (CollisionDamageWrapper_Helper) per contact point
+   - **Per-contact damage scaling** (constants verified from binary):
+     ```
+     raw = (collisionEnergy / ship.mass) / contactCount
+     if (raw > 0.01):                          // dead zone filter
+         scaled = raw * 900.0 + 500.0          // absolute HP damage
+         SubsystemDamageDistributor(ship, dir, &scaled, 1.5, attacker, 1)
+     ```
+   - Output range: 500.0+ absolute HP (NOT fractional like DoDamage_CollisionContacts)
    - `FUN_005afd70` -> `FUN_005aecc0` (subsystem lookup) -> `FUN_005af4a0` (damage per subsystem)
+   - Each subsystem receives the full scaled damage; overflow accumulated across all subsystems
 
 2. **DamageableObject::CollisionEffectHandler** also fires (registered for both 0x00800050 and 0x008000FC)
 

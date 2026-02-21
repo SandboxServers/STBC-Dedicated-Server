@@ -7,15 +7,18 @@ Reverse-engineered from stbc.exe via Ghidra decompilation and runtime function t
 ```
 COLLISION INPUT:
   CollisionDamageWrapper (0x005B0060)
-    ├─> visual/shield effect (0x005AFD70)
-    └─> DoDamage_FromPosition (0x00593650) ─┐
+    ├─> SubsystemDamageDistributor (0x005AFD70)    ← shield absorption + subsystem damage
+    │     walks ship+0x284 list, modifies damage    (reduces &damage in-place)
+    └─> DoDamage_FromPosition (0x00593650) ─┐      ← gets REDUCED damage
                                               ├─> DoDamage (0x00594020)
   DoDamage_CollisionContacts (0x005952D0) ──┘     │
     └─> loops over contact points, calls DoDamage  │
                                                     │
 WEAPON INPUT:                                       │
   WeaponHitHandler (0x005AF010)                     │
-    ├─> shield visual (0x005AF160)                  │
+    ├─> ray-ellipsoid shield gate (0x0056a690)      │
+    │     72% stopped here (shield absorbed)        │
+    ├─> FUN_005afd70 (same SubsystemDamageDistributor as collision)
     └─> ApplyWeaponDamage (0x005AF420) ─────────────┘
           (damage * 2.0, radius * 0.5)
 
@@ -98,19 +101,38 @@ DESTRUCTION (network opcode 0x14):
 - **Convention**: `__thiscall(ECX=ship, CollisionResult* contacts)`
 - **Stack cleanup**: `RET 0x04`
 - Multi-contact-point collision damage. Distributes collision energy evenly across contact points.
-- **Per-contact damage formula**:
+- **Per-contact damage formula** (constants verified from binary):
   ```
   raw = (collision.energy / ship.mass) / contact_count
-  scaled = raw * DAT_00893f28 + DAT_0088bf28
-  damage = min(scaled, 0.5)  ← hard cap at 0.5 per contact
+  scaled = raw * 0.1 + 0.1       ← DAT_00893f28=0.1, DAT_0088bf28=0.1
+  if (scaled > 0.5) scaled = 0.5  ← hard cap (DAT_008887a8=0.5)
   ```
-- Calls DoDamage once per contact point with radius 6000.0 (`0x45BB8000`)
+- Output range: 0.1 to 0.5 (fractional of max_damage)
+- Calls DoDamage once per contact point with max_damage=6000.0 (`0x45BB8000`)
 - CollisionResult layout: `+0x38` = contact count, `+0x2C` = contact point array, `+0x40` = total energy
 
 ### CollisionDamageWrapper (0x005B0060)
-- **Convention**: `__thiscall(ECX=ship, int collider, float amount, float type)`
+- **Convention**: `__thiscall(ECX=ship, int collider, float energy, float damage)`
 - **Stack cleanup**: `RET 0x0C`
-- Top-level entry point for collision events. Calls visual effect function (0x005AFD70) then DoDamage_FromPosition.
+- Top-level entry point for collision events.
+- **Two-step process**: Calls SubsystemDamageDistributor (0x005AFD70) with `&damage` — shield facings absorb damage, reducing it in-place — then calls DoDamage_FromPosition with the **reduced** damage.
+- See [collision-shield-interaction.md](collision-shield-interaction.md) for full decompiled flow.
+
+### HostCollisionEffectHandler (0x005AFAD0) — Collision Effect Path
+- **Convention**: reads `IsMultiplayer` byte (0x0097FA8A) at entry
+- Called via event `ET_HOST_OBJECT_COLLISION` (0x008000FC), fired after CollisionEffect opcode 0x15
+- **Per-contact damage formula** (constants verified from binary):
+  ```
+  raw = (collisionEnergy / ship.mass) / contactCount
+  if (raw > 0.01):                          ← DAT_00888a78=0.01 dead zone
+      scaled = raw * 900.0 + 500.0          ← DAT_008944bc=900.0, DAT_008944b8=500.0
+      SubsystemDamageDistributor(ship, contactDir, &scaled, shieldScale=1.5, attacker, flags=1)
+  ```
+- Output range: 500.0+ (absolute HP damage — NOT fractional)
+- Each subsystem receives the **full** per-contact damage (not progressively reduced); overflow is accumulated and written back to `*damage` after all subsystems processed
+- **Distinct from DoDamage_CollisionContacts**: different constants (900x+500 vs 0.1x+0.1), different output ranges, no hard cap
+- Verified via FTrace: avg=6008.7 max=13220.3 per-subsystem in live stock-dedi traces
+- See [collision-effect-protocol.md](collision-effect-protocol.md) for full handler chain
 
 ### ApplyWeaponDamage (0x005AF420) — Weapon Path
 - **Convention**: `__thiscall(ECX=ship, WeaponHitInfo* hit)`

@@ -4,8 +4,12 @@
  *
  * Two trampoline modes:
  *   COUNT_ONLY (32 bytes): INC [counter] + prologue + JMP back
- *   WITH_CALLERS (48 bytes): save regs, call C callback that records
- *     unique caller addresses, restore regs + prologue + JMP back
+ *   WITH_CALLERS (64 bytes): save regs, call C callback that records
+ *     unique caller addresses + damage values, restore regs + prologue + JMP back
+ *
+ * Part 1: Per-hook/per-caller damage meters (total/max) via damageArgOffset.
+ * Part 2: Per-event damage profiler with shield/subsystem breakdown via
+ *   return-address swap on CollisionDmgWrapper.
  *
  * Output: periodic dump to ddraw_proxy.log every 300 ticks.
  * Counters reset via Python raise "FTRACE_RESET:<label>" through
@@ -15,23 +19,28 @@
 #define FTRACE_MAX_HOOKS    64
 #define FTRACE_MAX_CALLERS  16  /* unique caller slots per hook */
 #define FTRACE_TRAMP_SMALL  32  /* count-only trampoline */
-#define FTRACE_TRAMP_LARGE  48  /* caller-tracking trampoline */
+#define FTRACE_TRAMP_LARGE  64  /* caller-tracking trampoline (4-arg callback) */
 
 typedef struct {
     DWORD addr;
     volatile LONG count;
+    double dmgTotal;          /* accumulated damage through this caller */
+    float  dmgMax;            /* largest single-hit damage from this caller */
 } FTraceCaller;
 
 typedef struct {
     DWORD   addr;             /* original function address */
     char    name[40];         /* human-readable name */
-    int     relocLen;         /* bytes to relocate (5-9) */
+    int     relocLen;         /* bytes to relocate (5-15) */
     BYTE    savedBytes[16];   /* saved prologue */
     BYTE    expectedBytes[16];/* for validation at install */
     BYTE*   trampoline;       /* ptr into trampoline block */
     volatile LONG callCount;  /* atomic counter */
     BOOL    installed;        /* TRUE if hook is active */
     BOOL    trackCallers;     /* TRUE = use large trampoline with C callback */
+    int     damageArgOffset;  /* offset into origArgs for damage float, -1 = disabled */
+    double  dmgTotal;         /* accumulated damage through this hook */
+    float   dmgMax;           /* largest single-hit damage through this hook */
     FTraceCaller callers[FTRACE_MAX_CALLERS];
     volatile LONG callerCount;/* number of unique callers recorded */
 } FTraceHook;
@@ -39,6 +48,43 @@ typedef struct {
 static FTraceHook g_ftHooks[FTRACE_MAX_HOOKS];
 static int g_ftHookCount = 0;
 static BYTE* g_ftTrampBlock = NULL;  /* VirtualAlloc'd RWX block */
+
+/* ================================================================
+ * Damage Event Profiler (Part 2) - per-event shield/subsystem breakdown
+ *
+ * Uses return-address swap on CollisionDmgWrapper to capture entry
+ * state (shield HP snapshot) and exit state (post-damage shield HP +
+ * per-subsystem hits collected during execution).
+ * ================================================================ */
+#define DMG_PROF_MAX_HITS 32
+
+typedef struct {
+    BOOL     active;
+    DWORD    shipPtr;
+    float    preShields[6];         /* snapshot at entry */
+    float    initialDamage;         /* damage arg at entry */
+    float    initialEnergy;         /* energy arg at entry */
+    DWORD    savedRetAddr;          /* for return-address swap */
+    int      context;               /* 0=collision, 1=weapon */
+    struct {
+        DWORD subsysPtr;
+        float damage;
+        float oldHP;
+        float newHP;               /* oldHP - damage, clamped to 0 */
+        char  typeName[16];
+    } hits[DMG_PROF_MAX_HITS];
+    int      hitCount;
+} DmgProfileEvent;
+
+static DmgProfileEvent g_dmgProf;
+static BYTE* g_dmgProfExitTramp = NULL;  /* VirtualAlloc'd RWX exit trampoline */
+static int g_hookIdx_CollDmgWrap = -1;   /* FTrace index for CollisionDmgWrapper */
+static int g_hookIdx_PerSubsysDmg = -1;  /* FTrace index for PerSubsystemDamage */
+
+/* Forward declarations for profiler callbacks (defined after FTraceReset) */
+static void OnCollisionDmgEntry(DWORD ecx, DWORD origArgsESP);
+static void OnPerSubsysDmg(DWORD ecx, DWORD origArgsESP);
+static void __cdecl FlushDmgEvent(void);
 
 /* ================================================================
  * DumpPeerTransportQueues - walk ACK-outbox and retransmit queues
@@ -128,25 +174,49 @@ static void DumpPeerTransportQueues(DWORD peerPtr, DWORD peerID) {
 }
 
 /* ----------------------------------------------------------------
- * FTraceRecordCall - C callback from caller-tracking trampolines
+ * FTraceRecordCallEx - C callback from caller-tracking trampolines
  *
  * Called with all caller-saved regs preserved. Records the return
- * address in a per-hook histogram of unique callers.
+ * address in a per-hook histogram of unique callers, captures damage
+ * values when damageArgOffset is set, and dispatches Part 2 profiler
+ * callbacks for CollisionDmgWrapper / PerSubsystemDamage hooks.
+ *
+ * Args (all passed via cdecl from trampoline):
+ *   hookIdx     - index into g_ftHooks[]
+ *   callerAddr  - return address (who called the hooked function)
+ *   ecx         - ECX at entry (this ptr for __thiscall methods)
+ *   origArgsESP - pointer to first stack arg of original function
  * ---------------------------------------------------------------- */
-static void __cdecl FTraceRecordCall(int hookIdx, DWORD callerAddr) {
+static void __cdecl FTraceRecordCallEx(int hookIdx, DWORD callerAddr,
+                                       DWORD ecx, DWORD origArgsESP) {
     FTraceHook* h;
     int i, slot;
+    float dmg = 0;
+    BOOL hasDmg = FALSE;
 
     if (hookIdx < 0 || hookIdx >= g_ftHookCount) return;
     h = &g_ftHooks[hookIdx];
 
     InterlockedIncrement(&h->callCount);
 
+    /* Part 1: Read damage value once if configured */
+    if (h->damageArgOffset >= 0 && origArgsESP &&
+        !IsBadReadPtr((void*)(origArgsESP + h->damageArgOffset), 4)) {
+        dmg = *(float*)(origArgsESP + h->damageArgOffset);
+        hasDmg = TRUE;
+        h->dmgTotal += dmg;
+        if (dmg > h->dmgMax) h->dmgMax = dmg;
+    }
+
     /* Search for existing caller */
     for (i = 0; i < h->callerCount && i < FTRACE_MAX_CALLERS; i++) {
         if (h->callers[i].addr == callerAddr) {
             InterlockedIncrement(&h->callers[i].count);
-            return;
+            if (hasDmg) {
+                h->callers[i].dmgTotal += dmg;
+                if (dmg > h->callers[i].dmgMax) h->callers[i].dmgMax = dmg;
+            }
+            goto profiler_callbacks;
         }
     }
 
@@ -155,9 +225,21 @@ static void __cdecl FTraceRecordCall(int hookIdx, DWORD callerAddr) {
     if (slot < FTRACE_MAX_CALLERS) {
         h->callers[slot].addr = callerAddr;
         h->callers[slot].count = 1;
+        if (hasDmg) {
+            h->callers[slot].dmgTotal = dmg;
+            h->callers[slot].dmgMax = dmg;
+        }
     } else {
         /* Table full, just decrement back */
         InterlockedDecrement(&h->callerCount);
+    }
+
+profiler_callbacks:
+    /* Part 2: Damage event profiler callbacks */
+    if (hookIdx == g_hookIdx_CollDmgWrap) {
+        OnCollisionDmgEntry(ecx, origArgsESP);
+    } else if (hookIdx == g_hookIdx_PerSubsysDmg) {
+        OnPerSubsysDmg(ecx, origArgsESP);
     }
 }
 
@@ -179,6 +261,9 @@ static int FTraceRegister(DWORD addr, int relocLen, const BYTE* expectedBytes,
     h->trackCallers = trackCallers;
     h->trampoline = NULL;
     h->callerCount = 0;
+    h->damageArgOffset = -1;
+    h->dmgTotal = 0;
+    h->dmgMax = 0;
     lstrcpynA(h->name, name, sizeof(h->name));
     memcpy(h->expectedBytes, expectedBytes, relocLen);
     memset(h->savedBytes, 0, sizeof(h->savedBytes));
@@ -220,22 +305,27 @@ static const char* FTraceResolveName(DWORD addr, DWORD* outOffset) {
  *   [6]    <relocated prologue>    (relocLen bytes)
  *   [6+N]  E9 <rel32>             JMP (originalAddr + relocLen)
  *
- * WITH_CALLERS trampoline (48 bytes):
+ * WITH_CALLERS trampoline (64 bytes max):
  *   [0]    9C                      PUSHFD
  *   [1]    50                      PUSH EAX
  *   [2]    51                      PUSH ECX
  *   [3]    52                      PUSH EDX
- *   [4]    8B 44 24 10             MOV EAX, [ESP+0x10]  ; return addr
- *   [8]    50                      PUSH EAX             ; arg2: caller
- *   [9]    68 <imm32>              PUSH hookIndex       ; arg1: index
- *   [14]   E8 <rel32>              CALL FTraceRecordCall
- *   [19]   83 C4 08                ADD ESP, 8
- *   [22]   5A                      POP EDX
- *   [23]   59                      POP ECX
- *   [24]   58                      POP EAX
- *   [25]   9D                      POPFD
- *   [26]   <relocated prologue>    (relocLen bytes)
- *   [26+N] E9 <rel32>             JMP (originalAddr + relocLen)
+ *                                  ; ESP is now 0x10 below entry
+ *                                  ; [ESP+0x10]=retAddr [ESP+0x14]=arg1 ...
+ *   [4]    8D 44 24 14             LEA EAX, [ESP+0x14]  ; &arg1 area
+ *   [8]    50                      PUSH EAX             ; arg4: origArgsESP
+ *   [9]    FF 74 24 08             PUSH [ESP+0x08]      ; arg3: saved ECX
+ *   [13]   8B 44 24 18             MOV EAX, [ESP+0x18]  ; return addr
+ *   [17]   50                      PUSH EAX             ; arg2: callerAddr
+ *   [18]   68 <imm32>              PUSH hookIndex       ; arg1: index
+ *   [23]   E8 <rel32>              CALL FTraceRecordCallEx
+ *   [28]   83 C4 10                ADD ESP, 16
+ *   [31]   5A                      POP EDX
+ *   [32]   59                      POP ECX
+ *   [33]   58                      POP EAX
+ *   [34]   9D                      POPFD
+ *   [35]   <relocated prologue>    (relocLen bytes)
+ *   [35+N] E9 <rel32>             JMP (originalAddr + relocLen)
  * ---------------------------------------------------------------- */
 static BOOL FTraceInstallOne(int idx) {
     FTraceHook* h = &g_ftHooks[idx];
@@ -275,34 +365,50 @@ static BOOL FTraceInstallOne(int idx) {
     offset = 0;
 
     if (h->trackCallers) {
-        /* --- Large trampoline: save regs, call C callback --- */
+        /* --- Large trampoline: save regs, push 4 args, call C callback --- */
         DWORD callTarget;
 
         tramp[offset++] = 0x9C;                       /* PUSHFD */
         tramp[offset++] = 0x50;                       /* PUSH EAX */
         tramp[offset++] = 0x51;                       /* PUSH ECX */
         tramp[offset++] = 0x52;                       /* PUSH EDX */
+        /* ESP is now 0x10 below entry. Stack layout:
+         *   [ESP+0x00]=EDX [ESP+0x04]=ECX [ESP+0x08]=EAX [ESP+0x0C]=EFLAGS
+         *   [ESP+0x10]=return addr  [ESP+0x14]=arg1  [ESP+0x18]=arg2 ... */
 
-        /* MOV EAX, [ESP+0x10] — return addr past 4 pushes */
-        tramp[offset++] = 0x8B;
+        /* arg4: origArgsESP = pointer to first stack arg */
+        tramp[offset++] = 0x8D;                       /* LEA EAX, [ESP+0x14] */
         tramp[offset++] = 0x44;
         tramp[offset++] = 0x24;
-        tramp[offset++] = 0x10;
+        tramp[offset++] = 0x14;
+        tramp[offset++] = 0x50;                       /* PUSH EAX */
 
-        tramp[offset++] = 0x50;                       /* PUSH EAX (arg2: callerAddr) */
+        /* arg3: saved ECX (this ptr for __thiscall) */
+        tramp[offset++] = 0xFF;                       /* PUSH [ESP+0x08] */
+        tramp[offset++] = 0x74;
+        tramp[offset++] = 0x24;
+        tramp[offset++] = 0x08;
 
-        tramp[offset++] = 0x68;                       /* PUSH imm32 (arg1: hookIdx) */
+        /* arg2: callerAddr (return addr, shifted by 2 pushes) */
+        tramp[offset++] = 0x8B;                       /* MOV EAX, [ESP+0x18] */
+        tramp[offset++] = 0x44;
+        tramp[offset++] = 0x24;
+        tramp[offset++] = 0x18;
+        tramp[offset++] = 0x50;                       /* PUSH EAX */
+
+        /* arg1: hookIdx */
+        tramp[offset++] = 0x68;                       /* PUSH imm32 */
         *(DWORD*)(tramp + offset) = (DWORD)idx;
         offset += 4;
 
-        tramp[offset] = 0xE8;                         /* CALL FTraceRecordCall */
-        callTarget = (DWORD)FTraceRecordCall - ((DWORD)(tramp + offset) + 5);
+        tramp[offset] = 0xE8;                         /* CALL FTraceRecordCallEx */
+        callTarget = (DWORD)FTraceRecordCallEx - ((DWORD)(tramp + offset) + 5);
         *(DWORD*)(tramp + offset + 1) = callTarget;
         offset += 5;
 
-        tramp[offset++] = 0x83;                       /* ADD ESP, 8 */
+        tramp[offset++] = 0x83;                       /* ADD ESP, 16 */
         tramp[offset++] = 0xC4;
-        tramp[offset++] = 0x08;
+        tramp[offset++] = 0x10;
 
         tramp[offset++] = 0x5A;                       /* POP EDX */
         tramp[offset++] = 0x59;                       /* POP ECX */
@@ -360,9 +466,18 @@ static void FTraceDump(const char* label) {
     for (i = 0; i < g_ftHookCount; i++) {
         if (!g_ftHooks[i].installed) continue;
         if (g_ftHooks[i].callCount > 0) {
-            ProxyLog("  [%2d] %-30s %8ld%s", i, g_ftHooks[i].name,
-                     (long)g_ftHooks[i].callCount,
-                     g_ftHooks[i].trackCallers ? " [callers]" : "");
+            long cnt = (long)g_ftHooks[i].callCount;
+            if (g_ftHooks[i].damageArgOffset >= 0 && g_ftHooks[i].dmgTotal > 0) {
+                ProxyLog("  [%2d] %-30s %8ld%s  dmg: total=%.1f avg=%.1f max=%.1f",
+                         i, g_ftHooks[i].name, cnt,
+                         g_ftHooks[i].trackCallers ? " [callers]" : "",
+                         g_ftHooks[i].dmgTotal,
+                         g_ftHooks[i].dmgTotal / cnt,
+                         (double)g_ftHooks[i].dmgMax);
+            } else {
+                ProxyLog("  [%2d] %-30s %8ld%s", i, g_ftHooks[i].name, cnt,
+                         g_ftHooks[i].trackCallers ? " [callers]" : "");
+            }
             any = 1;
 
             /* Print caller breakdown for tracked hooks */
@@ -374,22 +489,29 @@ static void FTraceDump(const char* label) {
                     DWORD coff = 0;
                     const char* resolved = FTraceResolveName(
                         g_ftHooks[i].callers[c].addr, &coff);
+                    long ccnt = (long)g_ftHooks[i].callers[c].count;
+                    char dmgBuf[64] = "";
+                    if (g_ftHooks[i].damageArgOffset >= 0 &&
+                        g_ftHooks[i].callers[c].dmgTotal > 0) {
+                        _snprintf(dmgBuf, sizeof(dmgBuf),
+                                  "  dmg=%.1f avg=%.1f max=%.1f",
+                                  g_ftHooks[i].callers[c].dmgTotal,
+                                  g_ftHooks[i].callers[c].dmgTotal / ccnt,
+                                  (double)g_ftHooks[i].callers[c].dmgMax);
+                    }
                     if (resolved) {
                         if (coff > 0) {
-                            ProxyLog("         from 0x%08X %s+0x%X x%ld",
+                            ProxyLog("         from 0x%08X %s+0x%X x%ld%s",
                                      g_ftHooks[i].callers[c].addr,
-                                     resolved, coff,
-                                     (long)g_ftHooks[i].callers[c].count);
+                                     resolved, coff, ccnt, dmgBuf);
                         } else {
-                            ProxyLog("         from 0x%08X %s x%ld",
+                            ProxyLog("         from 0x%08X %s x%ld%s",
                                      g_ftHooks[i].callers[c].addr,
-                                     resolved,
-                                     (long)g_ftHooks[i].callers[c].count);
+                                     resolved, ccnt, dmgBuf);
                         }
                     } else {
-                        ProxyLog("         from 0x%08X x%ld",
-                                 g_ftHooks[i].callers[c].addr,
-                                 (long)g_ftHooks[i].callers[c].count);
+                        ProxyLog("         from 0x%08X x%ld%s",
+                                 g_ftHooks[i].callers[c].addr, ccnt, dmgBuf);
                     }
                 }
             }
@@ -408,11 +530,173 @@ static void FTraceReset(const char* label) {
     ProxyLog("=== FTRACE RESET: %s ===", label);
     for (i = 0; i < g_ftHookCount; i++) {
         InterlockedExchange(&g_ftHooks[i].callCount, 0);
+        g_ftHooks[i].dmgTotal = 0;
+        g_ftHooks[i].dmgMax = 0;
         if (g_ftHooks[i].trackCallers) {
             memset(g_ftHooks[i].callers, 0, sizeof(g_ftHooks[i].callers));
             InterlockedExchange(&g_ftHooks[i].callerCount, 0);
         }
     }
+}
+
+/* ================================================================
+ * Damage Event Profiler - Implementation (Part 2)
+ *
+ * Per-event damage breakdown with shield/subsystem detail.
+ * CollisionDmgWrapper entry → snapshot shields, swap return addr
+ * PerSubsystemDamage → collect per-subsystem hits during event
+ * Exit trampoline → diff shields, log full breakdown
+ * ================================================================ */
+
+/* ----------------------------------------------------------------
+ * IdentifySubsystem - name a subsystem by comparing its pointer
+ * against known fixed offsets in the ship object.
+ * ---------------------------------------------------------------- */
+static void IdentifySubsystem(DWORD ship, DWORD subsys, char* out, int outLen) {
+    if (!ship || IsBadReadPtr((void*)ship, 0x2D4)) {
+        _snprintf(out, outLen, "subsys_%08lX", subsys);
+        return;
+    }
+    if (subsys == *(DWORD*)(ship + 0x2C0)) { lstrcpynA(out, "Shields", outLen); return; }
+    if (subsys == *(DWORD*)(ship + 0x2B8)) { lstrcpynA(out, "Phasers", outLen); return; }
+    if (subsys == *(DWORD*)(ship + 0x2BC)) { lstrcpynA(out, "Torpedoes", outLen); return; }
+    if (subsys == *(DWORD*)(ship + 0x2C4)) { lstrcpynA(out, "Reactor", outLen); return; }
+    if (subsys == *(DWORD*)(ship + 0x2B4)) { lstrcpynA(out, "Repair", outLen); return; }
+    if (subsys == *(DWORD*)(ship + 0x2C8)) { lstrcpynA(out, "Cloak", outLen); return; }
+    if (subsys == *(DWORD*)(ship + 0x2D0)) { lstrcpynA(out, "Tractor", outLen); return; }
+    if (subsys == *(DWORD*)(ship + 0x2B0)) { lstrcpynA(out, "EPS", outLen); return; }
+    /* Unknown — log pointer for manual identification */
+    _snprintf(out, outLen, "subsys_%08lX", subsys);
+}
+
+/* ----------------------------------------------------------------
+ * FlushDmgEvent - log the per-event damage breakdown
+ *
+ * Called from exit trampoline when CollisionDmgWrapper returns.
+ * Diffs pre/post shield HP, logs per-subsystem hits.
+ * ---------------------------------------------------------------- */
+static void __cdecl FlushDmgEvent(void) {
+    float postShields[6] = {0};
+    float totalAbsorbed = 0;
+    float subsysAbsorbed = 0;
+    float hullDmg;
+    int i;
+    static const char* faceNames[] = {"Front","Rear","Top","Bottom","Left","Right"};
+
+    if (!g_dmgProf.active) return;
+    g_dmgProf.active = FALSE;
+
+    /* Read post-damage shield HP */
+    if (g_dmgProf.shipPtr && !IsBadReadPtr((void*)g_dmgProf.shipPtr, 0x2C4)) {
+        DWORD shieldClass = *(DWORD*)(g_dmgProf.shipPtr + 0x2C0);
+        if (shieldClass && !IsBadReadPtr((void*)shieldClass, 0xC8))
+            memcpy(postShields, (void*)(shieldClass + 0xA8), 24);
+    }
+
+    /* Log header */
+    ProxyLog("[DMG-EVENT] %s ship=0x%08X damage=%.1f energy=%.1f",
+             g_dmgProf.context == 0 ? "COLLISION" : "WEAPON",
+             g_dmgProf.shipPtr, g_dmgProf.initialDamage, g_dmgProf.initialEnergy);
+
+    /* Per-facing shield absorption */
+    for (i = 0; i < 6; i++) {
+        float absorbed = g_dmgProf.preShields[i] - postShields[i];
+        if (absorbed > 0.01f || absorbed < -0.01f) {
+            ProxyLog("  Shield %-6s: %.1f -> %.1f  (absorbed %.1f)",
+                     faceNames[i], g_dmgProf.preShields[i], postShields[i], absorbed);
+        }
+        totalAbsorbed += absorbed;
+    }
+    ProxyLog("  Shield total absorbed: %.1f", totalAbsorbed);
+
+    /* Per-subsystem hits */
+    if (g_dmgProf.hitCount > 0) {
+        ProxyLog("  Subsystem hits (%d):", g_dmgProf.hitCount);
+        for (i = 0; i < g_dmgProf.hitCount; i++) {
+            ProxyLog("    %-12s dmg=%.1f  HP: %.1f -> %.1f",
+                     g_dmgProf.hits[i].typeName,
+                     g_dmgProf.hits[i].damage,
+                     g_dmgProf.hits[i].oldHP,
+                     g_dmgProf.hits[i].newHP);
+            subsysAbsorbed += g_dmgProf.hits[i].damage;
+        }
+    }
+
+    /* Post-shield damage entering DoDamage */
+    hullDmg = g_dmgProf.initialDamage - totalAbsorbed;
+    if (hullDmg < 0) hullDmg = 0;
+    ProxyLog("  Post-shield entering DoDamage: %.1f  (subsys absorbed: %.1f)",
+             hullDmg, subsysAbsorbed);
+}
+
+/* ----------------------------------------------------------------
+ * OnCollisionDmgEntry - called from FTraceRecordCallEx when
+ * CollisionDmgWrapper is entered. Snapshots shield HP and swaps
+ * the return address for exit-time capture.
+ * ---------------------------------------------------------------- */
+static void OnCollisionDmgEntry(DWORD ecx, DWORD origArgsESP) {
+    DWORD shieldClass;
+
+    /* Flush any prior event (shouldn't happen — single-threaded game) */
+    if (g_dmgProf.active) FlushDmgEvent();
+
+    memset(&g_dmgProf, 0, sizeof(g_dmgProf));
+    g_dmgProf.active = TRUE;
+    g_dmgProf.shipPtr = ecx;
+    g_dmgProf.context = 0;  /* collision */
+
+    /* Read damage and energy from stack args:
+     * CollisionDmgWrapper(__thiscall): ECX=ship, arg1=?, arg2=energy, arg3=damage */
+    if (origArgsESP && !IsBadReadPtr((void*)origArgsESP, 12)) {
+        g_dmgProf.initialEnergy = *(float*)(origArgsESP + 4);
+        g_dmgProf.initialDamage = *(float*)(origArgsESP + 8);
+    }
+
+    /* Snapshot shield HP: ship+0x2C0 → ShieldClass+0xA8 = float[6] */
+    if (ecx && !IsBadReadPtr((void*)(ecx + 0x2C0), 4)) {
+        shieldClass = *(DWORD*)(ecx + 0x2C0);
+        if (shieldClass && !IsBadReadPtr((void*)(shieldClass + 0xA8), 24)) {
+            memcpy(g_dmgProf.preShields, (void*)(shieldClass + 0xA8), 24);
+        }
+    }
+
+    /* Return-address swap: origArgsESP-4 = return address slot on the
+     * original call stack (before our trampoline's pushes, which are
+     * transparently restored before the relocated prologue runs). */
+    if (g_dmgProfExitTramp && origArgsESP) {
+        DWORD* retAddrPtr = (DWORD*)(origArgsESP - 4);
+        g_dmgProf.savedRetAddr = *retAddrPtr;
+        *retAddrPtr = (DWORD)g_dmgProfExitTramp;
+    }
+}
+
+/* ----------------------------------------------------------------
+ * OnPerSubsysDmg - called from FTraceRecordCallEx when
+ * PerSubsystemDamage (0x005af4a0) is entered during an active
+ * damage event. Collects per-subsystem hit details.
+ * ---------------------------------------------------------------- */
+static void OnPerSubsysDmg(DWORD ecx, DWORD origArgsESP) {
+    DWORD subsys;
+    float damage, oldHP;
+    int idx;
+
+    if (!g_dmgProf.active) return;
+    if (g_dmgProf.hitCount >= DMG_PROF_MAX_HITS) return;
+    if (!origArgsESP || IsBadReadPtr((void*)origArgsESP, 8)) return;
+
+    /* PerSubsystemDamage(__thiscall): ECX=ship, arg1=subsys*, arg2=damage */
+    subsys = *(DWORD*)(origArgsESP + 0);
+    damage = *(float*)(origArgsESP + 4);
+
+    if (!subsys || IsBadReadPtr((void*)(subsys + 0x30), 4)) return;
+    oldHP = *(float*)(subsys + 0x30);
+
+    idx = g_dmgProf.hitCount++;
+    g_dmgProf.hits[idx].subsysPtr = subsys;
+    g_dmgProf.hits[idx].damage = damage;
+    g_dmgProf.hits[idx].oldHP = oldHP;
+    g_dmgProf.hits[idx].newHP = (oldHP > damage) ? (oldHP - damage) : 0.0f;
+    IdentifySubsystem(ecx, subsys, g_dmgProf.hits[idx].typeName, 16);
 }
 
 /* ----------------------------------------------------------------
@@ -431,6 +715,7 @@ static void FTraceReset(const char* label) {
 static void InstallFunctionTracer(void) {
     int i, installed = 0;
     int trampOffset = 0;
+    int idx_DoDamage = -1, idx_DoDmgFromPos = -1;
 
     /* Allocate one contiguous RWX block for all trampolines.
      * Use FTRACE_TRAMP_LARGE for all slots (wastes a few bytes
@@ -485,7 +770,7 @@ static void InstallFunctionTracer(void) {
     }
     {
         static const BYTE b[] = {0x64,0xA1,0x00,0x00,0x00,0x00};
-        FTraceRegister(0x00594020, 6, b, "DoDamage", TRUE);
+        idx_DoDamage = FTraceRegister(0x00594020, 6, b, "DoDamage", TRUE);
     }
     {
         static const BYTE b[] = {0x53,0x8B,0x5C,0x24,0x08};
@@ -552,19 +837,24 @@ static void InstallFunctionTracer(void) {
         FTraceRegister(0x006d90e0, 7, b, "DispatchEvent", FALSE);
     }
 
-    /* --- Collision / Damage Entry Points (3) --- */
-    /* trackCallers=TRUE: trace what triggers collision damage */
+    /* --- Collision / Damage Entry Points (4) --- */
+    /* trackCallers=TRUE: trace what triggers collision damage + damage meters */
     {
         static const BYTE b[] = {0x53,0x8B,0x5C,0x24,0x08,0x56,0x57};
-        FTraceRegister(0x005b0060, 7, b, "CollisionDamageWrapper", TRUE);
+        g_hookIdx_CollDmgWrap = FTraceRegister(0x005b0060, 7, b, "CollisionDamageWrapper", TRUE);
     }
     {
         static const BYTE b[] = {0x83,0xEC,0x24,0x56,0x8B,0xF1};
-        FTraceRegister(0x00593650, 6, b, "DoDamage_FromPosition", TRUE);
+        idx_DoDmgFromPos = FTraceRegister(0x00593650, 6, b, "DoDamage_FromPosition", TRUE);
     }
     {
         static const BYTE b[] = {0x6A,0xFF,0x68,0xC8,0xAF,0x87,0x00};
         FTraceRegister(0x005952d0, 7, b, "DoDamage_CollisionContacts", TRUE);
+    }
+    {
+        /* PerSubsystemDamage: __thiscall(ECX=ship, subsys*, float damage, ...) */
+        static const BYTE b[] = {0x83,0xEC,0x08,0x57,0x8B,0xF9};
+        g_hookIdx_PerSubsysDmg = FTraceRegister(0x005af4a0, 6, b, "PerSubsystemDamage", TRUE);
     }
 
     /* --- Ship Destruction / Lifecycle (2) --- */
@@ -600,8 +890,117 @@ static void InstallFunctionTracer(void) {
         FTraceRegister(0x006a19fc, 7, b, "FindNetObjByID", FALSE);
     }
 
+    /* --- PythonEvent Damage Chain (8) --- */
+    /* Traces the collision → SetCondition → RepairList → PythonEvent(0x06) chain.
+     * trackCallers=TRUE on all: need to see what triggers each step. */
+    {
+        /* CollisionEffect opcode 0x15 handler (SEH prologue) */
+        static const BYTE b[] = {0x6A,0xFF,0x68,0x68,0xDC,0x87,0x00};
+        FTraceRegister(0x006a2470, 7, b, "CollisionEffect_0x15", TRUE);
+    }
+    {
+        /* ShipSubsystem::SetCondition — posts ET_SUBSYSTEM_HIT when health decreases */
+        static const BYTE b[] = {0x8B,0x44,0x24,0x04,0x56,0x8B,0xF1};
+        FTraceRegister(0x0056c470, 7, b, "SS_SetCondition", TRUE);
+    }
+    {
+        /* RepairSubsystem::AddSubsystemToRepairList — posts ET_ADD_TO_REPAIR_LIST */
+        static const BYTE b[] = {0x53,0x8B,0x5C,0x24,0x08,0x57,0x8B,0xF9};
+        FTraceRegister(0x00565900, 8, b, "AddToRepairList", TRUE);
+    }
+    {
+        /* MultiplayerGame::HostEventHandler — serializes as PythonEvent (0x06) */
+        static const BYTE b[] = {0x64,0xA1,0x00,0x00,0x00,0x00,0x6A,0xFF};
+        FTraceRegister(0x006a1150, 8, b, "HostEventHandler", TRUE);
+    }
+    {
+        /* ObjectExplodingHandler — serializes explosion as PythonEvent (0x06) */
+        static const BYTE b[] = {0x64,0xA1,0x00,0x00,0x00,0x00,0x6A,0xFF};
+        FTraceRegister(0x006a1240, 8, b, "ObjExplodingHandler", TRUE);
+    }
+    {
+        /* PythonEvent opcode 0x06 receiver/forwarder (SEH prologue) */
+        static const BYTE b[] = {0x6A,0xFF,0x68,0x88,0xD9,0x87,0x00};
+        FTraceRegister(0x0069f880, 7, b, "PythonEvent_0x06", TRUE);
+    }
+    {
+        /* ShipClass::CollisionEffectHandler — validates and applies collision damage */
+        static const BYTE b[] = {0x51,0xA0,0x89,0xFA,0x97,0x00,0x53};
+        FTraceRegister(0x005af9c0, 7, b, "Ship_CollEffHandler", TRUE);
+    }
+    {
+        /* Collision damage application — iterates contacts, applies per-subsystem damage */
+        static const BYTE b[] = {0xA0,0x8A,0xFA,0x97,0x00,0x83,0xEC,0x40};
+        FTraceRegister(0x005afad0, 8, b, "CollDmgApply", TRUE);
+    }
+
     ProxyLog("FTrace: registered %d hooks, trampBlock=0x%08X (slot size=%d)",
              g_ftHookCount, (DWORD)g_ftTrampBlock, FTRACE_TRAMP_LARGE);
+
+    /* --- Part 1: Set damageArgOffset on hooks with damage capture --- */
+    /* DoDamage(this, ?, damage): arg2 = damage float at origArgs+4 */
+    if (idx_DoDamage >= 0)
+        g_ftHooks[idx_DoDamage].damageArgOffset = 4;
+    /* CollisionDmgWrapper(this, ?, energy, damage): arg3 at origArgs+8 */
+    if (g_hookIdx_CollDmgWrap >= 0)
+        g_ftHooks[g_hookIdx_CollDmgWrap].damageArgOffset = 8;
+    /* DoDamage_FromPosition(this, ?, damage): arg2 at origArgs+4 */
+    if (idx_DoDmgFromPos >= 0)
+        g_ftHooks[idx_DoDmgFromPos].damageArgOffset = 4;
+    /* PerSubsystemDamage(this, subsys*, damage): arg2 at origArgs+4 */
+    if (g_hookIdx_PerSubsysDmg >= 0)
+        g_ftHooks[g_hookIdx_PerSubsysDmg].damageArgOffset = 4;
+
+    /* --- Part 2: Allocate exit trampoline for damage profiler ---
+     * Hand-coded x86: save regs, CALL FlushDmgEvent, restore, JMP [savedRetAddr]
+     *   9C              PUSHFD
+     *   50              PUSH EAX
+     *   51              PUSH ECX
+     *   52              PUSH EDX
+     *   E8 <rel32>      CALL FlushDmgEvent
+     *   5A              POP EDX
+     *   59              POP ECX
+     *   58              POP EAX
+     *   9D              POPFD
+     *   FF 25 <addr32>  JMP [g_dmgProf.savedRetAddr]
+     */
+    {
+        BYTE* et;
+        int off = 0;
+        DWORD callTarget;
+
+        g_dmgProfExitTramp = (BYTE*)VirtualAlloc(NULL, 32,
+            MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+        if (!g_dmgProfExitTramp) {
+            ProxyLog("FTrace: WARNING - VirtualAlloc failed for dmg profiler exit trampoline");
+        } else {
+            et = g_dmgProfExitTramp;
+            memset(et, 0xCC, 32);
+
+            et[off++] = 0x9C;  /* PUSHFD */
+            et[off++] = 0x50;  /* PUSH EAX */
+            et[off++] = 0x51;  /* PUSH ECX */
+            et[off++] = 0x52;  /* PUSH EDX */
+
+            et[off] = 0xE8;    /* CALL FlushDmgEvent */
+            callTarget = (DWORD)FlushDmgEvent - ((DWORD)(et + off) + 5);
+            *(DWORD*)(et + off + 1) = callTarget;
+            off += 5;
+
+            et[off++] = 0x5A;  /* POP EDX */
+            et[off++] = 0x59;  /* POP ECX */
+            et[off++] = 0x58;  /* POP EAX */
+            et[off++] = 0x9D;  /* POPFD */
+
+            et[off++] = 0xFF;  /* JMP [g_dmgProf.savedRetAddr] */
+            et[off++] = 0x25;
+            *(DWORD*)(et + off) = (DWORD)&g_dmgProf.savedRetAddr;
+            off += 4;
+
+            ProxyLog("FTrace: dmg profiler exit trampoline at 0x%08X (%d bytes)",
+                     (DWORD)et, off);
+        }
+    }
 
     /* Assign trampoline pointers and install */
     trampOffset = 0;

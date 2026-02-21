@@ -669,7 +669,7 @@ Offset  Size  Type    Field
 | 0x0E | StartCloaking | 0x008000E3 | Cloaking device activated | occasional |
 | 0x0F | StopCloaking | 0x008000E5 | Cloaking device deactivated | occasional |
 | 0x10 | StartWarp | 0x008000ED | Warp drive activated | occasional |
-| 0x11 | RepairListPriority | 0x008000E1 | Repair priority ordering | occasional |
+| 0x11 | RepairListPriority | 0x00800076 | Repair priority ordering — see [dedicated analysis](repair-system.md) | occasional |
 | 0x12 | SetPhaserLevel | 0x008000E0 | Phaser power/intensity setting — see [dedicated analysis](set-phaser-level-protocol.md) | 33 |
 | 0x1B | TorpedoTypeChange | 0x008000FD | Torpedo type selection changed | occasional |
 
@@ -1715,7 +1715,7 @@ Opcodes originally discovered from stock-dedi packet captures, now fully identif
 
 | Opcode | Name | Handler | Direction | Stock 15-min count | Notes |
 |--------|------|---------|-----------|--------------------|-------|
-| 0x11 | RepairListPriority | FUN_0069fda0 | Relayed | occasional | Crew repair priority ordering (event 0x008000E1) |
+| 0x11 | RepairListPriority | FUN_0069fda0 | Relayed | occasional | Crew repair priority ordering (event 0x00800076) |
 | 0x12 | SetPhaserLevel | FUN_0069fda0 | Relayed | 33 | Phaser power/intensity setting (event 0x008000E0) |
 | 0x15 | CollisionEffect | FUN_006a2470 | C->S | 84 | Collision damage relay — client detects, host processes |
 | 0x28 | ChecksumComplete | (NetFile dispatcher) | S->C | 3 | Signals all checksum rounds passed; sent before Settings |
@@ -1763,7 +1763,7 @@ Python-level messages (bypass C++ dispatcher entirely via SendTGMessage):
 | 0x0E | StartCloaking | any | FUN_0069fda0 | objectId, event data (→ event 0x008000E3) |
 | 0x0F | StopCloaking | any | FUN_0069fda0 | objectId, event data (→ event 0x008000E5) |
 | 0x10 | StartWarp | any | FUN_0069fda0 | objectId, event data (→ event 0x008000ED) |
-| 0x11 | RepairListPriority | any | FUN_0069fda0 | objectId, event data (→ event 0x008000E1) |
+| 0x11 | RepairListPriority | any | FUN_0069fda0 | objectId, event data (→ event 0x00800076) |
 | 0x12 | SetPhaserLevel | any | FUN_0069fda0 | objectId, event data (→ event 0x008000E0) |
 | 0x13 | HostMsg | C->S | FUN_006A01B0 | host-specific dispatch (self-destruct etc.) |
 | 0x14 | DestroyObject | S->C | FUN_006a01e0 | objectId |

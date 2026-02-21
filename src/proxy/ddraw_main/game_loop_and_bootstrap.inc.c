@@ -46,6 +46,104 @@ typedef void (__cdecl *pfn_qr_handle_query)(void* qr, void* buf, struct sockaddr
  * to 1 and call InitNetwork via RunPyCode after a 30-tick delay.
  * ================================================================ */
 
+/* ================================================================
+ * DumpSubsystemList - Walk ship+0x284 linked list and log each
+ * subsystem's vtable, WriteState address, and child count.
+ *
+ * This produces a fingerprint that can be compared against the
+ * client's subsystem list to verify they match.  Mismatched lists
+ * cause the round-robin StateUpdate deserializer to misinterpret
+ * subsystem health bytes (seen as HUD flickering).
+ *
+ * Linked list node layout (from docs/stateupdate-subsystem-wire-format.md):
+ *   +0x00: ShipSubsystem* data
+ *   +0x04: SubsystemListNode* next
+ *   +0x08: SubsystemListNode* prev
+ *
+ * ShipSubsystem key offsets:
+ *   +0x00: vtable
+ *   +0x1C: child count (int)
+ *   +0x20: child array (ptr)
+ *   +0x30: currentCondition (float)
+ *
+ * Known WriteState addresses (vtable+0x70):
+ *   0x0056d320 = Base (Hull, ShieldGen, individual weapons/engines)
+ *   0x00562960 = PoweredSubsystem (Sensor, Impulse, Warp, Repair, etc.)
+ *   0x005644b0 = PowerSubsystem (reactor — 2 extra battery bytes)
+ * ================================================================ */
+static void DumpSubsystemList(DWORD shipPtr, DWORD peerID) {
+    DWORD listHead = 0, listCount = 0;
+    DWORD node;
+    int idx;
+
+    if (!shipPtr || IsBadReadPtr((void*)shipPtr, 0x290))
+        return;
+
+    listHead  = *(DWORD*)(shipPtr + 0x284);
+    listCount = *(DWORD*)(shipPtr + 0x280);
+
+    ProxyLog("  SUBSYS_LIST peer id=%u ship=0x%08X: count=%u head=0x%08X",
+             peerID, shipPtr, listCount, listHead);
+
+    if (!listHead || IsBadReadPtr((void*)listHead, 12))
+        return;
+
+    node = listHead;
+    for (idx = 0; idx < 64 && node; idx++) {
+        DWORD subsys = 0, vtbl = 0, wsAddr = 0;
+        int childCount = 0;
+        float condition = 0.0f;
+        const char *wsName = "???";
+
+        if (IsBadReadPtr((void*)node, 12))
+            break;
+        subsys = *(DWORD*)(node + 0x00);  /* data pointer */
+
+        if (subsys && !IsBadReadPtr((void*)subsys, 0x34)) {
+            vtbl = *(DWORD*)(subsys + 0x00);
+            childCount = *(int*)(subsys + 0x1C);
+            condition = *(float*)(subsys + 0x30);
+
+            if (vtbl && !IsBadReadPtr((void*)(vtbl + 0x70), 4))
+                wsAddr = *(DWORD*)(vtbl + 0x70);
+
+            /* Identify WriteState implementation */
+            if      (wsAddr == 0x005644b0) wsName = "PowerSS";
+            else if (wsAddr == 0x00562960) wsName = "PoweredSS";
+            else if (wsAddr == 0x0056d320) wsName = "BaseSS";
+            else                           wsName = "Unknown";
+        }
+
+        ProxyLog("    [%2d] subsys=0x%08X vtbl=0x%08X WS=0x%08X(%s) children=%d cond=%.2f",
+                 idx, subsys, vtbl, wsAddr, wsName, childCount, condition);
+
+        /* Also dump children for subsystems that have them (affects wire byte count) */
+        if (childCount > 0 && subsys && !IsBadReadPtr((void*)(subsys + 0x20), 4)) {
+            DWORD childArray = *(DWORD*)(subsys + 0x20);
+            if (childArray && !IsBadReadPtr((void*)childArray, (UINT_PTR)(childCount * 4))) {
+                int ci;
+                for (ci = 0; ci < childCount && ci < 16; ci++) {
+                    DWORD child = *(DWORD*)(childArray + ci * 4);
+                    if (child && !IsBadReadPtr((void*)child, 0x34)) {
+                        DWORD cVtbl = *(DWORD*)(child + 0x00);
+                        DWORD cWs = 0;
+                        float cCond = *(float*)(child + 0x30);
+                        if (cVtbl && !IsBadReadPtr((void*)(cVtbl + 0x70), 4))
+                            cWs = *(DWORD*)(cVtbl + 0x70);
+                        ProxyLog("      child[%d] ptr=0x%08X vtbl=0x%08X WS=0x%08X cond=%.2f",
+                                 ci, child, cVtbl, cWs, cCond);
+                    }
+                }
+            }
+        }
+
+        node = *(DWORD*)(node + 0x04);  /* next */
+        if (node == listHead) break;    /* wrapped — circular list guard */
+    }
+
+    ProxyLog("  SUBSYS_LIST END: %d top-level subsystems dumped", idx);
+}
+
 /* Flag for HeartbeatThread to request Python diagnostics on main thread.
  * Python 1.5.2's allocator has NO locks - all Python C API calls MUST
  * happen on the main thread to avoid GIL violations and heap corruption. */
@@ -750,6 +848,12 @@ static VOID CALLBACK GameLoopTimerProc(HWND hwnd, UINT msg,
                         ProxyLog("    +0x1B8 Resistance   = %.4f %s", resist, (resist > 0.0f) ? "PASS" : "WARN(0)");
                         ProxyLog("    +0x1BC Falloff      = %.4f %s", falloff, (falloff > 0.0f) ? "PASS" : "WARN(0)");
                         ProxyLog("    +0x0D8 Mass         = %.4f %s", mass, (mass > 0.0f) ? "PASS" : "WARN(0)");
+
+                        /* Dump the subsystem linked list for wire format comparison.
+                         * This must match the client's list exactly or the
+                         * round-robin StateUpdate health bytes will be misread. */
+                        if (dmgTarget)
+                            DumpSubsystemList(shipPtr, peerID);
 
                         /* Only mark done if +0x140 is now set.
                          * If NiNode is also NULL, ship isn't ready yet. */

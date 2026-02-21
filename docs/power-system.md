@@ -405,6 +405,160 @@ Each PoweredSubsystem registers itself with the "Powered" master during `SetupFr
 
 ---
 
+## Power Initialization on Ship Spawn
+
+Every ship spawns with all subsystems at 100% power, batteries full, and all consumers enabled. This is established through a three-stage initialization sequence:
+
+### Stage 1: PoweredSubsystem Constructor (FUN_00562240)
+
+The constructor chain (FUN_00562240 → FUN_0056b970) initializes every powered subsystem with these defaults:
+
+| Offset | Type | Value | Field | Notes |
+|--------|------|-------|-------|-------|
+| +0x88 | float | 0.0 | powerReceived | No power received yet |
+| +0x8C | float | 0.0 | powerWanted | No demand computed yet |
+| +0x90 | float | 1.0 | powerPercentageWanted | 100% slider (IEEE 0x3F800000) |
+| +0x94 | float | 1.0 | efficiency | Starts at full efficiency |
+| +0x98 | float | 1.0 | conditionRatio | Starts at full condition |
+| +0x9C | byte | 1 | isOn | Subsystem enabled |
+| +0xA0 | int | 0 | powerMode | Mode 0 (main-first) |
+
+**Key**: `powerPercentageWanted = 1.0f` at construction means every slider defaults to 100% without any explicit setter call.
+
+### Stage 2: SetupFromProperty (FUN_00562390)
+
+When `SetupFromProperty` (vtable slot 22) runs for each PoweredSubsystem, it reads the already-initialized `+0x90` value and computes `powerWanted = normalPower * powerPercentageWanted`. Since `+0x90 = 1.0` from the constructor, this naturally produces `powerWanted = normalPower * 1.0`.
+
+For the PoweredMaster (EPS distributor), `SetupFromProperty` (FUN_005636d0) also fills both batteries to maximum capacity:
+- `+0xAC = property+0x48` (mainBatteryPower = MainBatteryLimit)
+- `+0xB4 = property+0x4C` (backupBatteryPower = BackupBatteryLimit)
+
+### Stage 3: Ship::SetupProperties (FUN_005b0110)
+
+After all subsystems are constructed and linked, `SetupProperties` redundantly iterates ALL powered subsystems and calls `SetPowerPercentageWanted(1.0)` on each one. This is a safety net — the constructor already set 1.0, so this is a no-op in normal operation.
+
+### Safety Guard (FUN_0055f7f0)
+
+When the reactor is enabled, a guard check at FUN_0055f7f0 forces `powerPercentageWanted = 1.0` if the current value is `<= 0.0`. This prevents a subsystem from remaining at 0% after being re-enabled.
+
+### Initialization Order Summary
+
+```
+1. PoweredSubsystem ctor (FUN_00562240)
+   └── +0x90=1.0, +0x9C=1, +0xA0=0    ← defaults baked in constructor
+
+2. SetupFromProperty (FUN_00562390 / FUN_005636d0)
+   ├── PoweredSubsystem: powerWanted = normalPower * 1.0
+   └── PoweredMaster: mainBattery=limit, backupBattery=limit
+
+3. Ship::SetupProperties (FUN_005b0110)
+   └── ForEach(subsystem): SetPowerPercentageWanted(1.0)  ← redundant safety
+
+4. Reactor enable guard (FUN_0055f7f0)
+   └── if (pctWanted <= 0.0) → force 1.0  ← catch-all
+```
+
+**Result**: Ship spawns with 100% power to all subsystems, batteries full, mode 0 (main-first), all enabled. This is what the player sees on the F5 Engineering panel immediately after spawn.
+
+---
+
+## Player Power Adjustment
+
+Players adjust power via the F5 Engineering panel (Power Transmission Grid). Two input paths converge on the same setter function, and the 0%–125% range is enforced client-side.
+
+### Input Paths
+
+#### Path A: C++ Slider (EngPowerCtrl widget)
+
+The mouse-draggable slider bars in the F5 panel are C++ `EngPowerCtrl` widgets. When the player drags a slider:
+
+```
+EngPowerCtrl::HandlePowerChange (FUN_0054dde0)
+  → identifies subsystem from slider bar (hash table at +0x58)
+  → resolves subsystem group (weapons/engines/single)
+  → calls SetPowerPercentageWanted (FUN_00562430) for each subsystem in group
+  → posts ET_SUBSYSTEM_POWER_CHANGED (0x0080008c) event
+    source = subsystem, destination = ship, float = new percentage
+  → calls CallNextHandler (event chain)
+```
+
+The C++ slider performs its own range validation in `HandlePowerChange`, preventing values outside the valid range. The maximum of 1.25 comes from a float constant at 0x0088bec0 (`1.25f`).
+
+#### Path B: Keyboard Hotkeys (Python)
+
+Keyboard shortcuts fire `ET_MANAGE_POWER` events, handled by `EngineerMenuHandlers.ManagePower()`:
+
+```python
+# EngineerMenuHandlers.py:376-461
+def ManagePower(pObject, pEvent):
+    group = int(pEvent.GetInt() / 2)    # 0=weapons, 1=engines, 2=sensors, 3=shields
+    direction = pEvent.GetInt() % 2     # 0=decrease, 1=increase
+
+    fPercentWanted += (-0.25 if direction==0 else +0.25)
+
+    # Hard clamp
+    if fPercentWanted < 0.0:  fPercentWanted = 0.0
+    if fPercentWanted > 1.25: fPercentWanted = 1.25
+
+    SetPowerToSubsystem(pSubsystem, fPercentWanted)
+```
+
+### ET_MANAGE_POWER Int Encoding
+
+The `pEvent.GetInt()` value encodes both group and direction:
+
+| Int Value | int/2 → Group | int%2 → Direction | Meaning |
+|-----------|---------------|-------------------|---------|
+| 0 | 0 → Weapons | 0 → Decrease | Weapons −25% |
+| 1 | 0 → Weapons | 1 → Increase | Weapons +25% |
+| 2 | 1 → Engines | 0 → Decrease | Engines −25% |
+| 3 | 1 → Engines | 1 → Increase | Engines +25% |
+| 4 | 2 → Sensors | 0 → Decrease | Sensors −25% |
+| 5 | 2 → Sensors | 1 → Increase | Sensors +25% |
+| 6 | 3 → Shields | 0 → Decrease | Shields −25% |
+| 7 | 3 → Shields | 1 → Increase | Shields +25% |
+
+Values ≥ 8 are ignored (early return at line 377).
+
+### Subsystem Grouping
+
+- **Weapons group** (int/2 == 0): ALL weapon subsystems (phasers, torpedoes, pulse weapons) are set to the same percentage simultaneously
+- **Engines group** (int/2 == 1): Impulse AND warp engines are set together
+- **Sensors** (int/2 == 2): Standalone
+- **Shields** (int/2 == 3): Standalone
+
+### Bounds Enforcement (0.0–1.25)
+
+The valid power range is **0% to 125%** (0.0 to 1.25f). Enforcement occurs at three levels:
+
+| Level | Mechanism | Notes |
+|-------|-----------|-------|
+| Python keyboard | Explicit `if fPercentWanted < 0.0` / `> 1.25` clamp | EngineerMenuHandlers.py:425-428 |
+| C++ slider | HandlePowerChange (FUN_0054dde0) validates range | Uses constant 1.25f at 0x0088bec0 |
+| Network wire | Power byte encodes `(int)(pct * 100.0)`, range 0-125 | Byte naturally caps at 255, but 125 is practical max |
+| Server | **No enforcement** | Host applies whatever the client sends |
+
+The 125% overload mechanic is visible in the F5 panel as an orange/red zone past the 100% mark. Overclocking increases demand above the normal power budget, accelerating battery drain.
+
+### SetPowerToSubsystem Boundary Behavior
+
+The Python `SetPowerToSubsystem()` function (EngineerMenuHandlers.py:442-461) handles the on/off transition at boundaries:
+
+```python
+def SetPowerToSubsystem(pSubsystem, fPercentWanted):
+    pSubsystem.SetPowerPercentageWanted(fPercentWanted)
+    if (not pSubsystem.IsOn() and fPercentWanted > 0.0):
+        pSubsystem.TurnOn()       # → fires SubsystemStatus opcode 0x0A
+    if (fPercentWanted == 0.0):
+        pSubsystem.TurnOff()      # → fires SubsystemStatus opcode 0x0A
+```
+
+- Setting to 0% → `TurnOff()` → SubsystemStatus (opcode 0x0A) is network-forwarded immediately
+- Setting to >0% on a disabled subsystem → `TurnOn()` → opcode 0x0A forwarded immediately
+- The on/off toggle has **instant network propagation** (dedicated opcode), while the power percentage propagates via StateUpdate round-robin (1-2 second delay)
+
+---
+
 ## Confirmed Constants
 
 | Address | Value | Used As |
@@ -412,6 +566,10 @@ Each PoweredSubsystem registers itself with the "Powered" master during `SetupFr
 | 0x892e20 | 1.0f | INTERVAL — power sim runs once per second |
 | 0x888b54 | 0.0f | Zero constant for float comparisons |
 | 0x888860 | 1.0f | Used in GetCombinedConditionPercentage |
+| 0x0088bec0 | 1.25f | Maximum powerPercentageWanted (125% overload cap) |
+| 0x0088ce78 | 100.0f | WriteState: `(int)(pct * 100.0)` encoding multiplier |
+| 0x0088d4e4 | 0.01f | ReadState: `byte * 0.01f` decoding multiplier |
+| 0x0088b9ac | 255.0f | Condition byte: `(condition/maxCondition) * 255.0` |
 
 ---
 
@@ -782,7 +940,7 @@ void PoweredSubsystem_ReadState(PoweredSubsystem* this, Stream* stream, float ti
 - When sending state about ship X to the player who owns ship X: `isOwnShip = 1`, power data SKIPPED
 - When sending state about ship X to any other player: `isOwnShip = 0`, power data INCLUDED
 
-This is determined in `Ship_WriteStateUpdate` (FUN_005b17f0) by comparing `ship->ownerConnectionID` against the target peer's connection ID.
+This is determined in `Ship_WriteStateUpdate` (FUN_005b17f0) by comparing `ship->objectID` (ship+0x04) against the target peer's `shipObjectID` (peer+0x0C). See the "isOwnShip Determination" subsection below for details.
 
 #### 4. Data Flow in Star Topology
 
@@ -857,9 +1015,129 @@ this->powerPercentageWanted = (float)pctByte * 0.01f;
 
 This allows on/off state to be packed into the same byte as the power percentage: negative = off, positive = on. This is a secondary propagation path for on/off state alongside the dedicated SubsystemStatus opcode (0x0A).
 
+### Two Serialization Interfaces
+
+PoweredSubsystem has two distinct serialization interfaces, each invoked through different vtable slots:
+
+#### Interface A: Round-Robin (flag 0x20, vtable+0x70 / vtable+0x74)
+
+Used in the **StateUpdate flag 0x20 block** (subsystem health round-robin). This is the primary path for ongoing power state replication:
+
+```c
+// WriteState (vtable+0x70, FUN_00562960):
+ShipSubsystem_WriteState(this, stream);       // condition byte + children (recursive)
+if (!isOwnShip) {
+    WriteBit(stream, 1);                       // hasData = 1
+    int pctByte = (int)(this->powerPercentageWanted * 100.0);  // 0x0088ce78
+    WriteByte(stream, pctByte);                // power percentage as 0-125
+} else {
+    WriteBit(stream, 0);                       // hasData = 0 (owner has local state)
+}
+EndMarker(stream);
+
+// ReadState (vtable+0x74, FUN_005629d0):
+float savedTimestamp = this->lastNetworkUpdate;  // +0x84 — saved BEFORE base ReadState
+ShipSubsystem_ReadState(this, stream, timestamp);  // condition byte + children
+bool hasData = ReadBit(stream);
+if (hasData) {
+    int pctByte = ReadByte(stream);
+    if (savedTimestamp < timestamp) {           // only apply if packet is newer
+        SetPowerPercentageWanted(this, (float)pctByte * 0.01f);  // 0x0088d4e4
+    }
+}
+EndMarker(stream);
+```
+
+**Timestamp detail**: ReadState saves `this->lastNetworkUpdate` BEFORE calling the base class ReadState. This is critical because the base class updates `lastNetworkUpdate` from the incoming timestamp. The saved value represents the timestamp of the *previous* update, allowing the receiver to correctly determine whether the incoming data is newer.
+
+#### Interface B: ObjCreate / Full Snapshot (vtable+0x68 / vtable+0x6c)
+
+Used during **ObjCreate (opcode 0x02/0x03)** for initial object state transmission and in weapon round-robin (flag 0x80). This path uses sign-bit encoding:
+
+```c
+// WriteState_SignBit (vtable+0x68, FUN_005628a0):
+ShipSubsystem_WriteState(this, stream);       // condition byte + children
+int pctByte = (int)(this->powerPercentageWanted * 100.0);
+if (!this->isOn)                               // +0x9C
+    pctByte = -pctByte;                        // negate to encode OFF state
+WriteByte(stream, pctByte);                    // signed byte: positive=ON, negative=OFF
+EndMarker(stream);
+
+// ReadState_SignBit (vtable+0x6c, FUN_00562900):
+ShipSubsystem_ReadState(this, stream, timestamp);
+int pctByte = ReadByte(stream);               // signed
+if (pctByte < 1) {                            // 0 or negative
+    pctByte = -pctByte;                        // absolute value
+    this->isOn = 0;                            // subsystem OFF
+} else {
+    this->isOn = 1;                            // subsystem ON
+}
+this->powerPercentageWanted = (float)pctByte * 0.01f;
+EndMarker(stream);
+```
+
+**Key difference from Interface A**: Interface B always includes power data (no `isOwnShip` skip), and packs the on/off state into the sign bit. This is used for initial sync where the receiver needs both the power percentage AND the on/off state in a single byte.
+
+### Round-Robin Algorithm Detail
+
+The round-robin serializer maintains a per-peer write cursor that persists across ticks:
+
+```c
+// From Ship_WriteStateUpdate (FUN_005b17f0), flag 0x20 section:
+// Per-peer tracking structure (iVar7):
+//   +0x30: linked list cursor (SubsystemListNode*)
+//   +0x34: subsystem index counter (int)
+
+if (cursor == 0) {                             // First time or reset
+    cursor = ship->subsystemListHead;          // ship+0x284
+    index = 0;
+}
+
+initialCursor = cursor;                        // Remember for wrap detection
+WriteByte(stream, index);                      // startIndex byte — tells receiver where we start
+
+bytesWritten = 0;
+while (bytesWritten < 10) {                    // 10-byte budget per tick
+    node = cursor;
+    if (node == NULL) { subsystem = NULL; }
+    else { subsystem = node->data; cursor = node->next; }
+
+    subsystem->WriteState(stream, isOwnShip);  // vtable+0x70
+
+    index++;
+    if (cursor == 0) {                         // End of list: wrap
+        cursor = ship->subsystemListHead;
+        index = 0;
+    }
+    if (cursor == initialCursor) break;        // Full cycle: stop
+    bytesWritten = stream.position - startPosition;
+}
+```
+
+**Budget**: 10 bytes per flag 0x20 block per tick. With a Sovereign's 11 top-level subsystems (some with children), a full cycle takes ~3-5 ticks. At ~10Hz StateUpdate rate, this means ~0.3-0.5 seconds for all subsystem power percentages to be transmitted.
+
+### isOwnShip Determination
+
+The `isOwnShip` flag is determined in `Ship_WriteStateUpdate` (FUN_005b17f0) by comparing object IDs:
+
+```c
+// isOwnShip = (ship->objectID == peer->shipObjectID) && IsMultiplayer
+// ship+0x04 = objectID (assigned at creation)
+// peer+0x0C = shipObjectID (set when player selects ship)
+// 0x0097FA8A = IsMultiplayer flag
+```
+
+This is an **object ID comparison**, not a connection ID comparison. When the host is writing state for ship X and sending it to the player who owns ship X, `isOwnShip = 1` and power data is omitted. This prevents the server from overwriting the owner's local slider settings with potentially stale data.
+
 ---
 
 ## Open Questions
+
+1. **Event IDs**: 0x80006c likely = "power state changed", 0x800072 = "subsystem disabled", 0x800073 = "subsystem enabled", 0x8000dd = "powered subsystem state changed". Need Ghidra verification.
+2. **PowerProperty ownership**: The PowerProperty (type 0x813E) creates the "Powered" master (+0x2B0). The "Power" reactor at +0x2C4 (type 0x8138) may use a different generic property. Need to trace `SetupFromProperty` for both. *(Partially answered: SetupFromProperty at FUN_005636d0 initializes battery levels from property+0x48 and +0x4C. Batteries start full at spawn.)*
+3. **Default powerMode values**: Which subsystems default to mode 0/1/2? The cloaking device likely defaults to mode 2 (backup only) given the backup-heavy power design. Base PoweredSubsystem ctor initializes +0xA0 to 0 (mode 0 = main-first). *(Confirmed: ctor sets mode 0 for all subsystems. Specific overrides in SetupFromProperty need verification.)*
+4. ~~**FUN_005636D0** (PoweredMaster::SetupFromProperty): How does it initialize battery levels from property? Are batteries full at spawn?~~ **ANSWERED**: Yes. `mainBatteryPower = property+0x48` (MainBatteryLimit), `backupBatteryPower = property+0x4C` (BackupBatteryLimit). Batteries start at maximum capacity.
+5. **Conduit scaling correction**: Need to verify which conduit is health-scaled. The analysis shows MainConduit scaled via FUN_005634f0 (property+0x50 * condPct) and BackupConduit raw via FUN_00563520 (property+0x54). This needs Ghidra confirmation.
 
 1. **Event IDs**: 0x80006c likely = "power state changed", 0x800072 = "subsystem disabled", 0x800073 = "subsystem enabled", 0x8000dd = "powered subsystem state changed". Need Ghidra verification.
 2. **PowerProperty ownership**: The PowerProperty (type 0x813E) creates the "Powered" master (+0x2B0). The "Power" reactor at +0x2C4 (type 0x8138) may use a different generic property. Need to trace `SetupFromProperty` for both.
