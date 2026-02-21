@@ -19,6 +19,16 @@
 - [complete-opcode-table.md](complete-opcode-table.md) - FULL verified opcode table (41 + Python)
 - [tgmessage-wire-format.md](tgmessage-wire-format.md) - TGMessage Python script framing
 - [main-loop-timing.md](main-loop-timing.md) - Main loop architecture, NiApp vtable, clock sources, frame budget scheduler
+- [hardpoint-property-system.md](hardpoint-property-system.md) - COMPLETE: AddToSet, SetupProperties, CT_ type IDs, parent-child linking, WST_ enum
+
+## Hardpoint/Property System (2026-02-21, COMPLETE)
+- Properties attached via `AddToSet("Scene Root", prop)` — flat, order-independent
+- SetupProperties (0x005b3fb0): switch on CT_ type ID (0x812b-0x813f) creates subsystem objects
+- Parent-child is TYPE-BASED not order-based: LinkAllSubsystemsToParents walks list, checks IsA
+- Weapons: IsA 0x802a, then GetType -> 0x802c(phaser)->ship+0x2B8, 0x802d(pulse)->+0x2BC, 0x802e(tractor)->+0x2D4, 0x802f(torpedo)->+0x2B4
+- WST_ enum: 0=UNKNOWN, 1=PHASER, 2=TORPEDO, 3=PULSE, 4=TRACTOR
+- IsPrimary (+0x26): determines if subsystem gets ship primary pointer (last-wins if multiple)
+- PowerProperty: one per ship in practice; multiple would overwrite ship+0x2C4
 
 ## TGMessage Routing (2026-02-17)
 - See [docs/tgmessage-routing-analysis.md](../../docs/tgmessage-routing-analysis.md) for FULL analysis
@@ -51,6 +61,16 @@
 - Sign bit encoding: negative byte = subsystem OFF; 1% resolution, 0-125% range
 - See [docs/power-system.md] for full analysis
 
+## Power Mode Assignments (2026-02-21, COMPLETE)
+- PoweredSubsystem+0xA0 = powerMode: 0=main-first, 1=backup-first, 2=backup-only
+- DEFAULT (mode 0): ALL subsystems via PoweredSubsystem ctor (FUN_00562240)
+- **CloakingSubsystem** (FUN_0055e2b0): sets +0xA0=2 (backup-only), vtable 0x892C04
+- **TractorBeamSystem** (FUN_00582080): sets +0xA0=1 (backup-first), vtable 0x893794
+- All others (phaser, torpedo, impulse, sensor, shield, warp, repair, pulse) inherit mode 0
+- Shield recharge has HARDCODED DrawFromBackupBattery call (bypasses powerMode switch) when dead
+- Exhaustive search: `mov [reg+0xa0], 1/2` found 5 hits; 2 are PoweredSubsystem descendants, 3 are unrelated classes with coincidental +0xA0 offset
+- NOTE: vtable 0x892EAC = SensorSubsystem (NOT CloakingSubsystem as previously assumed)
+
 ## 0x1C State Update & Subsystem Wire Format (2026-02-18)
 - See [docs/stateupdate-subsystem-wire-format.md](../../docs/stateupdate-subsystem-wire-format.md)
 - Flag 0x20 = round-robin subsystem health; linked list order (no fixed index)
@@ -59,6 +79,23 @@
 
 ## Client Join Sequence
 - 0x00 (settings) -> 0x01 (GameInit) -> 0x35 (MISSION_INIT) -> 0x37 (SCORE)
+
+## Multiplayer Mission Infrastructure (2026-02-21, COMPLETE)
+- See [docs/multiplayer-mission-infrastructure.md](../../docs/multiplayer-mission-infrastructure.md)
+- C++ is mission-agnostic; ALL game mode logic is in Python (scripts/Multiplayer/)
+- TWO network groups: "NoMe" (0x008e5528, all except self) and "Forward" (0x008d94a0, all)
+- Score broadcasts -> "NoMe"; event relay -> "Forward"
+- Mission name flows: Settings pkt -> VarManager("Multiplayer","Mission") -> Episode.py -> LoadMission
+- 3 C++->Python call points: AI.Setup.GameInit(), MissionMenusShared.g_iPlayerLimit, <mission>.InitNetwork(connID)
+- MultiplayerGame ctor (0x0069e590): 16 player slots (0x18 bytes each at +0x74), vtable 0x0088b480
+- Player slot: +0x04=active, +0x08=connID, +0x10=baseObjID (N*0x40000+0x3FFFFFFF)
+- maxPlayers at +0x1FC (capped at 16), readyForNewPlayers at +0x1F8
+- 26 C++ event handlers registered (see doc for full table)
+- Python messages 0x35-0x39: MISSION_INIT, SCORE_CHANGE, SCORE, END_GAME, RESTART_GAME
+- Score = (shieldDmg + hullDmg) / 10.0; frag limit or score limit (g_iUseScoreLimit)
+- ObjectExploding in MP: serialized as opcode 0x06 to "NoMe" group (not applied locally by C++)
+- HostMsg (0x13): self-destruct via FUN_005af5f0(ship, ship->powerSubsystem)
+- Explosion (0x29): [int:objID][CompressedVec4:pos][CF16:radius][CF16:damage] -> ProcessDamage
 
 ## Memory Allocator
 - FUN_00717840=NiAlloc (4-byte size header), FUN_00717960=NiFree, FUN_007179c0=NiRealloc
@@ -101,6 +138,29 @@
 | 0x0071a9e0 | NiClock::Update | timeGetTime/QPC delta computation |
 | 0x006dc490 | TGTimerManager::Update | Walk sorted timer list, fire expired |
 | 0x0046f420 | FrameBudgetScheduler | 16-sample ring, 4 priority tiers |
+| 0x00504d30 | SettingsHandler (0x00) | Parse game settings, mission name, clock sync |
+| 0x00504f10 | CreateMultiplayerGame (0x01) | AI.Setup.GameInit + MPGame ctor + mission load |
+| 0x0069ebb0 | MultiplayerGame dtor | Cleanup groups, handlers |
+| 0x0069efc0 | InitializeAllSlots | Loop 0-15, init player slots |
+| 0x0069efe0 | RegisterHandlerNames | Debug names for 29 handlers |
+| 0x006a0080 | ExplosionHandler (0x29) | AoE damage: objID+CompVec4+CF16+CF16 |
+| 0x006a01b0 | HostMsgHandler (0x13) | Self-destruct via PowerSubsystem |
+| 0x0050d070 | TopWindow::SelfDestructHandler | Ctrl+D handler: SP/host=direct, client=send 0x13 |
+| 0x005af5f0 | DoDamageToSelf | __thiscall(ship*, powerSS*): maxHP damage to reactor |
+| 0x005af4a0 | DoDamageToSelf_Inner | Actual damage: force_kill, GodMode gate, cascade |
+| 0x005afea0 | ShipDeathHandler | Fires ET_OBJECT_EXPLODING (0x0080004E) after death |
+| 0x0056c310 | GetMaxHP | __fastcall(ss*): reads property+0x20 via ss+0x18 |
+| 0x0056c330 | IsDead | __fastcall(ss*): reads death flag at property+0x24 |
+| 0x0056c470 | SetCondition | __thiscall(ss*, float): set HP, fire SUBSYSTEM_HIT |
+| 0x006a05e0 | EnterSetHandler (0x1F) | Map/set transition |
+| 0x006a1150 | HostEventHandler | Serialize event -> "NoMe" group |
+| 0x006a1240 | ObjectExplodingHandler | MP: forward to "NoMe"; SP: apply visual |
+| 0x006a7770 | InitPlayerSlot | Set baseObjID=N*0x40000+0x3FFFFFFF |
+| 0x006b4de0 | SendTGMessageToGroup | Send to named group |
+| 0x006b70d0 | TGNetwork_AddGroup | Create/register network group |
+| 0x006f8490 | ImportAndGetAttr | Import Python module + getattr |
+| 0x006f8650 | GetPythonVariable | Read Python var into C |
+| 0x006f8ab0 | TG_CallPythonFunction | Call Python function from C++ |
 
 ## Solved Crashes & Fixes (see topic files)
 - TGL FindEntry NULL: [tgl-null-crash.md]; Compressed vector: [compressed-vector-crash.md]
@@ -115,6 +175,17 @@
 ## GameSpy & LAN Discovery (2026-02-16)
 - Game "bcommander", key "Nm3aZ9"; LAN: UDP `\status\` to 255.255.255.255:22101-22201
 - See [docs/gamespy-master-server.md], [docs/gamespy-crypto-analysis.md]
+
+## Self-Destruct Pipeline (2026-02-21, COMPLETE)
+- See [docs/self-destruct-pipeline.md](../../docs/self-destruct-pipeline.md)
+- SHIPPED FEATURE (not cut content), works SP + MP
+- Ctrl+D -> ET_INPUT_SELF_DESTRUCT (0x8001DD) -> TopWindow::SelfDestructHandler (0x0050D070)
+- Client: sends 1-byte opcode 0x13 to host; Host/SP: direct DoDamageToSelf
+- DoDamageToSelf (0x005af5f0): applies maxHP damage to PowerSubsystem (ship+0x2C4)
+- DoDamageToSelf_Inner (0x005af4a0): force_kill=1 bypasses protections, gates on GodMode+0x2EA
+- Ship death -> ShipDeathHandler (0x005afea0) -> ET_OBJECT_EXPLODING -> scoring + network
+- Scoring: FiringPlayerID=0 (no kill credit), death counted, team kill awarded to opponents
+- AI version uses DestroySystem(hull) instead (PlainAI/SelfDestruct.py)
 
 ## Cut Content (2026-02-16)
 - See [docs/cut-content-analysis.md](../../docs/cut-content-analysis.md)

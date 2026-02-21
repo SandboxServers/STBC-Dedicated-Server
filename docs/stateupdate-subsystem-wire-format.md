@@ -157,7 +157,7 @@ These are removed from ship+0x284 by `FUN_005b5030` and added as children of par
 | 0x802D | PulseWeapon | ship+0x2BC | PulseWeaponSystem |
 | 0x802E | TractorBeamProjector | ship+0x2D4 | TractorBeamSystem |
 | 0x802F | TorpedoTube | ship+0x2B4 | TorpedoSystem |
-| 0x813D (Engine) | Individual Engine | ship+0x2CC or 0x2D0 | ImpulseEngine or WarpEngine |
+| 0x813D (Engine) | Individual Engine | ship+0x2CC or 0x2D0 | ImpulseEngine (EP_IMPULSE=0) or WarpEngine (EP_WARP=1), determined by property+0x48 tag |
 
 ### What's NEVER in the list
 Properties that are not subsystems (handled in SetupProperties but never added to 0x284):
@@ -305,6 +305,60 @@ struct SubsystemListNode {
 | 0x813D | CT_ENGINE_PROPERTY | Individual Engine |
 | 0x813E | CT_POWER_PROPERTY | PowerSubsystem |
 | 0x813F | CT_REPAIR_SUBSYSTEM_PROPERTY | RepairSubsystem |
+
+### Engine Parent-Child Linking Mechanism
+
+Individual engines (`CT_ENGINE_PROPERTY`, 0x813D) are the **only** child subsystem type that can belong to either of two different parent systems: `ImpulseEngineSubsystem` (0x8026) or `WarpEngineSubsystem` (0x8025). All other child types have unambiguous parents (phasers → PhaserSystem, torpedoes → TorpedoSystem, etc.).
+
+The disambiguation mechanism is an **explicit enum tag** stored at `property+0x48`, set via the Python API `SetEngineType()`:
+
+| Enum Value | Constant | Meaning |
+|-----------|----------|---------|
+| 0 | `EP_IMPULSE` | Attach to ImpulseEngineSubsystem |
+| 1 | `EP_WARP` | Attach to WarpEngineSubsystem |
+
+**Default**: `EP_IMPULSE` (0) — the EngineProperty constructor initializes `property+0x48 = 0`.
+
+#### Python API Usage (from hardpoint scripts)
+
+```python
+# Individual engines are created with EngineProperty_Create (CT_ENGINE_PROPERTY)
+PortImpulse = App.EngineProperty_Create("Port Impulse")
+PortImpulse.SetEngineType(PortImpulse.EP_IMPULSE)   # property+0x48 = 0
+
+PortWarp = App.EngineProperty_Create("Port Warp")
+PortWarp.SetEngineType(PortWarp.EP_WARP)             # property+0x48 = 1
+```
+
+Note: the *system-level* containers use different property types entirely:
+- `App.ImpulseEngineProperty_Create()` → `CT_IMPULSE_ENGINE_PROPERTY` (0x813C)
+- `App.WarpEngineProperty_Create()` → `CT_WARP_ENGINE_PROPERTY` (0x813B)
+
+These are never ambiguous — only individual `EngineProperty` children need the tag.
+
+#### Linking Implementation
+
+`Ship_LinkSubsystemToParent` (FUN_005b5030) reads `property+0x48` for `CT_ENGINE_PROPERTY` subsystems:
+- `0` (EP_IMPULSE) → attach to `ship+0x2CC` (ImpulseEngineSubsystem pointer)
+- `1` (EP_WARP) → attach to `ship+0x2D0` (WarpEngineSubsystem pointer)
+
+#### Named Ship Subsystem Slots
+
+| Offset | Subsystem | Notes |
+|--------|-----------|-------|
+| ship+0x2B0 | Powered master (EPS) | Power distribution |
+| ship+0x2B4 | TorpedoSystem | |
+| ship+0x2B8 | PhaserSystem | |
+| ship+0x2BC | PulseWeaponSystem | |
+| ship+0x2C4 | PowerSubsystem (reactor) | |
+| ship+0x2CC | ImpulseEngineSubsystem | EP_IMPULSE engines attach here |
+| ship+0x2D0 | WarpEngineSubsystem | EP_WARP engines attach here |
+| ship+0x2D4 | TractorBeamSystem | |
+| ship+0x2D8 | RepairSubsystem | |
+
+#### Stock Ship Verification
+
+All 16 stock multiplayer ships explicitly call `SetEngineType()` on every individual engine — no ship relies on the default. However, mods may omit the call, in which case the engine defaults to `EP_IMPULSE` and attaches to the impulse engine system.
 
 ### Subsystem Classification in FUN_005b3e50
 After adding ALL subsystems to ship+0x284, the function classifies them:
