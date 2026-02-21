@@ -241,6 +241,8 @@ Then opcode 0x01 (single byte).
 - **OpenBC**: `../OpenBC/docs/ack-outbox-deadlock.md` - Clean-room ACK-outbox deadlock spec: two-pass processing bug, three degradation effects, reimplementation guidance (single-pass + hash map dedup)
 - [docs/pythonevent-wire-format.md](docs/pythonevent-wire-format.md) - PythonEvent (opcode 0x06) RE: polymorphic TGStreamedObject transport, 3 event classes (TGSubsystemEvent/TGCharEvent/ObjectExplodingEvent), 3 producers, collision→repair chain, event type override table
 - **OpenBC**: `../OpenBC/docs/pythonevent-wire-format.md` - Clean-room PythonEvent spec: polymorphic event transport, 3 factory types, collision damage chain, ~14 messages per collision, server implementation notes
+- [docs/gamemode-system.md](docs/gamemode-system.md) - Gamemode/mission system RE: two-layer architecture (C++ transport + Python logic), 3 shipped non-AI modes (FFA/TeamDM/FactionDM), scoring system (damage ledger, kill processing, frag/score limits), 9 wire formats (0x35-0x39 + 0x3F-0x41), team system, end/restart flow, species lookup tables, ship class modifiers
+- **OpenBC**: `../OpenBC/docs/gamemode-system.md` - Clean-room gamemode spec: scoring rules, wire formats, team system, end/restart flow, server implementation requirements, state tracking
 
 ## Ghidra Annotation Scripts
 Bulk annotation scripts in `tools/`. Run from Ghidra Script Manager with stbc.exe loaded.
