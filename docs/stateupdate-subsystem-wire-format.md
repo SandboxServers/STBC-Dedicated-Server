@@ -180,10 +180,10 @@ Based on `sovereign.py` LoadPropertySet order, after `LinkAllSubsystemsToParents
 | 4 | Impulse Engines (ImpulseEngine) | 2 (Port + Star) | 5 (cond + 2 children + bit + powerPct) |
 | 5 | Torpedoes (TorpedoSystem) | 6 tubes | 9 (cond + 6 children + bit + powerPct) |
 | 6 | Repair (RepairSubsystem) | 0 | 3 (cond + bit + powerPct) |
-| 7 | Bridge (HullSubsystem) | 0 | 1 (condition) |
-| 8 | Phasers (PhaserSystem) | 8 banks | 11 (cond + 8 children + bit + powerPct) |
-| 9 | Tractors (TractorBeamSystem) | 4 projectors | 7 (cond + 4 children + bit + powerPct) |
-| 10 | Warp Engines (WarpEngine) | 2 (Port + Star) | 5 (cond + 2 children + bit + powerPct) |
+| 7 | Phasers (PhaserSystem) | 8 banks | 11 (cond + 8 children + bit + powerPct) |
+| 8 | Tractors (TractorBeamSystem) | 4 projectors | 7 (cond + 4 children + bit + powerPct) |
+| 9 | Warp Engines (WarpEngine) | 2 (Port + Star) | 5 (cond + 2 children + bit + powerPct) |
+| 10 | Bridge (HullSubsystem) | 0 | 1 (condition) |
 
 **Total top-level subsystems: 11** (not 33 -- the "33" count includes individual weapons/engines)
 
