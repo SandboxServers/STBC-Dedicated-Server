@@ -6,6 +6,7 @@ Traces, investigations, and code archaeology.
 
 | Document | Contents |
 |----------|----------|
+| [collision-trace-comparison.md](collision-trace-comparison.md) | Stock dedi vs OpenBC: byte-level wire format comparison, 6 behavioral gaps |
 | [stock-trace-analysis.md](stock-trace-analysis.md) | Ground truth from stock dedi traces: 10 findings, opcode frequencies |
 | [subsystem-trace-analysis.md](subsystem-trace-analysis.md) | Ship subsystem creation pipeline (from stock trace) |
 | [cut-content-analysis.md](cut-content-analysis.md) | Cut/hidden features: ghost missions, fleet command AI, tractor docking |

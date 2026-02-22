@@ -212,6 +212,7 @@ Then opcode 0x01 (single byte).
 - [docs/protocol/tgobjptrevent-class.md](docs/protocol/tgobjptrevent-class.md) - TGObjPtrEvent (factory 0x010C): class layout, wire format, 5 C++ producers, 45% of combat PythonEvents
 - [docs/protocol/set-phaser-level-protocol.md](docs/protocol/set-phaser-level-protocol.md) - SetPhaserLevel (opcode 0x12) RE: TGCharEvent wire format, generic event forward group
 - [docs/protocol/collision-effect-protocol.md](docs/protocol/collision-effect-protocol.md) - CollisionEffect (opcode 0x15) RE: wire format, CompressedVec4_Byte contacts, handler validation
+- [docs/protocol/delete-player-ui-wire-format.md](docs/protocol/delete-player-ui-wire-format.md) - DeletePlayerUI (opcode 0x17) RE: TGEvent transport, join/disconnect player list, scoreboard dependency
 - [docs/protocol/stateupdate-subsystem-wire-format.md](docs/protocol/stateupdate-subsystem-wire-format.md) - Subsystem health wire format: linked list order, WriteState formats, round-robin
 - [docs/protocol/subsystem-integrity-hash.md](docs/protocol/subsystem-integrity-hash.md) - Subsystem integrity hash: dead code in MP
 - [docs/protocol/cf16-precision-analysis.md](docs/protocol/cf16-precision-analysis.md) - CF16 precision tables and mod compatibility
@@ -267,6 +268,7 @@ Then opcode 0x01 (single byte).
 - [docs/troubleshooting.md](docs/troubleshooting.md) - Symptom-to-cause quick reference
 
 ### Analysis
+- [docs/analysis/collision-trace-comparison.md](docs/analysis/collision-trace-comparison.md) - Stock dedi vs OpenBC: byte-level wire format comparison, 6 behavioral gaps
 - [docs/analysis/stock-trace-analysis.md](docs/analysis/stock-trace-analysis.md) - Ground truth from stock dedi traces: 10 findings, opcode frequencies
 - [docs/analysis/subsystem-trace-analysis.md](docs/analysis/subsystem-trace-analysis.md) - Ship subsystem creation pipeline (from stock trace)
 - [docs/analysis/cut-content-analysis.md](docs/analysis/cut-content-analysis.md) - Cut/hidden features: ghost missions, fleet command AI, tractor docking
@@ -283,6 +285,7 @@ Then opcode 0x01 (single byte).
 - **OpenBC**: `../OpenBC/docs/self-destruct-system.md` - Clean-room self-destruct spec
 - **OpenBC**: `../OpenBC/docs/pythonevent-wire-format.md` - Clean-room PythonEvent spec
 - **OpenBC**: `../OpenBC/docs/ship-death-lifecycle.md` - Clean-room ship death/respawn spec
+- **OpenBC**: `../OpenBC/docs/wire-formats/delete-player-ui-wire-format.md` - Clean-room DeletePlayerUI (0x17) wire format
 
 ## Ghidra Annotation Scripts
 Bulk annotation scripts in `tools/`. Run from Ghidra Script Manager with stbc.exe loaded.
