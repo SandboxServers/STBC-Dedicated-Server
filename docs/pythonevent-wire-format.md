@@ -46,12 +46,13 @@ after byte 16 depends on `factory_id`.
 
 All multi-byte values are **little-endian**.
 
-### Three Event Classes
+### Four Event Classes
 
 | Factory ID | Class Name | Payload Size | Extension Fields |
 |-----------|------------|-------------|-----------------|
 | `0x00000101` | TGSubsystemEvent | 16 bytes | (none — base TGEvent only) |
 | `0x00000105` | TGCharEvent | 17 bytes | `+1 byte: char_value` |
+| `0x0000010C` | TGObjPtrEvent | 20 bytes | `+4 int32: obj_ptr_id` |
 | `0x00008129` | ObjectExplodingEvent | 24 bytes | `+4 int32: firing_player_id`, `+4 float: lifetime` |
 
 ### Object Reference Encoding
@@ -119,7 +120,9 @@ Offset  Size  Type        Field           Notes
 NiObject
   └── TGEvent (factory 0x02, size 0x28)
         └── TGSubsystemEvent (factory 0x101, size 0x28)
-              └── TGCharEvent (factory 0x105, size 0x2C)
+              ├── TGCharEvent (factory 0x105, size 0x2C, +0x28 = byte)
+              └── TGObjPtrEvent (factory 0x10C, size 0x2C, +0x28 = int32 object ID)
+        └── ObjectExplodingEvent (factory 0x8129, size 0x30, +0x28 = int32, +0x2C = float)
 ```
 
 ### Serialization Functions
@@ -186,7 +189,101 @@ Offset  Size  Type        Field           Notes
 See [set-phaser-level-protocol.md](set-phaser-level-protocol.md) for detailed analysis
 of TGCharEvent usage in opcode 0x12.
 
-## Event Class 3: ObjectExplodingEvent (factory 0x8129)
+## Event Class 3: TGObjPtrEvent (factory 0x10C)
+
+Extends TGSubsystemEvent with a 4-byte int32 object pointer (TGObject network ID).
+This is the **most common event class during weapon combat** — 45% of all PythonEvents
+in a 33.5-minute battle trace (1,718 of 3,825). Used by weapon fire/stop events,
+tractor beam events, and repair priority events.
+
+### Wire Layout
+
+```
+Offset  Size  Type    Field            Notes
+------  ----  ----    -----            -----
+0       1     u8      opcode           0x06 (if sent as PythonEvent)
+1       4     i32     factory_id       0x0000010C
+5       4     i32     event_type       Depends on specific event
+9       4     i32     source_obj_id    Source object
+13      4     i32     dest_obj_id      Related object
+17      4     i32     obj_ptr_id       Third object reference (TGObject network ID)
+```
+
+**Total**: 21 bytes (fixed).
+
+### TGObjPtrEvent Class Layout (0x2C bytes in memory)
+
+```
+Offset  Size  Type        Field           Notes
+------  ----  ----        -----           -----
+0x00    4     void**      vtable          0x0088869C
+0x04-0x27     (inherited from TGSubsystemEvent)
+0x28    4     int32       obj_ptr         TGObject network ID (third object reference)
+```
+
+### Key Difference from TGCharEvent
+
+TGCharEvent (0x105) writes a single **byte** at +0x28 via WriteByte (18 bytes on wire).
+TGObjPtrEvent (0x10C) writes a full **int32** at +0x28 via WriteInt32 (21 bytes on wire).
+Both are 0x2C bytes in memory. They are distinct classes with different vtables and constructors.
+
+### Serialization Functions
+
+| Address | Function | Role |
+|---------|----------|------|
+| 0x006D6DC0 | TGObjPtrEvent::WriteToStream | Base fields + WriteInt32(+0x28) |
+| 0x006D6DF0 | TGObjPtrEvent::ReadFromStream | Base fields + ReadInt32 → +0x28 |
+
+### Event Types Using TGObjPtrEvent (Complete — 11 C++ event types)
+
+**Network-forwarded** (cross the wire via opcode 0x06/0x0D or generic event forward):
+
+| Event Type | Constant | Producer | obj_ptr Contains |
+|-----------|----------|---------|-----------------|
+| `0x0080007C` | ET_WEAPON_FIRED | FUN_00571f40, FUN_0057c9e0, FUN_0057f580 | Target ID or 0 |
+| `0x00800081` | ET_PHASER_STARTED_FIRING | FUN_00571f40 (Phaser::Fire) | Target ID |
+| `0x00800083` | ET_PHASER_STOPPED_FIRING | vtable xref ~0x005712FE | Target ID |
+| `0x0080007D` | ET_TRACTOR_BEAM_STARTED_FIRING | FUN_0057f580 (Tractor::Fire) | Target ID |
+| `0x00800076` | ET_REPAIR_INCREASE_PRIORITY | FUN_005519e0 | Subsystem ID |
+| `0x008000DC` | ET_STOP_FIRING_AT_TARGET_NOTIFY | FUN_00574010, FUN_005825a0 | Target ID (host-only) |
+
+**Local-only** (never serialized to the wire):
+
+| Event Type | Constant | Producer | obj_ptr Contains |
+|-----------|----------|---------|-----------------|
+| `0x0080000E` | ET_SET_PLAYER | FUN_004066d0 | New player ship ID |
+| `0x00800058` | ET_TARGET_WAS_CHANGED | FUN_005ae210 | **Previous** target ID |
+| `0x0080006B` | ET_SUBSYSTEM_HIT | FUN_0056c470 (SetCondition) | Subsystem's own ID |
+| `0x00800085` | ET_TRACTOR_TARGET_DOCKED | FUN_00580910 | Docked ship ID |
+| `0x00800088` | ET_SENSORS_SHIP_IDENTIFIED | FUN_00568ad0, FUN_005678b0 | Identified ship ID |
+
+**Dual-fire pattern**: Phaser fire creates ET_PHASER_STARTED_FIRING + ET_WEAPON_FIRED
+simultaneously. Tractor fire does the same. Torpedo creates only ET_WEAPON_FIRED. This means
+every phaser/tractor cycle generates 4+ ObjPtrEvent messages (start_specific + weapon_fired +
+stopped_specific + stop_notify).
+
+Python scripts also use TGObjPtrEvent for 27+ additional local-only event types (72 call
+sites). The SWIG functions (SetObjPtr, GetObjPtr, Create) have zero C++ xrefs — Python-only.
+
+### TGObjPtrEvent Vtable (0x0088869C)
+
+| Slot | Offset | Address | Name |
+|------|--------|---------|------|
+| 0 | +0x00 | 0x00403310 | scalar_deleting_dtor |
+| 1 | +0x04 | 0x004032B0 | GetFactoryID → returns 0x10C |
+| 2 | +0x08 | 0x004032C0 | IsA(id) → true for 0x10C, 0x101, 0x02 |
+| 9 | +0x24 | 0x004032F0 | GetClassName → "TGObjPtrEvent" |
+| 10 | +0x28 | 0x00403300 | GetSWIGName → "_p_TGObjPtrEvent" |
+| 12 | +0x30 | 0x006D6DA0 | CopyFrom (base + obj_ptr) |
+| 13 | +0x34 | 0x006D6DC0 | **WriteToStream** (network) |
+| 14 | +0x38 | 0x006D6DF0 | **ReadFromStream** (network) |
+
+(Slots 3-8, 11, 15-17 inherited from TGEvent base.)
+
+See [tgobjptrevent-class.md](tgobjptrevent-class.md) for full analysis including C++
+producers, Python API, and constructor details.
+
+## Event Class 4: ObjectExplodingEvent (factory 0x8129)
 
 Carries ship destruction notifications. Extends TGEvent with a firing player ID
 (who killed the ship) and an explosion lifetime (visual effect duration).
@@ -552,6 +649,9 @@ All collision-path PythonEvents are **host-generated, server-to-client only**.
 | 0x006D6940 | TGCharEvent::WriteToStream | Network serialization |
 | 0x006D6960 | TGCharEvent::ReadFromStream | Network deserialization |
 | 0x00574C20 | TGCharEvent::ctor | Constructor (0x2C bytes) |
+| 0x006D6DC0 | TGObjPtrEvent::WriteToStream | Network serialization |
+| 0x006D6DF0 | TGObjPtrEvent::ReadFromStream | Network deserialization |
+| 0x00403290 | TGObjPtrEvent::ctor | Constructor (0x2C bytes) |
 | 0x0056C470 | ShipSubsystem::SetCondition | Posts SUBSYSTEM_HIT on damage |
 | 0x00565900 | RepairSubsystem::AddToRepairList | Posts ADD_TO_REPAIR_LIST (host+MP gate) |
 | 0x005658D0 | RepairSubsystem::HandleHitEvent | Catches SUBSYSTEM_HIT |
@@ -570,7 +670,7 @@ All collision-path PythonEvents are **host-generated, server-to-client only**.
 | 0x008000FC | ET_HOST_COLLISION_EFFECT | (internal only) | Client-reported collision |
 | 0x00800053 | ET_COLLISION_DAMAGE | (internal only) | Auto-repair trigger |
 | 0x00800070 | ET_SUBSYSTEM_DAMAGED | (internal only) | Damage tracking |
-| 0x0000010C | (undocumented) | Unknown | **45% of all PythonEvents in combat** (1,718 of 3,825 in 33.5-min battle trace). Sent as both 0x06 S→C and 0x0D C→S. Needs Ghidra RE to identify ET_ constant mapping. |
+| 0x0000010C | TGObjPtrEvent (factory ID) | Weapon/tractor/repair events | **45% of all PythonEvents in combat** (1,718 of 3,825 in 33.5-min battle trace). NOTE: 0x010C is a factory_id, not an event_type. Carries ET_WEAPON_FIRED, ET_PHASER_STOPPED_FIRING, ET_TRACTOR_BEAM_STOPPED_FIRING, ET_REPAIR_INCREASE_PRIORITY, ET_SUBSYSTEM_HIT. See [tgobjptrevent-class.md](tgobjptrevent-class.md). |
 
 ## Collision Chain Event Count (Verified from Stock Traces)
 
@@ -583,6 +683,7 @@ Total count varies with collision geometry and pre-existing repair queue state.
 
 ## Related Documents
 
+- [tgobjptrevent-class.md](tgobjptrevent-class.md) — TGObjPtrEvent (factory 0x10C) class layout, vtable, 5 C++ producers
 - [collision-effect-protocol.md](collision-effect-protocol.md) — Opcode 0x15 wire format (client collision reports)
 - [collision-detection-system.md](collision-detection-system.md) — 3-tier collision detection pipeline
 - [set-phaser-level-protocol.md](set-phaser-level-protocol.md) — TGCharEvent (0x105) detailed analysis, GenericEventForward

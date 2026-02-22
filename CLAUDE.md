@@ -66,7 +66,7 @@ collision damage and subsystem damage. The main multiplayer loop is functional.
 - Server's own ship object (player 0) still sends flags=0x00 (harmless — host's dummy ship)
 - Double NewPlayerInGame: engine handler + our GameLoopTimerProc both fire
 - SCORE_CHANGE (0x36) not sent for weapon kills on stock dedi — may be a stock BC bug (collision kills work)
-- PythonEvent 0x010C (45% of combat PythonEvents) — undocumented, needs Ghidra RE
+- PythonEvent 0x010C (45% of combat PythonEvents) — RESOLVED: TGObjPtrEvent (weapon/phaser/tractor events). See [docs/tgobjptrevent-class.md](docs/tgobjptrevent-class.md)
 
 ### Key Fixes Applied (in ddraw_main.c split files)
 1. **TGL FindEntry NULL fix** - code cave at 0x006D1E10, returns NULL when ECX is NULL
@@ -242,8 +242,9 @@ Then opcode 0x01 (single byte).
 - **OpenBC**: `../OpenBC/docs/ack-outbox-deadlock.md` - Clean-room ACK-outbox deadlock spec: two-pass processing bug, three degradation effects, reimplementation guidance (single-pass + hash map dedup)
 - [docs/self-destruct-pipeline.md](docs/self-destruct-pipeline.md) - Self-destruct pipeline RE: opcode 0x13 (1-byte wire format), 3 execution paths (SP/host/client), DoDamageToSelf via PowerSubsystem, death cascade, scoring (no kill credit, team penalty), gate checks (god mode, damage disabled)
 - **OpenBC**: `../OpenBC/docs/self-destruct-system.md` - Clean-room self-destruct spec: opcode 0x13 wire format, 3 execution paths, power subsystem cascade, scoring rules, AI/script alternatives, server implementation notes
-- [docs/pythonevent-wire-format.md](docs/pythonevent-wire-format.md) - PythonEvent (opcode 0x06) RE: polymorphic TGStreamedObject transport, 3 event classes (TGSubsystemEvent/TGCharEvent/ObjectExplodingEvent), 3 producers, collision→repair chain, event type override table
-- **OpenBC**: `../OpenBC/docs/pythonevent-wire-format.md` - Clean-room PythonEvent spec: polymorphic event transport, 3 factory types, collision damage chain, ~14 messages per collision, server implementation notes
+- [docs/pythonevent-wire-format.md](docs/pythonevent-wire-format.md) - PythonEvent (opcode 0x06) RE: polymorphic TGStreamedObject transport, 4 event classes (TGSubsystemEvent/TGCharEvent/TGObjPtrEvent/ObjectExplodingEvent), 3 producers, collision→repair chain, event type override table
+- [docs/tgobjptrevent-class.md](docs/tgobjptrevent-class.md) - TGObjPtrEvent (factory 0x010C): class layout (0x2C bytes), wire format (21 bytes), vtable 0x0088869C, 5 C++ producers (weapon/phaser/tractor/repair/AI events), Python API, 45% of combat PythonEvents
+- **OpenBC**: `../OpenBC/docs/pythonevent-wire-format.md` - Clean-room PythonEvent spec: polymorphic event transport, 4 factory types, collision damage chain, ~14 messages per collision, ObjPtrEvent combat volume, server implementation notes
 - [docs/ship-death-lifecycle.md](docs/ship-death-lifecycle.md) - Ship death in MP: Explosion (0x29) + ObjCreateTeam (0x03) respawn, DestroyObject (0x14) NOT used, SCORE_CHANGE anomaly
 - [docs/stock-trace-analysis.md](docs/stock-trace-analysis.md) - Ground truth from stock dedi traces: 10 findings, opcode frequency tables, doc corrections applied
 - **OpenBC**: `../OpenBC/docs/ship-death-lifecycle.md` - Clean-room ship death/respawn spec: explosion broadcast + respawn, no destroy message for ship deaths

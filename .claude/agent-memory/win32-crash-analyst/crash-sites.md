@@ -174,6 +174,20 @@
 - **Upstream cause**: Unknown -- need to identify which object has a NULL 'this' and which vtable offset maps to WSN+0x31. Likely in TGNetwork_Update call chain or a per-frame callback with a dangling/NULL object pointer.
 - **Status**: NEW - root cause of the 0x006B569C crash. Needs investigation to find the NULL-this caller.
 
+## 0x005A1FE9 - Ship_Deserialize NULL factory return (TGFactoryCreate returns 0)
+- **Function**: Ship_Deserialize (0x005A1F50, __cdecl, 2 args: buffer ptr + size)
+- **Instruction**: `MOV EDX, [ESI]` at 0x005A1FE9 — vtable load from NULL ship pointer
+- **Exception**: Read AV at 0x00000000 (ESI=0, factory returned NULL)
+- **Root cause**: Stream contained class_id=0x3FFFFFFF (player 0 base object ID) instead of valid factory class ID (0x8008=Ship, 0x8009=Torpedo). TGFactoryCreate(0x3FFFFFFF) returned NULL. No NULL check before vtable deref.
+- **Context**: Client connected to OpenBC server, ship was destroyed, server sent ObjCreate for respawn with incorrect serialization (object_id where class_id should be = stream framing mismatch).
+- **EDI at crash**: 0x3FFFFFFF (the misinterpreted class_id = actually an object ID)
+- **Call chain**: Handler_ObjCreate_0x02_0x03 (0x0069f620) -> Ship_Deserialize (0x005a1f50) -> TGFactoryCreate (0x006f13e0) returns 0 -> CRASH
+- **Return addr on stack**: 0x0069F6B4 (Handler_ObjCreate call site + 5)
+- **Existing early-return path**: 0x005A1FB3 (duplicate object cleanup, returns NULL, safe reuse)
+- **Fix**: Code cave at 0x005A1FE3: relocate LEA+MOV (6 bytes), insert TEST ESI,ESI / JZ 0x005A1FB3 before vtable deref. Overwrite 0x005A1FE3-0x005A1EA with JMP to cave + NOPs.
+- **Also**: Fix OpenBC server to include class_id (0x8008) as first 4 bytes of serialized object stream before object_id.
+- **Status**: NEW - needs code cave + OpenBC protocol fix
+
 ## Previously documented sites:
 - 0x006D1E10 - TGL::FindEntry NULL+0x1C (FIXED: code cave PatchTGLFindEntry)
 - 0x005b1d57 - Network update NULL lists (FIXED: code cave PatchNetworkUpdateNullLists)

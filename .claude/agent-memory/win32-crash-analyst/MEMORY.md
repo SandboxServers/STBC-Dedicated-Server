@@ -3,6 +3,13 @@
 ## Analyzed Crash Sites
 - See [crash-sites.md](crash-sites.md) for detailed per-address analysis
 
+## Ship_Deserialize Missing NULL Check (0x005A1FE9)
+- Ship_Deserialize(0x005A1F50) reads class_id + object_id from stream, calls TGFactoryCreate
+- NO NULL CHECK on factory return before vtable deref at 0x005A1FE9
+- Valid class IDs: 0x8008 (Ship), 0x8009 (Torpedo) -- anything else returns NULL and crashes
+- Existing safe cleanup path at 0x005A1FB3 (returns NULL to caller, who handles it)
+- OpenBC interop: server must include class_id as first 4 bytes of serialized object stream
+
 ## Key Structural Knowledge
 - See [structures.md](structures.md) for decoded object layouts
 

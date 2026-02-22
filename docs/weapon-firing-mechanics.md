@@ -411,11 +411,11 @@ bool TorpedoTube::Fire(float dt, char flag) {
     // Set up the torpedo with launch parameters
     SetupTorpedo(this, torpedo);  // FUN_0057da20
 
-    // Post TORPEDO_FIRED event (0x0080007C)
+    // Post WEAPON_FIRED event (0x0080007C)
     TGMessage* msg = new TGMessage();
     msg->SetSource(this);
     msg->SetSubject(this->owner_ship);
-    msg->event = 0x0080007C;  // ET_TORPEDO_FIRED
+    msg->event = 0x0080007C;  // ET_WEAPON_FIRED (NOT ET_TORPEDO_FIRED which is 0x00800066)
     msg->preserve = 0;
     PostMessage(msg);
 

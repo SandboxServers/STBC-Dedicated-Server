@@ -21,6 +21,17 @@
 - [main-loop-timing.md](main-loop-timing.md) - Main loop architecture, NiApp vtable, clock sources, frame budget scheduler
 - [hardpoint-property-system.md](hardpoint-property-system.md) - COMPLETE: AddToSet, SetupProperties, CT_ type IDs, parent-child linking, WST_ enum
 
+## TGObjPtrEvent System (2026-02-21, COMPLETE)
+- See [docs/tgobjptrevent-catalog.md](../../docs/tgobjptrevent-catalog.md)
+- Factory 0x010C, ctor 0x00403290, vtable 0x0088869C, size 0x2C
+- +0x28 = obj_ptr (object ID, NOT raw pointer)
+- 30 C++ xrefs to ctor; 11 distinct event types from analyzed functions
+- Key types: ET_SET_PLAYER(0x80000E), ET_TARGET_WAS_CHANGED(0x800058), ET_SUBSYSTEM_HIT(0x80006B), ET_WEAPON_FIRED(0x80007C), ET_SENSORS_SHIP_IDENTIFIED(0x800088), ET_STOP_FIRING_AT_TARGET_NOTIFY(0x8000DC)
+- Dual-fire pattern: phaser/tractor create 2 events (specific + generic ET_WEAPON_FIRED)
+- Timer events (0x50001) use TGObjPtrEvent as delivery vehicle, dest=0x99b010
+- 27+ Python event types via TGObjPtrEvent_Create SWIG API
+- Network-relevant: 0x6B(subsystem hit), 0xDC(stop firing notify), 0x7C(weapon fired), 0x76(repair priority)
+
 ## Hardpoint/Property System (2026-02-21, COMPLETE)
 - Properties attached via `AddToSet("Scene Root", prop)` — flat, order-independent
 - SetupProperties (0x005b3fb0): switch on CT_ type ID (0x812b-0x813f) creates subsystem objects

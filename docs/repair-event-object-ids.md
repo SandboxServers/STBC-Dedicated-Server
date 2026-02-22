@@ -82,13 +82,17 @@ All subsystems are created with `param_1=0` (auto-assign ID) in Ship_SetupProper
 | +0x20 | int | field_20 | 0 |
 | +0x24 | int | field_24 | 0 |
 
-### TGCharEvent (factory type 0x10C, size 0x2C)
+### TGObjPtrEvent (factory type 0x10C, size 0x2C)
 
 Inherits TGEvent, adds:
 
 | Offset | Type | Field | Description |
 |--------|------|-------|-------------|
-| +0x28 | int | charData | Extra int data (raw value, NOT a pointer) |
+| +0x28 | int32 | obj_ptr | TGObject network ID (int32, NOT a byte — see note below) |
+
+**Note**: TGCharEvent (factory 0x105, ctor 0x00574C20) is a DIFFERENT class that writes
+a single byte at +0x28. Factory 0x10C is TGObjPtrEvent (ctor 0x00403290), which writes
+a full int32 at +0x28.
 
 ## Setter Functions
 
@@ -105,18 +109,18 @@ Both functions also manage reference counting via the object tracking hash table
 WriteToStream serializes via the stream (vtable calls):
 
 ```
-[int32] factoryType      — vtable+0x04 result (0x101 for TGEvent, 0x10C for TGCharEvent)
+[int32] factoryType      — vtable+0x04 result (0x101 for TGSubsystemEvent, 0x10C for TGObjPtrEvent)
 [int32] eventType        — event+0x10 (e.g. 0x008000DF)
 [int32] source_obj_id    — *(event->source + 0x04), or 0 if source==NULL
 [int32] dest_obj_id      — *(event->dest + 0x04), or 0 if NULL, or -1 if sentinel
 ```
 
-### TGCharEvent::WriteToStream (FUN_006d6dc0)
+### TGObjPtrEvent::WriteToStream (FUN_006d6dc0)
 
 Calls TGEvent::WriteToStream first, then appends:
 
 ```
-[int32] charData         — event+0x28 (raw integer value)
+[int32] obj_ptr          — event+0x28 (TGObject network ID, subsystem's own ID)
 ```
 
 ### WriteObjectRef encoding for dest field
@@ -149,8 +153,8 @@ void __thiscall SetCondition(ShipSubsystem *this, float newCondition) {
     Ship *ship = this->ownerShip;  // +0x40
     if (this->condition < GetMaxCondition(this)
         && (ship == NULL || ship->timeSinceSpawn >= DAMAGE_REPORT_THRESHOLD)) {
-        // Create TGCharEvent (factory 0x10C)
-        TGCharEvent *evt = new TGCharEvent(0);  // auto-assign ID
+        // Create TGObjPtrEvent (factory 0x10C)
+        TGObjPtrEvent *evt = new TGObjPtrEvent(0);  // auto-assign ID
 
         // Source = NULL (no source for damage notification)
         SetSource(evt, 0);           // FUN_006d6270: evt+0x08 = NULL
@@ -161,11 +165,11 @@ void __thiscall SetCondition(ShipSubsystem *this, float newCondition) {
         // Event type = SUBSYSTEM_HIT
         evt->eventType = 0x0080006B;    // evt+0x10
 
-        // CharData = this subsystem's own object ID
+        // ObjPtr = this subsystem's own object ID
         if (this != NULL)
-            evt->charData = this->objectID;  // evt+0x28 = *(this+0x04)
+            evt->obj_ptr = this->objectID;  // evt+0x28 = *(this+0x04)
         else
-            evt->charData = 0;
+            evt->obj_ptr = 0;
 
         PostEvent(evt);
     }
@@ -175,11 +179,11 @@ void __thiscall SetCondition(ShipSubsystem *this, float newCondition) {
 **SUBSYSTEM_HIT wire format** (via HostEventHandler as opcode 0x06):
 ```
 [byte]  0x06              — PythonEvent opcode
-[int32] 0x010C            — TGCharEvent factory type (NOT 0x0101)
+[int32] 0x010C            — TGObjPtrEvent factory type (carries int32 obj_ptr at +0x28)
 [int32] 0x0080006B        — SUBSYSTEM_HIT event type
 [int32] 0                 — source_obj_id (NULL, no source)
 [int32] ship_obj_id       — dest_obj_id (*(ownerShip+0x04), the ship's network ID)
-[int32] subsystem_obj_id  — charData (*(subsystem+0x04), the subsystem's own ID)
+[int32] subsystem_obj_id  — obj_ptr (*(subsystem+0x04), the subsystem's own ID)
 ```
 
 ### 2. RepairSubsystem handles SUBSYSTEM_HIT
@@ -187,9 +191,9 @@ void __thiscall SetCondition(ShipSubsystem *this, float newCondition) {
 **RepairSubsystem::HandleHitEvent** (at 0x005658d0, NOT in Ghidra func DB):
 
 ```c
-void __thiscall HandleHitEvent(RepairSubsystem *this, TGCharEvent *event) {
+void __thiscall HandleHitEvent(RepairSubsystem *this, TGObjPtrEvent *event) {
     // Look up the damaged subsystem by its object ID
-    int subsystemID = event->charData;  // event+0x28
+    int subsystemID = event->obj_ptr;  // event+0x28
     ShipSubsystem *sub = LookupObjectByID(subsystemID);  // FUN_006f0ee0
 
     if (sub != NULL) {
@@ -299,9 +303,9 @@ messages on the wire, regardless of the event type. The event type is INSIDE the
 | 0x0099a67c | g_ObjectHashTable | Hash table: object ID -> object pointer |
 | 0x006f0ee0 | LookupObjectByID | Hash table lookup by ID |
 | 0x006d6130 | TGEvent::WriteToStream | Serializes event to network stream |
-| 0x006d6dc0 | TGCharEvent::WriteToStream | Adds +0x28 charData after base |
+| 0x006d6dc0 | TGObjPtrEvent::WriteToStream | Adds +0x28 obj_ptr (int32) after base |
 | 0x006d5c00 | TGEvent::ctor | Event constructor (size 0x28) |
-| 0x00403290 | TGCharEvent::ctor | CharEvent constructor (size 0x2C) |
+| 0x00403290 | TGObjPtrEvent::ctor | ObjPtrEvent constructor (size 0x2C) |
 | 0x006d62b0 | TGEvent::SetDest | Sets event+0x0C (dest object ptr) |
 | 0x006d6270 | TGEvent::SetSource | Sets event+0x08 (source object ptr) |
 | 0x00565900 | RepairSubsystem::AddToRepairList | Creates ADD_TO_REPAIR_LIST event |

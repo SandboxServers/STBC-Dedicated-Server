@@ -429,8 +429,8 @@ This is the priority reordering handler, triggered by opcode 0x11 (RepairListPri
 - If the subsystem is NOT being actively repaired (waiting area): **promote to HEAD**
 
 ```c
-void RepairSubsystem::HandleIncreasePriority(RepairSubsystem* this, TGCharEvent* event) {
-    int subsysID = event->charData;  // event+0x28
+void RepairSubsystem::HandleIncreasePriority(RepairSubsystem* this, TGObjPtrEvent* event) {
+    int subsysID = event->obj_ptr;  // event+0x28 (int32 TGObject network ID)
     ShipSubsystem* targetSub = TGObject_LookupByID(subsysID);  // FUN_006f0ee0
 
     if (targetSub == NULL) goto done;
@@ -519,8 +519,8 @@ done:
 Catches SUBSYSTEM_HIT events and auto-adds the damaged subsystem to the repair queue.
 
 ```c
-void RepairSubsystem::HandleHitEvent(RepairSubsystem* this, TGCharEvent* event) {
-    int subsystemID = event->charData;  // event+0x28
+void RepairSubsystem::HandleHitEvent(RepairSubsystem* this, TGObjPtrEvent* event) {
+    int subsystemID = event->obj_ptr;  // event+0x28 (int32 TGObject network ID)
     ShipSubsystem* sub = TGObject_LookupByID(subsystemID);  // FUN_006f0ee0
 
     if (sub != NULL) {
@@ -704,16 +704,16 @@ Offset  Size  Type    Field            Notes
 
 Sent when a player clicks a subsystem in the repair queue to change its priority. The handler on the receiving end is HandleIncreasePriority (toggle algorithm).
 
-**Wire format**: Standard TGCharEvent serialization (18 bytes total):
+**Wire format**: TGObjPtrEvent serialization (21 bytes total):
 ```
 Offset  Size  Type    Field            Notes
 ------  ----  ----    -----            -----
 0       1     u8      opcode           0x11
-1       4     i32     factory_id       0x00000105 (TGCharEvent)
+1       4     i32     factory_id       0x0000010C (TGObjPtrEvent)
 5       4     i32     event_type       0x00800076 (ET_REPAIR_INCREASE_PRIORITY)
 9       4     i32     source_obj_id    Source object
 13      4     i32     dest_obj_id      Related object
-17      1     u8      char_value       Subsystem ID (charData)
+17      4     i32     obj_ptr          Subsystem TGObject network ID
 ```
 
 ---
@@ -739,11 +739,11 @@ The complete event chain from collision to repair queue entry:
 5. SetCondition:
    a. Stores new condition
    b. If newCondition < maxCondition AND ship alive:
-      → Posts ET_SUBSYSTEM_HIT (0x0080006B) as TGCharEvent (factory 0x10C)
-        source = NULL, dest = owner ship, charData = subsystem object ID
+      → Posts ET_SUBSYSTEM_HIT (0x0080006B) as TGObjPtrEvent (factory 0x10C)
+        source = NULL, dest = owner ship, obj_ptr = subsystem object ID
 
 6. RepairSubsystem::HandleHitEvent catches ET_SUBSYSTEM_HIT:
-   a. Looks up subsystem by charData (TGObject ID)
+   a. Looks up subsystem by obj_ptr (TGObject ID)
    b. Calls AddToRepairList_MP (FUN_00565900)
    c. AddSubsystem rejects duplicates, rejects 0 HP
    d. If successful AND g_IsHost AND g_IsMultiplayer:

@@ -68,13 +68,13 @@ Zero DestroyObject (0x14) packets across 59 ship deaths. The death sequence is:
 Collision kills correctly produce SCORE_CHANGE. Weapon kills do not. This may be
 a stock BC dedicated server bug.
 
-### 6. PythonEvent eventCode 0x0000010C undocumented
+### 6. PythonEvent factory 0x0000010C = TGObjPtrEvent (RESOLVED)
 
-1,718 of 3,825 PythonEvents (45%) in the battle trace use event code 0x010C (decimal 268).
-Sent as both opcode 0x06 (S→C) and opcode 0x0D (C→S). This is the single most common
-event type in combat, yet it's not documented in any existing analysis.
-
-**Follow-up**: Needs Ghidra RE to identify the ET_ constant mapping.
+1,718 of 3,825 PythonEvents (45%) in the battle trace use factory 0x010C (TGObjPtrEvent).
+This is a fourth TGEvent subclass carrying an int32 TGObject network ID at +0x28.
+High volume is explained by weapon events: ET_WEAPON_FIRED (0x7C),
+ET_PHASER_STOPPED_FIRING (0x83), ET_TRACTOR_BEAM_STOPPED_FIRING (0x7F).
+See [tgobjptrevent-class.md](tgobjptrevent-class.md) for full analysis.
 
 ### 7. Weapon relay ratio exactly (N-1):1
 
@@ -151,7 +151,7 @@ Total: 12-14 per collision, matching prior decompilation analysis.
 | 0x15 C→S only | wire-format-spec.md, collision-effect-protocol.md |
 | Ship death lifecycle | NEW: ship-death-lifecycle.md |
 | SCORE_CHANGE absence | ship-death-lifecycle.md, (OpenBC gamemode-system.md) |
-| 0x010C undocumented | pythonevent-wire-format.md |
+| 0x010C = TGObjPtrEvent (RESOLVED) | pythonevent-wire-format.md, tgobjptrevent-class.md |
 | 0x2A direction C→S | wire-format-spec.md |
 | Collision chain count | pythonevent-wire-format.md |
 
