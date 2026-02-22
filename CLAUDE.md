@@ -270,6 +270,7 @@ Then opcode 0x01 (single byte).
 ### Analysis
 - [docs/analysis/collision-trace-comparison.md](docs/analysis/collision-trace-comparison.md) - Stock dedi vs OpenBC: byte-level wire format comparison, 6 behavioral gaps
 - [docs/analysis/stock-trace-analysis.md](docs/analysis/stock-trace-analysis.md) - Ground truth from stock dedi traces: 10 findings, opcode frequencies
+- [docs/analysis/valentines-day-battle-analysis.md](docs/analysis/valentines-day-battle-analysis.md) - Comprehensive 33.5min 3-player stock trace: 59 deaths, full opcode table, parity checklist, authority summary
 - [docs/analysis/subsystem-trace-analysis.md](docs/analysis/subsystem-trace-analysis.md) - Ship subsystem creation pipeline (from stock trace)
 - [docs/analysis/cut-content-analysis.md](docs/analysis/cut-content-analysis.md) - Cut/hidden features: ghost missions, fleet command AI, tractor docking
 - [docs/analysis/empty-stateupdate-root-cause.md](docs/analysis/empty-stateupdate-root-cause.md) - Why flags=0x00 happened (RESOLVED)
@@ -286,6 +287,7 @@ Then opcode 0x01 (single byte).
 - **OpenBC**: `../OpenBC/docs/pythonevent-wire-format.md` - Clean-room PythonEvent spec
 - **OpenBC**: `../OpenBC/docs/ship-death-lifecycle.md` - Clean-room ship death/respawn spec
 - **OpenBC**: `../OpenBC/docs/wire-formats/delete-player-ui-wire-format.md` - Clean-room DeletePlayerUI (0x17) wire format
+- **OpenBC**: `../OpenBC/docs/wire-formats/event-forward-wire-format.md` - Clean-room GenericEventForward (0x07-0x12, 0x1B) group spec
 
 ## Ghidra Annotation Scripts
 Bulk annotation scripts in `tools/`. Run from Ghidra Script Manager with stbc.exe loaded.

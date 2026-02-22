@@ -30,6 +30,7 @@ See also: [message-trace-vs-packet-trace.md](message-trace-vs-packet-trace.md) f
 | [subsystem-integrity-hash.md](subsystem-integrity-hash.md) | Subsystem hash (anti-cheat): dead code in MP |
 | [cf16-precision-analysis.md](cf16-precision-analysis.md) | CF16 precision tables and mod compatibility |
 | [cf16-explosion-encoding.md](cf16-explosion-encoding.md) | CF16 explosion encoding analysis |
+| [delete-player-ui-wire-format.md](delete-player-ui-wire-format.md) | DeletePlayerUI (0x17): TGEvent transport for join/disconnect player list updates |
 | [tgmessage-routing.md](tgmessage-routing.md) | TGMessage routing: relay-all, no whitelist, star topology |
 
 ---
@@ -69,7 +70,7 @@ See also: [message-trace-vs-packet-trace.md](message-trace-vs-packet-trace.md) f
 | 0x14 | DestroyObject | S->C | FUN_006a01e0 | objectId. **Not observed in stock MP ship deaths** -- ships die via 0x29+0x03 |
 | 0x15 | CollisionEffect | C->S | FUN_006a2470 | typeClassId(0x8124), eventCode(0x800050), srcObjId, tgtObjId, count, count*cv4_byte(dir+mag), force(f32). **C->S only, server never relays** |
 | 0x16 | (default) | -- | DEFAULT | Handled by MultiplayerWindow dispatcher, not game jump table |
-| 0x17 | DeletePlayerUI | S->C | FUN_006a1360 | player UI cleanup |
+| 0x17 | DeletePlayerUI | S->C | FUN_006a1360 | Serialized TGEvent (factory 0x866): join=ET_NEW_PLAYER_IN_GAME (0x8000F1), disconnect=ET_NETWORK_DELETE_PLAYER (0x60005). 18 bytes: classID(4), eventCode(4), srcObj(4), tgtObj(4), peerID(1). See [delete-player-ui-wire-format.md](delete-player-ui-wire-format.md) |
 | 0x18 | DeletePlayerAnim | S->C | FUN_006a1420 | player deletion animation |
 | 0x19 | TorpedoFire | owner->all | FUN_0069f930 | objId, flags, velocity(cv3), [targetId, impact(cv4)] |
 | 0x1A | BeamFire | owner->all | FUN_0069fbb0 | objId, flags, targetDir(cv3), moreFlags, [targetId] |

@@ -111,7 +111,7 @@ HostMsgHandler (0x006A01B0)
 DoDamageToSelf (0x005AF5F0)
     |
     v
-Ship destruction -> OBJECT_EXPLODING event -> scoring -> DestroyObject broadcast
+Ship destruction -> OBJECT_EXPLODING event -> scoring
 
 
 ALL CLIENTS (via normal event forwarding):
@@ -119,8 +119,11 @@ ALL CLIENTS (via normal event forwarding):
 The ship's death is communicated via:
   1. StateUpdate 0x1C (HP drops to 0)
   2. Opcode 0x06 PythonEvent (OBJECT_EXPLODING, forwarded by HostEventHandler)
-  3. Opcode 0x14 DestroyObject (cleanup)
-  4. Opcode 0x17 DeletePlayerUI (scoreboard update, if player disconnects)
+  3. Opcode 0x36 SCORE_CHANGE (death counted, no kill credit)
+  4. Opcode 0x06 TGSubsystemEvent (ET_ADD_TO_REPAIR_LIST) for damaged subsystems
+  Client returns to ship selection after explosion timer (9.5s) expires.
+  NO opcode 0x14 DestroyObject is sent. NO server-initiated respawn.
+  The client picks a new ship and sends ObjCreateTeam (0x03) to respawn.
 ```
 
 ---
@@ -544,11 +547,125 @@ Ctrl+D
             -> ET_OBJECT_EXPLODING (0x0080004E) event
               -> [MP] HostEventHandler -> opcode 0x06 -> "NoMe" group
               -> [MP] Python ObjectKilledHandler -> SCORE_CHANGE_MESSAGE
-              -> [all] Explosion visuals/sounds
-            -> DestroyObject -> opcode 0x14 -> all clients
+              -> [all] Explosion visuals/sounds (9.5s animation)
+            -> Client returns to spawn menu after explosion timer
+            -> Client sends ObjCreateTeam (0x03) to respawn
+            (NO DestroyObject 0x14, NO server-initiated respawn)
 ```
 
 Total latency in MP: ~1 network round-trip (client sends 0x13, host processes, state updates propagate on next tick).
+
+---
+
+## Verified Stock Trace Data (2026-02-21)
+
+Validated against packet traces from stock dedicated server (instrumented with proxy DLL).
+
+### ObjectExplodingEvent Field Values
+
+| Field | Value | Notes |
+|-------|-------|-------|
+| factory_id | 0x8129 | ObjectExplodingEvent |
+| event_type | 0x0080004E | ET_OBJECT_EXPLODING |
+| source | 0x00000000 (NULL) | No attacker for self-destruct |
+| dest | 0x3FFFFFFF (ship objID) | The dying ship |
+| firing_player | 0 | No kill credit awarded |
+| lifetime | 9.5f | Client plays 9.5-second explosion animation |
+
+### Complete Opcode Sequence
+
+```
+T+0.000  C->S  0x13 HostMsg (self-destruct request, 1 byte, unreliable)
+T+0.004  S->C  0x06 ObjectExplodingEvent (factory 0x8129, lifetime=9.5s)
+T+0.004  S->C  0x36 SCORE_CHANGE (deaths+1, kills=0)
+T+0.004  S->C  4x 0x06 TGSubsystemEvent (ET_ADD_TO_REPAIR_LIST)
+                PowerReactor, ShieldGenerator, PhaserController, PulseWeapon
+         --- 9.5 seconds: explosion animation plays, StateUpdates continue ---
+         --- 15 debris collision events during explosion (600.0 dmg, all HP=0) ---
+T+9.498  S->C  2x 0x06 TGSubsystemEvent (debris damage to EPS, Repair)
+         --- client returns to spawn menu ---
+```
+
+### Key Findings
+
+- **4ms latency** from HostMsg (0x13) to server response (ObjectExplodingEvent + SCORE_CHANGE)
+- **9.5 seconds** explosion animation (controlled by ObjectExplodingEvent lifetime field)
+- **StateUpdates continue** both directions during the explosion — the ship exists as wreckage
+- **NOT sent**: opcode 0x29 (Explosion) — this IS sent for combat kills (59/59 in battle trace) but NOT for self-destruct
+- **NOT sent**: opcode 0x14 (DestroyObject) — zero across both self-destruct and combat kills (0/59 in battle trace)
+- **NOT sent**: opcode 0x03 (server-initiated respawn) — the client returns to the spawn menu and initiates respawn by sending ObjCreateTeam when the player picks a new ship
+- **Self-destruct vs combat kill**: Combat kills use 0x29 (Explosion) + server-initiated 0x03 (ObjCreateTeam respawn). Self-destruct uses only ObjectExplodingEvent (0x06) with no 0x29 and no auto-respawn.
+
+---
+
+## Stock vs OpenBC: Self-Destruct Trace Comparison
+
+### Pre-PR#34 (2026-02-21): 5 Anomalies
+
+Side-by-side comparison from instrumented packet traces: stock dedicated server vs OpenBC
+server (pre-PR#34), both running the same client.
+
+| # | Anomaly | Severity | Description |
+|---|---------|----------|-------------|
+| 1 | ObjectExplodingEvent wrong fields | HIGH | source/dest swapped, lifetime=1.0 instead of 9.5 |
+| 2 | DestroyObject (0x14) sent | HIGH | Ship removed before explosion animation |
+| 3 | Server auto-respawn | HIGH | Server sends ObjCreateTeam, bypassing ship selection |
+| 4 | Wrong owner_slot/team in respawn | MEDIUM | owner_slot=0 (host) instead of client's slot |
+| 5 | MissionInit totalSlots=1 | LOW | Should be maxplayers+1 |
+
+### Post-PR#34 (2026-02-21): All 5 Fixed
+
+All 5 anomalies were resolved by OpenBC PR #34 (issue #33). Verified by re-testing
+with the same procedure (connect, spawn, self-destruct, observe) across 6 deaths
+(1 collision kill + 5 self-destructs), 3 ship types (Sovereign, Galaxy, Warbird).
+
+| # | Anomaly | Status | Evidence |
+|---|---------|--------|----------|
+| 1 | ObjectExplodingEvent wrong fields | **FIXED** | All 6 events: source=0, dest=ship_objID, lifetime=9.5f |
+| 2 | DestroyObject (0x14) sent | **FIXED** | Zero 0x14 during any death |
+| 3 | Server auto-respawn after self-destruct | **FIXED** | Zero server-initiated ObjCreateTeam after any self-destruct |
+| 4 | Wrong owner_slot/team in respawn | **FIXED** | Moot — no auto-respawn occurs |
+| 5 | MissionInit totalSlots=1 | **FIXED** | Now 7 (maxplayers=6+1), was 1 |
+
+Post-fix ObjectExplodingEvent wire format matches stock exactly:
+```
+Stock:   06 29 81 00 00 4E 00 80 00 00 00 00 00 FF FF FF 3F 00 00 00 00 00 00 18 41
+OpenBC:  06 29 81 00 00 4E 00 80 00 00 00 00 00 XX XX XX XX 00 00 00 00 00 00 18 41
+         |  |factory 8129|event 0x4E  |source=0   |dest=ship  |killer=0   |life=9.5|
+```
+
+### Post-fix Self-Destruct Sequence
+
+```
+T+0.000  C->S  0x13 HostMsg
+T+0.015  S->C  25x TGSubsystemEvent + ObjectExplodingEvent + SCORE_CHANGE
+         --- client returns to spawn menu, picks new ship ---
+         --- client sends ObjCreateTeam when ready ---
+```
+
+Response latency: stock=4ms, OpenBC=15-32ms (1-2 ticks). Both acceptable.
+
+### Remaining Issues (post-PR#34)
+
+Two issues remain after PR #34, tracked in OpenBC issue #38:
+
+1. **Combat death auto-respawn** (HIGH): PR #34 fixed self-destruct (respawn_timer=0.0f),
+   but all 4 combat death paths still set respawn_timer=5.0f. Stock BC NEVER auto-respawns
+   for ANY death type — all respawns are client-initiated. See
+   [../networking/ship-death-lifecycle.md](../networking/ship-death-lifecycle.md).
+
+2. **Excess TGSubsystemEvents** (MEDIUM): OpenBC sends 18-25 repair events per death
+   (one per subsystem), stock sends 6 (primary subsystems only). Overflows the reliable
+   retransmit queue (16 entries), causing 52 warnings per session.
+
+### Key Correction: Stock Never Auto-Respawns
+
+The earlier version of this document stated that combat kills use server-initiated
+ObjCreateTeam (0x03) respawn. **This was incorrect.** Further analysis of the battle
+trace confirmed that ALL 62 ObjCreateTeam messages are client-initiated relays through
+the server's star topology, not server-originated spawns. Stock BC does not auto-respawn
+for any death type (combat or self-destruct). See
+[../networking/ship-death-lifecycle.md](../networking/ship-death-lifecycle.md) for details.
 
 ---
 
