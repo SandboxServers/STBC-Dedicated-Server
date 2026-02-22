@@ -23,14 +23,14 @@ The key difference between damage paths is **where** shields are checked, not **
 The collision entry point calls two damage functions **sequentially**, not independently:
 
 ```c
-void __thiscall CollisionDamageWrapper(void *this, int collider, float energy, float damage)
+void __thiscall CollisionDamageWrapper(void *this, int collider, float searchRadius, float damage)
 {
     // STEP 1: Subsystem-level damage (includes shield absorption)
     // damage is modified IN-PLACE — reduced by whatever shields/subsystems absorb
-    FUN_005afd70(this, (float*)(collider + 0x88), &damage, energy, NULL, 1);
+    FUN_005afd70(this, (float*)(collider + 0x88), &damage, searchRadius, NULL, 1);
 
     // STEP 2: Remaining damage → DamageVolume → ProcessDamage → hull
-    DoDamage_FromPosition(this, collider, energy, damage);  // damage is now REDUCED
+    DoDamage_FromPosition(this, collider, searchRadius, damage);  // damage is now REDUCED
 }
 ```
 
@@ -47,7 +47,7 @@ void __thiscall FUN_005afd70(
     void *this,         // ship
     float *position,    // damage origin (world-space 3D point)
     float *damage,      // POINTER to damage amount (modified in place!)
-    float energy,       // damage radius / energy
+    float searchRadius, // subsystem spatial search radius expansion (1.5 for collisions)
     int *source,        // attacker weapon pointer (NULL for collisions)
     int *isCollision    // 0x1=collision, 0x0=weapon (controls power subsystem exclusion)
 );
@@ -58,8 +58,9 @@ void __thiscall FUN_005afd70(
 1. **Find subsystems in range** via `FUN_005aecc0`:
    - Walks `ship+0x284` linked list (state serialization list)
    - Checks each subsystem's distance from the damage origin point
-   - Builds a hit list of subsystems within the energy/radius
+   - Builds a hit list of subsystems within `searchRadius` × each subsystem's bounding radius
    - **Shield facings ARE in this list** — they are regular subsystems
+   - The `searchRadius` value (1.5 for collisions) means "find subsystems within 1.5× their bounding radius from the damage origin" — it is a spatial search expansion factor, NOT a shield absorption multiplier
 
 2. **Power subsystem exclusion** (weapon-only):
    ```c
