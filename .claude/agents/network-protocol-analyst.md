@@ -135,8 +135,8 @@ When investigating, prioritize reading:
 - `game/server/ddraw_proxy.log` - Proxy lifecycle and VEH events
 - `game/client/client_debug.log` - Client-side handler tracing
 - `src/proxy/ddraw_main.c` - All C-side packet handling
-- `docs/network-protocol.md` - Protocol documentation
-- `docs/multiplayer-flow.md` - Complete join flow documentation
+- `docs/networking/network-protocol.md` - Protocol documentation
+- `docs/networking/multiplayer-flow.md` - Complete join flow documentation
 - `reference/decompiled/09_multiplayer_game.c` - MP game logic
 - `reference/decompiled/10_netfile_checksums.c` - Checksum handling
 - `reference/decompiled/11_tgnetwork.c` - TGWinsockNetwork implementation

@@ -88,9 +88,24 @@
 - **OpenBC sends 0x29 Explosion (2x)** but stock does NOT for same collision scenario
 - CollisionEffect (0x15) sent identically by both servers (2x each)
 
+## Ship_Deserialize Crash (2026-02-21) — REPRODUCIBLE
+- See [ship-deserialize-crash-analysis.md](ship-deserialize-crash-analysis.md) for full decode
+- **Crash**: NULL deref at 0x005A1FE9 (Ship_Deserialize+0x99), ESI=NULL, EDI=0x3FFFFFFF
+- **Root cause**: Server sends ObjCreateTeam MISSING 4-byte factory_class_id prefix
+  - Ship_Deserialize reads objectID (0x3FFFFFFF) as classID -> FUN_006f13e0 returns NULL
+  - No NULL check in Ship_Deserialize before vtable+0x118 call
+- **Trigger**: Ship destroyed by collision damage, then ~5s later server sends ObjCreateTeam
+  - owner=1 (server's ship slot), team=0, position off-map (-1959,-51,333)
+  - Uses DIFFERENT serialization: no classID, no name/set, full maxHP table (198 bytes vs 110)
+- **Likely cause**: NewPlayerInGame (FUN_006a1e70) serializes destroyed ship via wrong vtable+0x10c
+  - FUN_005a1dc0 (base class WriteStream at vtable 0x00893e9c / 0x0089423c) does NOT write classID
+  - Destroyed/invalid ship may have different vtable than live ship
+- **3rd crash** at 0x006D621C (TGEvent factory): same NULL pattern, different deserialization path
+- **Occurred twice** in one session (18:04:20 and 18:31:24), identical registers both times
+
 ## Files Reference
-- `docs/wire-format-spec.md` - Complete opcode table + wire formats
-- `docs/message-trace-vs-packet-trace.md` - Stock packet cross-reference
+- `docs/protocol/wire-format-spec.md` - Complete opcode table + wire formats
+- `docs/protocol/message-trace-vs-packet-trace.md` - Stock packet cross-reference
 - `src/scripts/Custom/DSNetHandlers.py` - EndGame, RestartGame, scoring
 - `src/scripts/Custom/DSHandlers.py` - ChatRelay, DeferredInitObject
 - [post-join-opcodes.md](post-join-opcodes.md) - 0x35/0x37 analysis

@@ -1,3 +1,5 @@
+> [docs](README.md) / troubleshooting.md
+
 # Troubleshooting Guide
 
 Known issues, their symptoms, and how to diagnose them.
@@ -26,7 +28,7 @@ Known issues, their symptoms, and how to diagnose them.
 
 **Fix**: DeferredInitObject (Python-driven ship creation) now loads NIF models after the client selects a ship. The full subsystem creation pipeline runs, populating ship+0x284 with 33 subsystems. Combined with the InitNetwork timing fix (see below), the server now sends flags=0x20 with real health data.
 
-See [empty-stateupdate-root-cause.md](empty-stateupdate-root-cause.md) for the full 5-step causal chain and resolution.
+See [empty-stateupdate-root-cause.md](analysis/empty-stateupdate-root-cause.md) for the full 5-step causal chain and resolution.
 
 ### InitNetwork Timing (FIXED)
 
@@ -58,7 +60,7 @@ See [empty-stateupdate-root-cause.md](empty-stateupdate-root-cause.md) for the f
 
 **Lesson**: Don't recover from crashes by faking valid state. Fix the root cause instead.
 
-See [veh-cascade-triage.md](veh-cascade-triage.md) for the full analysis.
+See [veh-cascade-triage.md](analysis/veh-cascade-triage.md) for the full analysis.
 
 ### PatchChecksumAlwaysPass (Historical — Fixed)
 
@@ -100,7 +102,7 @@ The server usually starts fine — this crash is intermittent.
 2. **Find the divergence point** — compare packet traces (use sequence numbers, not timestamps)
 3. **Check opcode flow** — is the server sending what the client expects? Compare against stock-dedi.
 4. **Decode the packet** — `packet_trace.log` includes full decrypted hex dumps and opcode labels
-5. **Check the handler** — trace the opcode through the game's message dispatch (see [wire-format-spec.md](wire-format-spec.md))
+5. **Check the handler** — trace the opcode through the game's message dispatch (see [wire-format-spec.md](protocol/wire-format-spec.md))
 
 ## Environment Issues
 

@@ -66,7 +66,7 @@ collision damage and subsystem damage. The main multiplayer loop is functional.
 - Server's own ship object (player 0) still sends flags=0x00 (harmless — host's dummy ship)
 - Double NewPlayerInGame: engine handler + our GameLoopTimerProc both fire
 - SCORE_CHANGE (0x36) not sent for weapon kills on stock dedi — may be a stock BC bug (collision kills work)
-- PythonEvent 0x010C (45% of combat PythonEvents) — RESOLVED: TGObjPtrEvent (weapon/phaser/tractor events). See [docs/tgobjptrevent-class.md](docs/tgobjptrevent-class.md)
+- PythonEvent 0x010C (45% of combat PythonEvents) — RESOLVED: TGObjPtrEvent (weapon/phaser/tractor events). See [docs/protocol/tgobjptrevent-class.md](docs/protocol/tgobjptrevent-class.md)
 
 ### Key Fixes Applied (in ddraw_main.c split files)
 1. **TGL FindEntry NULL fix** - code cave at 0x006D1E10, returns NULL when ECX is NULL
@@ -192,62 +192,97 @@ Then opcode 0x01 (single byte).
 - `11_tgnetwork.c` - TGWinsockNetwork, packet I/O
 
 ## Documentation Index
-- [docs/dedicated-server.md](docs/dedicated-server.md) - Bootstrap sequence, patches, crash handling
-- [docs/architecture-overview.md](docs/architecture-overview.md) - How the proxy DLL works, COM chain, bootstrap phases
-- [docs/multiplayer-flow.md](docs/multiplayer-flow.md) - Complete client/server join flow (connect → play)
-- [docs/wire-format-spec.md](docs/wire-format-spec.md) - Complete wire format: opcodes, StateUpdate, compressed types
-- [docs/network-protocol.md](docs/network-protocol.md) - Protocol architecture, event system, handler tables
-- [docs/message-trace-vs-packet-trace.md](docs/message-trace-vs-packet-trace.md) - Stock-dedi opcode cross-reference
-- [docs/subsystem-trace-analysis.md](docs/subsystem-trace-analysis.md) - Ship subsystem creation pipeline (from stock trace)
-- [docs/empty-stateupdate-root-cause.md](docs/empty-stateupdate-root-cause.md) - Why flags=0x00 happened (RESOLVED)
-- [docs/black-screen-investigation.md](docs/black-screen-investigation.md) - Client disconnect investigation (RESOLVED)
-- [docs/veh-cascade-triage.md](docs/veh-cascade-triage.md) - Why VEH was removed (historical)
-- [docs/lessons-learned.md](docs/lessons-learned.md) - Debugging techniques, pitfalls, protocol discoveries
+
+### Architecture
+- [docs/architecture/architecture-overview.md](docs/architecture/architecture-overview.md) - How the proxy DLL works, COM chain, bootstrap phases
+- [docs/architecture/dedicated-server.md](docs/architecture/dedicated-server.md) - Bootstrap sequence, patches, crash handling
+- [docs/architecture/multiplayer-mission-infrastructure.md](docs/architecture/multiplayer-mission-infrastructure.md) - Mission scripting infrastructure
+- [docs/architecture/main-loop-timing.md](docs/architecture/main-loop-timing.md) - Game loop timing analysis
+
+### Protocol
+- [docs/protocol/wire-format-spec.md](docs/protocol/wire-format-spec.md) - Hub: summary opcode tables, subsystem catalog, anti-cheat hash
+- [docs/protocol/transport-layer.md](docs/protocol/transport-layer.md) - Raw UDP packet, 7 transport types, TGMessage layout, fragment reassembly
+- [docs/protocol/stream-primitives.md](docs/protocol/stream-primitives.md) - TGBufferStream read/write, bit packing, CF16, CompressedVector3/4
+- [docs/protocol/checksum-opcodes.md](docs/protocol/checksum-opcodes.md) - Opcodes 0x20-0x28: checksum request/response, file transfer, 5 rounds
+- [docs/protocol/game-opcodes.md](docs/protocol/game-opcodes.md) - Opcodes 0x00-0x2A: Settings, GameInit, ObjCreate, PythonEvent, weapons, etc.
+- [docs/protocol/stateupdate.md](docs/protocol/stateupdate.md) - Opcode 0x1C: dirty flags, 8 field formats, round-robin subsystem/weapon serialization
+- [docs/protocol/object-replication.md](docs/protocol/object-replication.md) - FUN_0069f620 object create/update, serialization chain
+- [docs/protocol/python-messages.md](docs/protocol/python-messages.md) - Opcodes 0x2C+: TGMessage script messages, SendTGMessage API, wire examples
+- [docs/protocol/pythonevent-wire-format.md](docs/protocol/pythonevent-wire-format.md) - PythonEvent (opcode 0x06) RE: polymorphic TGStreamedObject transport, 4 event classes, collision→repair chain
+- [docs/protocol/tgobjptrevent-class.md](docs/protocol/tgobjptrevent-class.md) - TGObjPtrEvent (factory 0x010C): class layout, wire format, 5 C++ producers, 45% of combat PythonEvents
+- [docs/protocol/set-phaser-level-protocol.md](docs/protocol/set-phaser-level-protocol.md) - SetPhaserLevel (opcode 0x12) RE: TGCharEvent wire format, generic event forward group
+- [docs/protocol/collision-effect-protocol.md](docs/protocol/collision-effect-protocol.md) - CollisionEffect (opcode 0x15) RE: wire format, CompressedVec4_Byte contacts, handler validation
+- [docs/protocol/stateupdate-subsystem-wire-format.md](docs/protocol/stateupdate-subsystem-wire-format.md) - Subsystem health wire format: linked list order, WriteState formats, round-robin
+- [docs/protocol/subsystem-integrity-hash.md](docs/protocol/subsystem-integrity-hash.md) - Subsystem integrity hash: dead code in MP
+- [docs/protocol/cf16-precision-analysis.md](docs/protocol/cf16-precision-analysis.md) - CF16 precision tables and mod compatibility
+- [docs/protocol/cf16-explosion-encoding.md](docs/protocol/cf16-explosion-encoding.md) - CF16 explosion encoding, mod weapon-type ID compatibility
+- [docs/protocol/objcreate-serialization.md](docs/protocol/objcreate-serialization.md) - Full object serialization chain
+- [docs/protocol/message-trace-vs-packet-trace.md](docs/protocol/message-trace-vs-packet-trace.md) - Stock-dedi opcode cross-reference
+- [docs/protocol/tgmessage-routing.md](docs/protocol/tgmessage-routing.md) - TGMessage routing RE: relay-all, star topology, mod compatibility
+
+### Networking
+- [docs/networking/network-protocol.md](docs/networking/network-protocol.md) - Protocol architecture, event system, handler tables
+- [docs/networking/multiplayer-flow.md](docs/networking/multiplayer-flow.md) - Complete client/server join flow (connect → play)
+- [docs/networking/gamespy-discovery.md](docs/networking/gamespy-discovery.md) - GameSpy LAN/internet discovery, master server, QR1 crypto
+- [docs/networking/gamespy-crypto-analysis.md](docs/networking/gamespy-crypto-analysis.md) - GameSpy challenge-response cryptography
+- [docs/networking/alby-rules-cipher-analysis.md](docs/networking/alby-rules-cipher-analysis.md) - AlbyRules! packet encryption cipher
+- [docs/networking/tgmessage-routing-cleanroom.md](docs/networking/tgmessage-routing-cleanroom.md) - Clean-room TGMessage routing spec
+- [docs/networking/netimmerse-transport-deep-dive.md](docs/networking/netimmerse-transport-deep-dive.md) - NetImmerse transport layer internals
+- [docs/networking/fragmented-ack-bug.md](docs/networking/fragmented-ack-bug.md) - Fragmented reliable message ACK bug
+- [docs/networking/ack-outbox-deadlock.md](docs/networking/ack-outbox-deadlock.md) - ACK-outbox deadlock: two-pass processing, memory leak, data starvation
+- [docs/networking/disconnect-flow.md](docs/networking/disconnect-flow.md) - Player disconnect: 3 detection paths, cleanup cascade
+- [docs/networking/ship-death-lifecycle.md](docs/networking/ship-death-lifecycle.md) - Ship death in MP: Explosion + respawn, DestroyObject NOT used
+
+### Gameplay
+- [docs/gameplay/combat-mechanics-re.md](docs/gameplay/combat-mechanics-re.md) - Consolidated combat RE: shields, cloak, weapons, repair, tractor
+- [docs/gameplay/damage-system.md](docs/gameplay/damage-system.md) - Complete damage pipeline: collision, weapon, explosion paths, gate checks
+- [docs/gameplay/shield-system.md](docs/gameplay/shield-system.md) - Shield system: 6-facing ellipsoid, absorption, power-budget recharge
+- [docs/gameplay/cloaking-state-machine.md](docs/gameplay/cloaking-state-machine.md) - Cloak device: 4 states, shield disable, energy failure auto-decloak
+- [docs/gameplay/weapon-firing-mechanics.md](docs/gameplay/weapon-firing-mechanics.md) - Weapons: phaser charge/discharge, torpedo reload, CanFire gates
+- [docs/gameplay/power-system.md](docs/gameplay/power-system.md) - Power/reactor system RE: 3-class architecture, battery/conduit model, per-ship tables
+- [docs/gameplay/repair-system.md](docs/gameplay/repair-system.md) - Complete repair system RE: queue, rate formula, priority toggle, 7 event handlers
+- [docs/gameplay/repair-tractor-analysis.md](docs/gameplay/repair-tractor-analysis.md) - Repair teams + tractor: 6 modes, multiplicative drag, no direct damage
+- [docs/gameplay/repair-event-object-ids.md](docs/gameplay/repair-event-object-ids.md) - Repair event object ID analysis
+- [docs/gameplay/collision-detection-system.md](docs/gameplay/collision-detection-system.md) - Collision: 3-tier (sweep-and-prune -> bounding sphere -> narrow)
+- [docs/gameplay/collision-shield-interaction.md](docs/gameplay/collision-shield-interaction.md) - Collision-shield: directional absorption, two-step damage
+- [docs/gameplay/self-destruct-pipeline.md](docs/gameplay/self-destruct-pipeline.md) - Self-destruct: opcode 0x13, 3 execution paths, PowerSubsystem cascade
+- [docs/gameplay/objcreate-unknown-species-analysis.md](docs/gameplay/objcreate-unknown-species-analysis.md) - ObjCreate with unknown species: failure modes, crash risks
+
+### Engine
+- [docs/engine/rtti-class-catalog.md](docs/engine/rtti-class-catalog.md) - 670 classes: 129 NI, 124 TG, ~420 game (RTTI extraction)
+- [docs/engine/gamebryo-cross-reference.md](docs/engine/gamebryo-cross-reference.md) - 129 NI classes cross-referenced: Gb 1.2, MWSE, nif.xml
+- [docs/engine/nirtti-factory-catalog.md](docs/engine/nirtti-factory-catalog.md) - 117 NiRTTI factory registrations with addresses
+- [docs/engine/netimmerse-vtables.md](docs/engine/netimmerse-vtables.md) - Vtable maps for 6 core NI classes
+- [docs/engine/function-map.md](docs/engine/function-map.md) - 18K-function organized map
+- [docs/engine/function-mapping-report.md](docs/engine/function-mapping-report.md) - ~6,031 functions named (33%), annotation script docs
+- [docs/engine/decompiled-functions.md](docs/engine/decompiled-functions.md) - Key function analysis
+
+### Guides
+- [docs/guides/developer-workflow.md](docs/guides/developer-workflow.md) - Build, deploy, test workflow
+- [docs/guides/reading-decompiled-code.md](docs/guides/reading-decompiled-code.md) - Tips for reading Ghidra output
+- [docs/guides/binary-patching-primer.md](docs/guides/binary-patching-primer.md) - Code caves, JMP hooks, calling conventions
+- [docs/guides/python-152-guide.md](docs/guides/python-152-guide.md) - Python 1.5.2 compatibility guide
+- [docs/guides/swig-api.md](docs/guides/swig-api.md) - SWIG function reference
+- [docs/guides/lessons-learned.md](docs/guides/lessons-learned.md) - Debugging techniques, pitfalls, protocol discoveries
 - [docs/troubleshooting.md](docs/troubleshooting.md) - Symptom-to-cause quick reference
-- [docs/swig-api.md](docs/swig-api.md) - SWIG function reference
-- [docs/decompiled-functions.md](docs/decompiled-functions.md) - Key function analysis
-- [docs/function-map.md](docs/function-map.md) - 18K-function organized map
-- [docs/damage-system.md](docs/damage-system.md) - Complete damage pipeline: collision, weapon, explosion paths, gate checks, subsystem distribution
-- [docs/rtti-class-catalog.md](docs/rtti-class-catalog.md) - Complete class catalog: 129 NI, 124 TG, ~420 game classes (RTTI extraction)
-- [docs/gamebryo-cross-reference.md](docs/gamebryo-cross-reference.md) - 129 NI classes cross-referenced against Gb 1.2, MWSE, and nif.xml (87 Gb match, 21/42 NI 3.1-only have nif.xml field defs)
-- [docs/nirtti-factory-catalog.md](docs/nirtti-factory-catalog.md) - All 117 NiRTTI factory registrations with addresses
-- [docs/netimmerse-vtables.md](docs/netimmerse-vtables.md) - Vtable maps for 6 core NI classes (NiObject through NiTriShape)
-- [docs/function-mapping-report.md](docs/function-mapping-report.md) - Function naming coverage: ~6,031 of 18K functions named (33%), script suite docs
-- [docs/gamespy-discovery.md](docs/gamespy-discovery.md) - GameSpy LAN/internet discovery, master server protocol (UDP heartbeat + TCP browsing), QR1 challenge-response crypto
-- [docs/cut-content-analysis.md](docs/cut-content-analysis.md) - Cut/hidden features: ghost missions (Borg Hunt, Enterprise Assault), fleet command AI, tractor docking, self-destruct, dev tools, restoration priorities
-- [docs/disconnect-flow.md](docs/disconnect-flow.md) - Player disconnect flow: 3 detection paths (timeout/graceful/kick), peer deletion convergence, event cascade, cleanup opcodes (0x14/0x17/0x18), Python layer
-- [docs/collision-detection-system.md](docs/collision-detection-system.md) - Collision detection: 3-tier (sweep-and-prune -> bounding sphere -> per-type narrow), ProximityManager class, energy formula, call graph
-- [docs/collision-effect-protocol.md](docs/collision-effect-protocol.md) - CollisionEffect (opcode 0x15) RE: wire format (22+N*4 bytes), CompressedVec4_Byte contacts, handler validation chain, CollisionEvent class (0x44 bytes), event registration, vtable maps
-- [docs/collision-shield-interaction.md](docs/collision-shield-interaction.md) - Collision-shield interaction RE: two-step damage flow (FUN_005afd70 shield absorption + DoDamage), directional per-facing absorption, comparison with weapon/AoE paths, power subsystem exclusion flag
-- **OpenBC**: `../OpenBC/docs/collision-shield-interaction.md` - Clean-room collision-shield spec: directional shield absorption (not area-effect), three damage path comparison, shield facing determination, server implementation fix
-- [docs/objcreate-unknown-species-analysis.md](docs/objcreate-unknown-species-analysis.md) - ObjCreate handler behavior with unknown species: relay-after-create, empty hull ships, three failure modes, crash risks
-- [docs/combat-mechanics-re.md](docs/combat-mechanics-re.md) - Consolidated combat RE: shields (facing/absorption/recharge), cloak (4-state machine), weapons (phaser charge/torpedo reload), repair (queue/rate formula), tractor (multiplicative drag, no damage), Sovereign HP values, OpenBC corrections
-- [docs/shield-system.md](docs/shield-system.md) - Shield system: 6-facing ellipsoid, max-component facing determination, area vs directed absorption, power-budget recharge, cloak interaction
-- [docs/cloaking-state-machine.md](docs/cloaking-state-machine.md) - Cloak device: states 0/2/3/5 (ghost 1/4), transition timer, shield disable (HP preserved), weapon gating via PoweredSubsystem, energy failure auto-decloak
-- [docs/weapon-firing-mechanics.md](docs/weapon-firing-mechanics.md) - Weapons: phaser charge/discharge/intensity, torpedo reload/type-switch, CanFire gates, WeaponSystem update loop, wire formats
-- [docs/repair-system.md](docs/repair-system.md) - Complete repair system RE: queue data structure (doubly-linked list, pool allocator), repair rate formula, priority toggle algorithm (active→tail, waiting→head), 7 event handlers (all decompiled), 3 network paths (opcode 0x06/0x0B/0x11), collision→repair chain, Engineering panel UI areas
-- **OpenBC**: `../OpenBC/docs/repair-system.md` - Clean-room repair system spec: queue behavior, repair rate formula, priority toggle, auto-management (add/remove/destroyed/rebuilt), 3 wire formats, GenericEventForward relay, UI areas, server implementation notes
-- [docs/repair-tractor-analysis.md](docs/repair-tractor-analysis.md) - Repair: simultaneous teams, no queue limit, rate formula with RepairComplexity. Tractor: 6 modes (HOLD/TOW/PULL/PUSH/DOCK), multiplicative speed drag, no direct damage
-- [docs/cf16-explosion-encoding.md](docs/cf16-explosion-encoding.md) - CF16 format: BASE=0.001, MULT=10.0, 8 scales, 4096 mantissa steps. Explosion sender/receiver. Precision analysis for mod weapon-type IDs (15/25/273/2063). Scale 7 loses integer precision above 1000.
-- [docs/tgmessage-routing.md](docs/tgmessage-routing.md) - TGMessage routing RE: relay-all (no whitelist), opaque payload, star topology, no max type check, mod compatibility (KM/BCR custom types). Two-layer type system (transport vs game opcode)
-- [docs/tgmessage-routing-cleanroom.md](docs/tgmessage-routing-cleanroom.md) - Clean-room behavioral spec for TGMessage routing: no addresses, suitable for reimplementation. Behavioral guarantees, available opcode ranges, known mod allocations
-- [docs/stateupdate-subsystem-wire-format.md](docs/stateupdate-subsystem-wire-format.md) - Subsystem health wire format: linked list order (not fixed table), hierarchical WriteState (3 formats), round-robin serializer, CT_ type constants, Sovereign example
-- [docs/fragmented-ack-bug.md](docs/fragmented-ack-bug.md) - Fragmented reliable message ACK bug: transport layer RE, per-fragment ACK logic, 3 per-peer queues, TGMessage/TGHeaderMessage layouts, runtime evidence of ACK-outbox accumulation
-- [docs/ack-outbox-deadlock.md](docs/ack-outbox-deadlock.md) - ACK-outbox deadlock: two-pass processing, retx 3-8 dead zone, 512-byte buffer (no overflow), memory leak + game data starvation + O(N) dedup degradation in long sessions
-- [docs/power-system.md](docs/power-system.md) - Power/reactor system RE: 3-class architecture (PowerSubsystem/PoweredSubsystem/Powered master), battery/conduit model, 1-second sim tick, health-scaled main conduit, per-ship power tables (46 ships), per-subsystem consumption tables, AdjustPower algorithm, spawn initialization (100% + full batteries), player adjustment (F5 panel, keyboard hotkeys, ET_MANAGE_POWER encoding, 0%-125% range), two serialization interfaces (round-robin + sign-bit), round-robin algorithm detail, isOwnShip determination
-- **OpenBC**: `../OpenBC/docs/power-system.md` - Clean-room power system spec: reactor→battery→conduit→consumer model, 3 draw modes, graceful degradation, faction design philosophy, complete ship/subsystem power tables, spawn initialization, player adjustment (slider/keyboard, grouping, 0%-125%), power state wire format (round-robin + sign-bit encoding, own-ship skip, timestamp ordering, server implementation requirements)
-- [docs/subsystem-integrity-hash.md](docs/subsystem-integrity-hash.md) - Subsystem integrity hash RE: hash_fold algorithm, 12-slot hash order, base/weapon/individual weapon dispatch, boolean sentinel constants, dead code in MP (sender=SP-only, receiver=MP-only), wire encoding
-- [docs/set-phaser-level-protocol.md](docs/set-phaser-level-protocol.md) - SetPhaserLevel (opcode 0x12) RE: 18-byte wire format, TGCharEvent class (0x2C bytes, factory 0x105), sender/receiver asymmetry, generic event forward group, phaser intensity (LOW/MED/HIGH)
-- **OpenBC**: `../OpenBC/docs/set-phaser-level-wire-format.md` - Clean-room SetPhaserLevel spec: 18-byte fixed message, phaser intensity enum, generic event forward pattern, Python API
-- **OpenBC**: `../OpenBC/docs/ack-outbox-deadlock.md` - Clean-room ACK-outbox deadlock spec: two-pass processing bug, three degradation effects, reimplementation guidance (single-pass + hash map dedup)
-- [docs/self-destruct-pipeline.md](docs/self-destruct-pipeline.md) - Self-destruct pipeline RE: opcode 0x13 (1-byte wire format), 3 execution paths (SP/host/client), DoDamageToSelf via PowerSubsystem, death cascade, scoring (no kill credit, team penalty), gate checks (god mode, damage disabled)
-- **OpenBC**: `../OpenBC/docs/self-destruct-system.md` - Clean-room self-destruct spec: opcode 0x13 wire format, 3 execution paths, power subsystem cascade, scoring rules, AI/script alternatives, server implementation notes
-- [docs/pythonevent-wire-format.md](docs/pythonevent-wire-format.md) - PythonEvent (opcode 0x06) RE: polymorphic TGStreamedObject transport, 4 event classes (TGSubsystemEvent/TGCharEvent/TGObjPtrEvent/ObjectExplodingEvent), 3 producers, collision→repair chain, event type override table
-- [docs/tgobjptrevent-class.md](docs/tgobjptrevent-class.md) - TGObjPtrEvent (factory 0x010C): class layout (0x2C bytes), wire format (21 bytes), vtable 0x0088869C, 5 C++ producers (weapon/phaser/tractor/repair/AI events), Python API, 45% of combat PythonEvents
-- **OpenBC**: `../OpenBC/docs/pythonevent-wire-format.md` - Clean-room PythonEvent spec: polymorphic event transport, 4 factory types, collision damage chain, ~14 messages per collision, ObjPtrEvent combat volume, server implementation notes
-- [docs/ship-death-lifecycle.md](docs/ship-death-lifecycle.md) - Ship death in MP: Explosion (0x29) + ObjCreateTeam (0x03) respawn, DestroyObject (0x14) NOT used, SCORE_CHANGE anomaly
-- [docs/stock-trace-analysis.md](docs/stock-trace-analysis.md) - Ground truth from stock dedi traces: 10 findings, opcode frequency tables, doc corrections applied
-- **OpenBC**: `../OpenBC/docs/ship-death-lifecycle.md` - Clean-room ship death/respawn spec: explosion broadcast + respawn, no destroy message for ship deaths
+
+### Analysis
+- [docs/analysis/stock-trace-analysis.md](docs/analysis/stock-trace-analysis.md) - Ground truth from stock dedi traces: 10 findings, opcode frequencies
+- [docs/analysis/subsystem-trace-analysis.md](docs/analysis/subsystem-trace-analysis.md) - Ship subsystem creation pipeline (from stock trace)
+- [docs/analysis/cut-content-analysis.md](docs/analysis/cut-content-analysis.md) - Cut/hidden features: ghost missions, fleet command AI, tractor docking
+- [docs/analysis/empty-stateupdate-root-cause.md](docs/analysis/empty-stateupdate-root-cause.md) - Why flags=0x00 happened (RESOLVED)
+- [docs/analysis/black-screen-investigation.md](docs/analysis/black-screen-investigation.md) - Client disconnect investigation (RESOLVED)
+- [docs/analysis/veh-cascade-triage.md](docs/analysis/veh-cascade-triage.md) - Why VEH was removed (historical)
+
+### OpenBC Clean-Room Specs
+- **OpenBC**: `../OpenBC/docs/collision-shield-interaction.md` - Clean-room collision-shield spec
+- **OpenBC**: `../OpenBC/docs/repair-system.md` - Clean-room repair system spec
+- **OpenBC**: `../OpenBC/docs/power-system.md` - Clean-room power system spec
+- **OpenBC**: `../OpenBC/docs/set-phaser-level-wire-format.md` - Clean-room SetPhaserLevel spec
+- **OpenBC**: `../OpenBC/docs/ack-outbox-deadlock.md` - Clean-room ACK-outbox deadlock spec
+- **OpenBC**: `../OpenBC/docs/self-destruct-system.md` - Clean-room self-destruct spec
+- **OpenBC**: `../OpenBC/docs/pythonevent-wire-format.md` - Clean-room PythonEvent spec
+- **OpenBC**: `../OpenBC/docs/ship-death-lifecycle.md` - Clean-room ship death/respawn spec
 
 ## Ghidra Annotation Scripts
 Bulk annotation scripts in `tools/`. Run from Ghidra Script Manager with stbc.exe loaded.
@@ -260,7 +295,7 @@ Run order: globals → nirtti → swig → python_capi → pymodules → vtables
 - `tools/ghidra_annotate_vtables.py` - Auto-discovers 97 vtables from NiRTTI factories: 1,090 virtuals + 96 ctors + 84 dtors (1,270 total)
 - `tools/ghidra_annotate_swig_targets.py` - Traces SWIG wrappers to C++ targets (4 named; 3,986 are inline field accessors)
 - `tools/ghidra_discover_strings.py` - Names 33 functions from debug strings + adds 515 comments (runs last)
-- See [docs/function-mapping-report.md](docs/function-mapping-report.md) for full coverage (~6,031 functions named, 33% of 18,247)
+- See [docs/engine/function-mapping-report.md](docs/engine/function-mapping-report.md) for full coverage (~6,031 functions named, 33% of 18,247)
 
 ## Knowledge Preservation
 
