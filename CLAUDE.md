@@ -129,6 +129,7 @@ collision damage and subsystem damage. The main multiplayer loop is functional.
 | 0x15 | CollisionEffect | FUN_006a2470 | **Collision damage relay** (84/session) |
 | 0x16 | UICollisionSetting | FUN_00504c70 | Collision toggle (MultiplayerWindow dispatcher) |
 | 0x17 | DeletePlayerUI | FUN_006a1360 | Remove player from scoreboard |
+| 0x18 | DeletePlayerAnim | FUN_006a1420 | "Player joined/left" floating text (TGL lookup, crash risk) |
 | 0x19 | TorpedoFire | FUN_0069f930 | Torpedo launch (897/session) |
 | 0x1A | BeamFire | FUN_0069fbb0 | Beam weapon hit |
 | 0x1B | TorpTypeChange | FUN_0069fda0 | Torpedo type switch |
@@ -276,6 +277,7 @@ Then opcode 0x01 (single byte).
 - [docs/analysis/cut-content-analysis.md](docs/analysis/cut-content-analysis.md) - Cut/hidden features: ghost missions, fleet command AI, tractor docking
 - [docs/analysis/empty-stateupdate-root-cause.md](docs/analysis/empty-stateupdate-root-cause.md) - Why flags=0x00 happened (RESOLVED)
 - [docs/analysis/black-screen-investigation.md](docs/analysis/black-screen-investigation.md) - Client disconnect investigation (RESOLVED)
+- [docs/analysis/tgl-lookup-crash-analysis.md](docs/analysis/tgl-lookup-crash-analysis.md) - Client AV at FUN_006f56f0: TGL resource lookup returns near-NULL on player join (0x18/NewPlayerInGameHandler)
 - [docs/analysis/veh-cascade-triage.md](docs/analysis/veh-cascade-triage.md) - Why VEH was removed (historical)
 
 ### OpenBC Clean-Room Specs
@@ -288,6 +290,7 @@ Then opcode 0x01 (single byte).
 - **OpenBC**: `../OpenBC/docs/pythonevent-wire-format.md` - Clean-room PythonEvent spec
 - **OpenBC**: `../OpenBC/docs/ship-death-lifecycle.md` - Clean-room ship death/respawn spec
 - **OpenBC**: `../OpenBC/docs/wire-formats/delete-player-ui-wire-format.md` - Clean-room DeletePlayerUI (0x17) wire format
+- **OpenBC**: `../OpenBC/docs/wire-formats/delete-player-anim-wire-format.md` - Clean-room DeletePlayerAnim (0x18) wire format + TGL crash risk
 - **OpenBC**: `../OpenBC/docs/wire-formats/event-forward-wire-format.md` - Clean-room GenericEventForward (0x07-0x12, 0x1B) group spec
 
 ## Ghidra Annotation Scripts
