@@ -271,6 +271,7 @@ Then opcode 0x01 (single byte).
 - [docs/analysis/collision-trace-comparison.md](docs/analysis/collision-trace-comparison.md) - Stock dedi vs OpenBC: byte-level wire format comparison, 6 behavioral gaps
 - [docs/analysis/stock-trace-analysis.md](docs/analysis/stock-trace-analysis.md) - Ground truth from stock dedi traces: 10 findings, opcode frequencies
 - [docs/analysis/valentines-day-battle-analysis.md](docs/analysis/valentines-day-battle-analysis.md) - Comprehensive 33.5min 3-player stock trace: 59 deaths, full opcode table, parity checklist, authority summary
+- [docs/analysis/openbc-collision-test-feb22.md](docs/analysis/openbc-collision-test-feb22.md) - Per-species power failures (species 10-13) + collision rate limiting absent (28,504 packets/11min)
 - [docs/analysis/subsystem-trace-analysis.md](docs/analysis/subsystem-trace-analysis.md) - Ship subsystem creation pipeline (from stock trace)
 - [docs/analysis/cut-content-analysis.md](docs/analysis/cut-content-analysis.md) - Cut/hidden features: ghost missions, fleet command AI, tractor docking
 - [docs/analysis/empty-stateupdate-root-cause.md](docs/analysis/empty-stateupdate-root-cause.md) - Why flags=0x00 happened (RESOLVED)
