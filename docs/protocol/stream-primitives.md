@@ -42,14 +42,14 @@ A single byte encodes up to 5 boolean values:
 Byte layout:  [count:3][bits:5]
               MSB          LSB
 
-count (bits 7-5): Number of bits packed (1-5), stored as (count-1)
+count (bits 7-5): Number of bits packed (1-5), stored as the actual count
 bits  (bits 4-0): The actual boolean values, one per bit position
 ```
 
 The packing state machine:
-- First `WriteBit` call allocates a new byte at the current position and sets bit 0
-- Subsequent calls OR the value into the next bit position
-- The count field (upper 3 bits) tracks how many bits are stored
+- First `WriteBit` call allocates a new byte at the current position and sets bit 0, count=1
+- Subsequent calls OR the value into the next bit position and increment count
+- The count field (upper 3 bits) tracks how many bits are stored (1=one bit, 5=full)
 - After 5 bits, the byte is "full" and the next WriteBit starts a new byte
 - The `+0x2C` field in the stream tracks whether we're mid-pack (non-zero) or not
 
