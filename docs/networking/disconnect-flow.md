@@ -66,7 +66,9 @@ for each peer in WSN peer array:
                 send boot message to all peers
 ```
 
-The timeout threshold is stored at a global (DAT_0088bd58), compared against `currentTime - peer->lastRecvTime`. Based on the keepalive interval of ~12 seconds seen in traces and the standard ~45-second timeout in similar engines, the threshold is approximately 45 seconds.
+The timeout threshold is stored at a global (DAT_0088bd58), compared against `currentTime - peer->lastRecvTime`. The keepalive send interval is **5.0 seconds** (DAT_0088bd58), and the peer timeout is **45.0 seconds** (WSN+0xB8, set in the WSN constructor). This means 9 missed keepalive cycles before a peer is timed out.
+
+**Correction**: Earlier documentation stated "~12 second keepalive interval" — the actual send interval is 5.0 seconds. The 12-second observation likely reflected traces where keepalives were suppressed because game data was flowing (keepalives only send when no other data has been sent to the peer recently).
 
 **Key peer fields** (peer object layout):
 | Offset | Type | Field |

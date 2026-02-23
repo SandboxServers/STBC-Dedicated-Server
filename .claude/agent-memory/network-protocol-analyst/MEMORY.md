@@ -103,6 +103,44 @@
 - **3rd crash** at 0x006D621C (TGEvent factory): same NULL pattern, different deserialization path
 - **Occurred twice** in one session (18:04:20 and 18:31:24), identical registers both times
 
+## Valentine's Day Wire Format Cross-Reference (2026-02-23)
+- See [valentines-wire-gaps.md](valentines-wire-gaps.md) for full analysis
+
+### TorpedoFire (0x19) — ARC DATA UNDOCUMENTED
+- flags2 bit0=has_arc, bit1=has_target
+- When has_arc + no target: 8 trailing bytes after cv3 velocity (not documented)
+  - First 4 bytes look like ReadInt32v (source ship ID?), last 4 unknown
+- When has_target: target_id (ReadInt32v) + impact data (4 bytes, not 5 as doc says)
+- Needs RE of FUN_0057CB10 (TorpedoSystem::SendFireMessage) to fully decode
+
+### PythonEvent2 (0x0D) — NOT RELAYED (CONFIRMED)
+- 75 instances in 33.5min trace, ALL C->S, ZERO S->C
+- Jump table entry for 0x0D goes directly to FUN_0069f880 (no relay)
+- Jump table entry for 0x06 has relay-then-dispatch (Forward group)
+- ALL observed 0x0D carry eventCode=0x0000010C (TGObjPtrEvent, power reactor)
+- Valentine analysis line 483 incorrectly says cloak events "use GenericEventForward relay pattern" — they propagate via StateUpdate CLK flag, not relay
+
+### 0x28+0x00+0x01 Bundling — CONFIRMED
+- Stock ALWAYS bundles [ACK][0x28 ChecksumComplete][0x00 Settings][0x01 GameInit] in ONE UDP datagram
+- 0x28 has no payload (6 bytes total with transport header)
+- Verified 3/3 player joins in Valentine's trace
+
+### Keepalive — Two Formats
+- **Full** (22+ bytes): type=0x00, reliable+ordered, slot + IP:4 + name:UTF-16LE+null. Handshake only.
+- **Short** (1 byte): type=0x00, just the type byte. Steady-state heartbeat.
+
+### Graceful Disconnect (type 0x05)
+- First payload byte always 0x0A, then 8 bytes data
+- Server ACKs with seq=2, retransmits 7x at ~0.67s intervals
+- TGBootMessage (type 0x04) never observed on wire
+
+## Timing Constraints Catalog (2026-02-23)
+- See [timing-constraints.md](timing-constraints.md) for full report
+- Key values: ~45s peer timeout, ~12s keepalive, 1.0s retransmit, 9.5s explosion
+- CRITICAL: Collision cooldown (DAT_0089054c) not yet extracted from binary
+- CRITICAL: 0x28+0x00+0x01 MUST be bundled in single UDP datagram
+- Stock StateUpdate ~10Hz/ship, PythonEvent ~2/sec combat, CollisionEffect ~0.16/sec
+
 ## Files Reference
 - `docs/protocol/wire-format-spec.md` - Complete opcode table + wire formats
 - `docs/protocol/message-trace-vs-packet-trace.md` - Stock packet cross-reference
@@ -110,3 +148,4 @@
 - `src/scripts/Custom/DSHandlers.py` - ChatRelay, DeferredInitObject
 - [post-join-opcodes.md](post-join-opcodes.md) - 0x35/0x37 analysis
 - [session-comparison-20260210.md](session-comparison-20260210.md) - Full comparison
+- [valentines-wire-gaps.md](valentines-wire-gaps.md) - Valentine's Day wire format cross-reference

@@ -7,19 +7,13 @@
 
 ## Key Architecture Discoveries (topic files)
 - [architecture.md](architecture.md) - Detailed architecture notes
+- [server-computation-model.md](server-computation-model.md) - **CRITICAL**: What server COMPUTES vs RELAYS (2026-02-23)
 - [crash-analysis.md](crash-analysis.md) - InitNetwork crash chain
 - [ebp-corruption-crash.md](ebp-corruption-crash.md) - EBP/RunPyCode crash (SOLVED)
-- [open-source-analysis.md](open-source-analysis.md) - Dependency/legal analysis
-- [client-join-flow.md](client-join-flow.md) - Post-checksum message sequence
-- [stock-baseline-analysis.md](stock-baseline-analysis.md) - Stock host vs our server
-- [encryption-analysis.md](encryption-analysis.md) - TGNetwork encryption/cipher
 - [transport-layer.md](transport-layer.md) - FULL transport layer: 7 factory types, wire formats, fragments
-- [torpedo-beam-network.md](torpedo-beam-network.md) - Corrected opcode table
-- [swig-method-tables.md](swig-method-tables.md) - App/Appc SWIG method table (3990 entries)
 - [complete-opcode-table.md](complete-opcode-table.md) - FULL verified opcode table (41 + Python)
-- [tgmessage-wire-format.md](tgmessage-wire-format.md) - TGMessage Python script framing
-- [main-loop-timing.md](main-loop-timing.md) - Main loop architecture, NiApp vtable, clock sources, frame budget scheduler
-- [hardpoint-property-system.md](hardpoint-property-system.md) - COMPLETE: AddToSet, SetupProperties, CT_ type IDs, parent-child linking, WST_ enum
+- [main-loop-timing.md](main-loop-timing.md) - Main loop architecture, NiApp vtable, clock sources
+- [hardpoint-property-system.md](hardpoint-property-system.md) - COMPLETE: AddToSet, SetupProperties, CT_ type IDs
 
 ## TGObjPtrEvent System (2026-02-21, COMPLETE)
 - See [docs/protocol/tgobjptrevent-class.md](../../docs/protocol/tgobjptrevent-class.md)

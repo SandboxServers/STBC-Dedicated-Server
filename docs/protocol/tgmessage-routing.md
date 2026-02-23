@@ -381,6 +381,65 @@ message, mods would break. But the original developers left it open.
 
 ---
 
+## PythonEvent Dispatch: 0x06 vs 0x0D (NOT Relayed)
+
+**Critical finding**: Neither PythonEvent (0x06) nor PythonEvent2 (0x0D) is relayed by the
+server. Both route to the same handler (FUN_0069f880) which is LOCAL-ONLY — it deserializes
+the event and posts it to the local EventManager. The relay handler (FUN_0069fda0) is NOT
+involved.
+
+### Dispatcher Analysis (FUN_0069f2a0 jump table at 0x0069F534)
+
+| Case | Opcode | Handler | Relay? |
+|------|--------|---------|--------|
+| 0x04 (index 4) | 0x06 PythonEvent | FUN_0069f880 | NO — local only |
+| 0x0B (index 11) | 0x0D PythonEvent2 | FUN_0069f880 | NO — same local handler |
+
+Compare with relayed opcodes:
+| Case | Opcode | Handler | Relay? |
+|------|--------|---------|--------|
+| 0x05 (index 5) | 0x07 StartFiring | FUN_0069fda0 | YES — "Forward" group |
+| 0x06-0x10 | 0x08-0x12 | FUN_0069fda0 | YES — "Forward" group |
+
+### How Clients Actually Receive PythonEvents
+
+Clients receive 0x06 from the server, but these are **freshly constructed messages**,
+not relays of anything a client sent:
+
+1. **HostEventHandler** (LAB_006a1150): catches repair events (0x008000DF, 0x00800074,
+   0x00800075), creates NEW opcode 0x06 msg, sends to "NoMe" group
+2. **ObjectExplodingHandler** (LAB_006a1240): catches death event (0x0080004E), creates
+   NEW opcode 0x06 msg, sends to "NoMe" group
+
+These are the ONLY two producers of server-to-client PythonEvent messages.
+
+### Trace Evidence (Valentine's Day, 33.5min, 3 players)
+
+| Opcode | Wire Count | Factory Events | Ratio | Interpretation |
+|--------|-----------|----------------|-------|----------------|
+| 0x0D PythonEvent2 | 75 | 75 | 1:1 | NOT relayed |
+| 0x07 StartFiring | 2,918 | 978 | 3:1 | Relayed (3 players) |
+| 0x08 StopFiring | 1,448 | 483 | 3:1 | Relayed |
+| 0x19 TorpedoFire | 1,089 | 363 | 3:1 | Relayed |
+
+The 1:1 ratio for 0x0D confirms it is NOT relayed.
+
+### What 0x0D Carries
+
+All 75 observed 0x0D instances carry eventCode=0x0000010C (TGObjPtrEvent). These are
+power reactor state notifications from clients to the host. The server processes them
+locally and does not forward.
+
+### OpenBC Parity Bug
+
+OpenBC currently relays 0x0D to all peers. This is WRONG — it causes:
+- Duplicate events on receiving clients
+- Events that should be server-private leaking to other clients
+
+**Fix**: Stop relaying 0x0D. Process locally on server only, same as 0x06.
+
+---
+
 ## Key Addresses
 
 | Address | Function | Role |
