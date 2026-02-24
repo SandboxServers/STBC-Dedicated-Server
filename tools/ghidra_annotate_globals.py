@@ -26,6 +26,13 @@ UTOPIA_GLOBALS = {
     0x009a09d0: ("g_Clock", "Clock object (+0x90=gameTime, +0x54=frameTime)"),
     0x009a2b98: ("g_NiRTTI_FactoryHashTable", "NiRTTI factory hash table (37 buckets)"),
     0x00980798: ("g_ModelRegistry", "Ship model name -> NiNode registry (for +0x140)"),
+    # Event system globals
+    0x0097f838: ("g_TGEventManager", "TGEventManager singleton (queues + handler tables)"),
+    0x009983a4: ("g_pTGEventObjectTable", "Global TGEvent tracking hash table (objID -> event)"),
+    0x009983a8: ("g_pTGEventHandlerTable", "Global event handler table (event type -> handler chain)"),
+    0x00998638: ("g_TGHandlerNameTable", "Handler name registry (hash -> function name string)"),
+    0x0095adfc: ("g_pTGEvent_NullTarget", "Event null-target sentinel (default dest)"),
+    0x0095adf8: ("g_pTGEvent_BroadcastMarker", "Event broadcast marker sentinel"),
 }
 
 # ============================================================================
@@ -112,6 +119,17 @@ KEY_FUNCTIONS = {
     0x005bae00: ("SWIG_GetPointerObj", "Unwrap SWIG pointer to raw C++ pointer"),
     0x005bb040: ("SWIG_MakePtr", "Format SWIG pointer string"),
     0x005bb0e0: ("SWIG_NewPointerObj", "Wrap raw C++ pointer as SWIG pointer"),
+
+    # --- Phase 8A: Multiplayer handler callees (NI engine utilities) ---
+    0x00423480: ("NiPoint3__Copy", "Copy 3 floats (12 bytes) from source NiPoint3"),
+    0x004166d0: ("WString__Clear", "Clear/reset wide string buffer (refcount release)"),
+    0x00416bc0: ("WString__AssignSubstring", "Assign substring from another WString (offset+length)"),
+    0x00459cb0: ("NiMatrix3__TransformPoint", "Matrix3x3 * Vector3 rotation transform"),
+
+    # --- Phase 8A: TGDisplayTextAction (floating text for join/leave) ---
+    0x0055c690: ("TGDisplayTextAction__ctor_tgl", "Floating text action ctor (from TGL file entry)"),
+    0x0055c790: ("TGDisplayTextAction__ctor_string", "Floating text action ctor (from C string)"),
+
     0x0065a250: ("initAppc", "Initialize Appc Python module (SWIG bindings)"),
     0x0069c440: ("GameSpy_Tick", "GameSpy per-frame update (process queries, heartbeats)"),
     0x0069f2a0: ("MultiplayerGame_ReceiveMessage", "Main game opcode dispatcher (0x00-0x2A, jump table at 0x0069F534)"),
@@ -165,6 +183,9 @@ KEY_FUNCTIONS = {
     0x006f7d90: ("TG_ImportModule", "__import__ + sys.modules lookup"),
     0x006f7fc0: ("TG_ReloadPythonModule", "Auto-named: TG_ReloadPythonModule"),
     0x006f8ab0: ("TG_CallPythonFunction", "Calls Python function by module.name path"),
+    0x006f8bd0: ("TG_CallPythonFunctionSimple", "Wrapper: CallPythonFunctionEx with no-safe, no-decref"),
+    0x006f8c00: ("TG_CallPythonFunctionEx", "Call Python function with safe-call + decref control"),
+    0x006f8cf0: ("TG_CallPythonMethod", "Call method on Python object (getattr + call)"),
     0x00717840: ("NiAlloc", "malloc with 4-byte size header, pool for <=0x80"),
     0x00717960: ("NiFree", "Free NiAlloc'd memory"),
     0x007179c0: ("NiRealloc", "Realloc NiAlloc'd memory"),
@@ -177,6 +198,50 @@ KEY_FUNCTIONS = {
     0x0074d280: ("Py_BuildValue", "Build Python return values"),
     0x0074e310: ("PyArg_ParseTuple", "Parse Python args using format string"),
     0x00776cf0: ("PyObject_CallObject", "Call Python callable with args tuple"),
+
+    # --- Phase 8A: Python C API functions (statically linked, traced from MP handlers) ---
+    # Error handling
+    0x0074af10: ("PyErr_Print", "Print current Python exception to stderr"),
+    0x0074af20: ("PyErr_PrintEx", "Print exception with optional sys.last_* update"),
+    0x0074b490: ("PyErr_ParseSyntaxError", "Parse SyntaxError fields from exception"),
+    0x00752db0: ("PyErr_Restore", "Restore exception state (type, value, traceback)"),
+    0x00752e40: ("PyErr_SetObject", "Set exception with object value"),
+    0x00752e80: ("PyErr_SetString", "Set exception with string message"),
+    0x00752ec0: ("PyErr_Occurred", "Check if an exception is currently set"),
+    0x00752ed0: ("PyErr_GivenExceptionMatches", "Check if exception matches a given type"),
+    0x00752f90: ("PyErr_NormalizeException", "Normalize exception triple (type, value, tb)"),
+    0x00753110: ("PyErr_Fetch", "Fetch and clear current exception state"),
+    0x00753140: ("PyErr_Clear", "Clear current exception state"),
+    0x00753150: ("PyErr_BadArgument", "Raise TypeError for bad C API argument"),
+    0x00753230: ("PyErr_SetNone", "Set exception with None value"),
+    0x00753240: ("PyErr_BadInternalCall", "Raise SystemError for bad internal call"),
+    # Dict operations
+    0x00751cf0: ("PyDict_GetItem", "Get item from dict by key object"),
+    0x00752cd0: ("PyDict_GetItemString", "Get item from dict by C string key"),
+    0x00752d10: ("PyDict_SetItemString", "Set item in dict with C string key"),
+    0x00752d70: ("PyDict_DelItemString", "Delete item from dict by C string key"),
+    # String/Int operations
+    0x007506c0: ("PyString_FromString", "Create Python string from C string"),
+    0x007507d0: ("PyString_AsString", "Get C string from Python string object"),
+    0x00751b80: ("PyString_InternFromString", "Create interned Python string from C string"),
+    0x0074c7c0: ("PyInt_AsLong", "Convert Python int to C long"),
+    # Object protocol
+    0x0074bc90: ("PyObject_Print", "Print Python object to FILE*"),
+    0x0074bdb0: ("PyObject_Repr", "Get repr() of Python object"),
+    0x0074be20: ("PyObject_Str", "Get str() of Python object"),
+    0x0074c100: ("PyObject_Hash", "Compute hash of Python object"),
+    0x0074c200: ("PyObject_SetAttr", "Set attribute on Python object"),
+    # System/Thread/File
+    0x0074bb10: ("Py_HandleSystemExit", "Handle SystemExit exception"),
+    0x00776c90: ("Py_FlushLine", "Flush sys.stdout if needed"),
+    0x00779f90: ("PySys_GetObject", "Get named object from sys module"),
+    0x00779fe0: ("PySys_SetObject", "Set named object in sys module"),
+    0x0077c130: ("PyThreadState_Get", "Get current Python thread state"),
+    0x007835d0: ("PyFile_SoftSpace", "Get/set softspace flag on file object"),
+    0x00783690: ("PyFile_WriteObject", "Write Python object to file"),
+    0x00783800: ("PyFile_WriteString", "Write C string to Python file object"),
+    0x00783ce0: ("PyTraceBack_Print", "Print Python traceback to file"),
+
     0x007cb2c0: ("NiD3DGeometryGroupManager_ctor", "D3D geometry group manager constructor"),
     0x00817170: ("NiStream_RegisterStreamable", "Registers object in stream hash table"),
     0x008176b0: ("NiStream_LoadObject", "Reads NIF class name, looks up factory, creates object"),
@@ -268,7 +333,7 @@ KEY_FUNCTIONS = {
     0x0041f0b0: ("CameraMode__ObjectChangedToHulk", "CameraMode method: ObjectChangedToHulk"),
     0x00421290: ("CameraMode__GetAttrPoint", "CameraMode method: GetAttrPoint"),
 
-    # --- TGObject (25) ---
+    # --- TGObject (28) ---
     0x0041f710: ("TGObject__SaveAllToStream", "TGObject method: SaveAllToStream"),
     0x0041f8d0: ("TGObject__LoadAllFromStream", "TGObject method: LoadAllFromStream"),
     0x00431030: ("TGObject__CompareID", "TGObject method: CompareID"),
@@ -289,6 +354,9 @@ KEY_FUNCTIONS = {
     0x006f0fc0: ("TGObject__UnregisterFromHashTable", "TGObject method: UnregisterFromHashTable"),
     0x006f11b0: ("TGObject__FixupAllReferences", "Resolve object ID references after load"),
     0x006f13c0: ("TGObject__ResolveStreamRefs", "TGObject method: ResolveStreamRefs"),
+    # TGObject vtable virtuals (Phase 8B: Ship vtable mining)
+    0x006f15c0: ("TGObject__InvokePythonHandler", "Virtual slot 8 (+0x20): invoke Python event handler"),
+    0x006f1650: ("TGObject__DebugPrint", "Virtual slot 3 (+0x0C): debug print object info"),
     0x006f1680: ("TGObject__GetIndentString", "TGObject method: GetIndentString"),
     0x006f16a0: ("TGObject__SetObjectID", "TGObject method: SetObjectID"),
     0x006f2670: ("TGObject__WriteToStream", "TGObject method: WriteToStream"),
@@ -474,7 +542,7 @@ KEY_FUNCTIONS = {
     0x00470520: ("BaseAI__Constructor", "Base AI node ctor: assigns ID from global counter, writes vtable 0x0088bb54"),
     0x004707d0: ("BaseAI__dtor", "BaseAI method: dtor"),
 
-    # --- Ship (44) ---
+    # --- Ship (56) --- vtable at 0x00894340, 92 slots, size 0x328
     0x004721b0: ("Ship__AITickScheduler", "Iterates ship array calling Ship__ProcessAITick per ship"),
     0x004722d0: ("Ship__ProcessAITick", "Per-ship AI callback: walks behavior tree, fires preprocessors"),
     0x00472810: ("Ship__UpdateAI", "Ship method: UpdateAI"),
@@ -484,7 +552,9 @@ KEY_FUNCTIONS = {
     0x005a2030: ("Ship__ReadSpeciesFromStream", "Ship method: ReadSpeciesFromStream"),
     0x005ab970: ("Ship__InitFields", "Ship method: InitFields"),
     0x005abac0: ("Ship__ComputeBoundsFromGeometry", "Ship method: ComputeBoundsFromGeometry"),
-    0x005abdc0: ("Ship__ctor", "Ship method: ctor"),
+    0x005abc30: ("Ship__GetBoundingBox", "Virtual slot 58 (+0xE8): AABB computation override"),
+    0x005abdc0: ("Ship__ctor", "Ship method: ctor (writes vtable 0x00894340, size 0x328)"),
+    0x005abfe0: ("Ship__scalar_deleting_dtor", "Virtual slot 0 (+0x00): destructor"),
     0x005ac010: ("Ship__ctor_stream", "Ship method: ctor_stream"),
     0x005ac0a0: ("Ship__dtor", "Ship method: dtor"),
     0x005ac250: ("Ship__RunDeathScript", "SWIG target: calls Effects.ObjectExploding or custom death script"),
@@ -501,21 +571,30 @@ KEY_FUNCTIONS = {
     0x005ad450: ("Ship__TurnTowardDirection", "Gets orientation, computes turn via ComputeTurnAngularVelocity"),
     0x005ad4d0: ("Ship__TurnTowardDifference", "SWIG target: turn toward angle difference"),
     0x005ad910: ("Ship__ComputeTurnAngularVelocity", "Quaternion slerp-style turn with up/forward constraints"),
+    0x005adae0: ("Ship__Update", "Virtual slot 21 (+0x54): per-tick ship update override"),
     0x005ae140: ("Ship__IsPlayerShip", "SWIG target: host checks +0x2E4, client compares GetPlayerShip()"),
     0x005ae170: ("Ship__GetTarget", "SWIG target: reads +0x21C target ID, validates alive"),
     0x005ae1e0: ("Ship__SetTarget", "SWIG target: FindObjectByID + SetTargetInternal"),
     0x005ae210: ("Ship__SetTargetInternal", "Fires ET_TARGET_WAS_CHANGED, stops weapons, updates subsystems"),
     0x005ae2c0: ("Ship__OnTargetChanged", "Updates weapon offsets, fires ET_TARGET_SUBSYSTEM_SET"),
     0x005ae430: ("Ship__UpdateWeaponTargets", "Walks +0x284 subsystems, updates weapon target entries"),
+    0x005ae600: ("Ship__ClearTargets", "Virtual slot 78 (+0x138): clear all target references"),
     0x005ae630: ("Ship__GetTargetSubsystemObject", "Resolves +0x220 target subsystem ID via ForwardEvent"),
     0x005ae650: ("Ship__GetTargetOffset", "Returns +0x228 target offset"),
     0x005ae6d0: ("Ship__GetNextTarget", "Cycles through sorted targets via +0x87 index"),
     0x005aeb90: ("Ship__CollectSubsystemsInRadius", "Recursive distance check per subsystem, builds result list"),
     0x005aecc0: ("Ship__FindSubsystemsInDamageRadius", "Walks +0x284 linked list, collects subsystems within radius"),
+    0x005af7d0: ("Ship__CheckCollisionWithCulling", "Virtual slot 82 (+0x148): collision check with view culling"),
+    0x005af830: ("Ship__CheckCollisionWithCulling_B", "Virtual slot 83 (+0x14C): alternate collision check"),
+    0x005af890: ("Ship__CheckCollision", "Virtual slot 84 (+0x150): main collision check override"),
     0x005b0110: ("Ship__AssignWeaponGroups", "Ship method: AssignWeaponGroups"),
     0x005b0bb0: ("Ship__StopFiringWeapons", "SWIG target: walks +0x284, finds WeaponSystems via IsA(0x801D)"),
-    0x005b21c0: ("Ship__ReadStateUpdate", "Ship method: ReadStateUpdate"),
-    0x005b3e20: ("Ship__LinkAllSubsystemsToParents", "Ship method: LinkAllSubsystemsToParents"),
+    0x005b0f00: ("Ship__WriteToStream", "Virtual slot 4 (+0x10): serialize ship to stream"),
+    0x005b1220: ("Ship__ReadFromStream", "Virtual slot 5 (+0x14): deserialize ship from stream"),
+    0x005b1500: ("Ship__ResolveObjectRefs", "Virtual slot 6 (+0x18): resolve all subsystem object references"),
+    0x005b1550: ("Ship__PostDeserialize", "Virtual slot 7 (+0x1C): rebuild subsystem serialization list"),
+    0x005b21c0: ("Ship__ReadStateUpdate", "Virtual slot 73 (+0x124): receives state update from network"),
+    0x005b3e20: ("Ship__LinkAllSubsystemsToParents", "Virtual slot 89 (+0x164): type-based parent-child linking"),
     0x005b3e50: ("Ship__AddSubsystem", "SWIG target: adds to +0x280 list, classifies by IsA checks"),
     0x005b5030: ("Ship__LinkSubsystemToParent", "Ship method: LinkSubsystemToParent"),
     0x005b5eb0: ("Ship__SubsystemHashComputation", "Ship method: SubsystemHashComputation"),
@@ -551,11 +630,13 @@ KEY_FUNCTIONS = {
     0x0068d820: ("PulseWeaponProperty__SetOrientation", "PulseWeaponProperty method: SetOrientation"),
     0x0068d8e0: ("PulseWeaponProperty__SetModuleName", "PulseWeaponProperty method: SetModuleName"),
 
-    # --- TGLinkedList (2) ---
+    # --- TGLinkedList (4) ---
     0x00486be0: ("TGLinkedList__AllocNode", "Pool allocator: chunks of N*12 bytes, free list at +0xC"),
     0x005666e0: ("TGLinkedList__RemoveNode", "Unlinks node from doubly-linked list, returns value"),
+    0x006d6f80: ("TGLinkedList__Pop", "Pop front from singly-linked list"),
+    0x006d7100: ("TGDoublyLinkedList__Remove", "Remove node from doubly-linked list (head/tail/mid)"),
 
-    # --- TGEventHandlerObject (15) ---
+    # --- TGEventHandlerObject (16) ---
     0x0048bc40: ("TGEventHandlerObject__dtor_0048bc40", "TGEventHandlerObject method: dtor_0048bc40"),
     0x006d4b10: ("TGEventHandlerObject__dtor_006d4b10", "TGEventHandlerObject method: dtor_006d4b10"),
     0x006d5a80: ("TGEventHandlerObject__RemoveHandler", "TGEventHandlerObject method: RemoveHandler"),
@@ -564,6 +645,7 @@ KEY_FUNCTIONS = {
     0x006d90e0: ("TGEventHandlerObject__CallNextHandler", "Forward event through responder chain"),
     0x006d9100: ("TGEventHandlerObject__WriteToStream", "TGEventHandlerObject method: WriteToStream"),
     0x006d9160: ("TGEventHandlerObject__ReadFromStream", "TGEventHandlerObject method: ReadFromStream"),
+    0x006d9330: ("TGEventHandlerObject__EnsureInstanceTable", "Lazy-init per-object handler table (+0x10)"),
     0x006d9420: ("TGEventHandlerObject__AddPythonFuncHandler", "TGEventHandlerObject method: AddPythonFuncHandler"),
     0x006d9450: ("TGEventHandlerObject__AddPythonMethodHandler", "TGEventHandlerObject method: AddPythonMethodHandler"),
     0x006d94a0: ("TGEventHandlerObject__RemoveAllInstanceHandlers", "TGEventHandlerObject method: RemoveAllInstanceHandlers"),
@@ -1138,12 +1220,27 @@ KEY_FUNCTIONS = {
     0x0056ecd0: ("WarpEngineSubsystem__SetWarpSequence_A", "WarpEngineSubsystem method: SetWarpSequence_A"),
     0x0056ecf0: ("WarpEngineSubsystem__SetWarpSequence_B", "WarpEngineSubsystem method: SetWarpSequence_B"),
 
+    # --- EnergyWeapon (12) ---
+    0x0056f8d0: ("EnergyWeapon__GetProperty", "EnergyWeapon: returns +0x18 (property pointer)"),
+    0x0056f8e0: ("EnergyWeapon__GetRechargeRate", "EnergyWeapon: property+0x6C recharge rate"),
+    0x0056f910: ("EnergyWeapon__GetFireSoundBase", "EnergyWeapon: property+0x74 fire sound base name"),
+    0x0056f920: ("EnergyWeapon__GetFireSoundBase_Alt", "EnergyWeapon: property+0x74 alternate path"),
+    0x0056f930: ("EnergyWeapon__GetMaxDamage", "EnergyWeapon: property+0x64 max damage"),
+    0x0056f940: ("EnergyWeapon__GetMaxCharge", "EnergyWeapon: property+0x68 max charge capacity"),
+    0x0056fbd0: ("EnergyWeapon__SetPropertyAndInit", "EnergyWeapon: set property, init charge fields"),
+    0x0056fd70: ("EnergyWeapon__UpdateChargeLevel", "EnergyWeapon: recalculate charge ratio +0xBC"),
+    0x0056fdc0: ("EnergyWeapon__Update", "EnergyWeapon: per-tick update (charge ratio, parent Update)"),
+    0x0056fe30: ("EnergyWeapon__WriteToStream", "EnergyWeapon: serialize charge + fire state to stream"),
+    0x0056feb0: ("EnergyWeapon__ReadFromStream", "EnergyWeapon: deserialize charge + fire state from stream"),
+    0x0056ff40: ("EnergyWeapon__ResolveObjectRefs", "EnergyWeapon: resolve parent + fire target refs"),
+    0x0056ff60: ("EnergyWeapon__FixupObjectRefs", "EnergyWeapon: fixup parent + fire target refs"),
+
     # --- PhaserSubsystem (3) ---
     0x0056f900: ("PhaserSubsystem__GetMaxCharge", "PhaserSubsystem method: GetMaxCharge"),
     0x0056f950: ("PhaserSubsystem__ctor", "PhaserSubsystem method: ctor"),
     0x0056fb60: ("PhaserSubsystem__dtor", "PhaserSubsystem method: dtor"),
 
-    # --- PhaserBank (15) ---
+    # --- PhaserBank (25) ---
     0x00570b50: ("PhaserBank__GetProperty", "PhaserBank method: GetProperty"),
     0x00570b60: ("PhaserBank__GetOrientationForward", "PhaserBank method: GetOrientationForward"),
     0x00570b80: ("PhaserBank__GetOrientationUp", "PhaserBank method: GetOrientationUp"),
@@ -1158,26 +1255,52 @@ KEY_FUNCTIONS = {
     0x00570d60: ("PhaserBank__GetArcHeightAngleMax", "PhaserBank method: GetArcHeightAngleMax"),
     0x00570d70: ("PhaserBank__ctor", "PhaserBank method: ctor"),
     0x00570ee0: ("PhaserBank__dtor", "PhaserBank method: dtor"),
+    0x005714a0: ("PhaserBank__ComputeFiringArcToTarget", "PhaserBank: compute arc angle to target with obstacle check"),
+    0x00571a00: ("PhaserBank__CanFireAtTarget", "PhaserBank: range + power check for firing"),
+    0x00571ab0: ("PhaserBank__ComputeBeamEndpoint", "PhaserBank: compute beam endpoint from angle via sin/cos"),
+    0x00571ee0: ("PhaserBank__IsAngleInFiringArc", "PhaserBank: check angle within width/height arc limits"),
+    0x00572b00: ("PhaserBank__GetDischargeRateForPowerLevel", "PhaserBank: 3 power levels -> discharge rate constants"),
     0x00572b80: ("PhaserBank__UpdateCharge", "PhaserBank method: UpdateCharge"),
+    0x00572c50: ("PhaserBank__GetArcCenterWorldDir", "PhaserBank: arc center direction in world space"),
+    0x00572f00: ("PhaserBank__ComputeRestPosition", "PhaserBank: compute rest position at arc center -> +0x11C"),
+    0x00573040: ("PhaserBank__WriteToStream", "PhaserBank: serialize to stream (parent + 3 floats)"),
+    0x005730a0: ("PhaserBank__ReadFromStream", "PhaserBank: deserialize from stream (parent + 3 floats)"),
+    0x0056fc10: ("PhaserBank__GetFireStartSoundName", "PhaserBank: fire start sound name from property"),
+    0x0056fcc0: ("PhaserBank__GetFireLoopSoundName", "PhaserBank: fire loop sound name from property"),
 
-    # --- PhaserSystem (7) ---
+    # --- PhaserSystem (11) ---
     0x00573c60: ("PhaserSystem__Cast", "PhaserSystem method: Cast"),
     0x00573c90: ("PhaserSystem__ctor", "Phaser weapon system constructor"),
     0x00573dd0: ("PhaserSystem__dtor", "PhaserSystem method: dtor"),
     0x00573de0: ("PhaserSystem__RegisterHandlerNames", "PhaserSystem method: RegisterHandlerNames"),
     0x00573e40: ("PhaserSystem__RegisterHandlers", "PhaserSystem method: RegisterHandlers"),
+    0x00574010: ("PhaserSystem__StopFiringAtTarget", "PhaserSystem: stop firing + post ET_STOP_FIRING_AT_TARGET_NOTIFY"),
     0x00574110: ("PhaserSystem__StopFiringHandler", "PhaserSystem method: StopFiringHandler"),
     0x00574200: ("PhaserSystem__SetPowerLevel", "SWIG target: fires ET_SET_PHASER_LEVEL(0x8000E0)"),
+    0x005741a0: ("PhaserSystem__WriteState", "PhaserSystem: serialize state (parent + power level byte)"),
+    0x005741d0: ("PhaserSystem__ReadState", "PhaserSystem: deserialize state (parent + power level byte)"),
 
     # --- TGCharEvent (1) ---
     0x00574c20: ("TGCharEvent__ctor", "TGCharEvent constructor (factory 0x105, +0x28=byte)"),
 
-    # --- PulseWeapon (2) ---
+    # --- PulseWeapon (4) ---
     0x00574fd0: ("PulseWeapon__ctor", "PulseWeapon method: ctor"),
     0x00575110: ("PulseWeapon__dtor", "PulseWeapon method: dtor"),
+    0x005769a0: ("PulseWeapon__WriteToStream", "PulseWeapon: serialize to stream (parent + 3 fields)"),
+    0x005769f0: ("PulseWeapon__ReadFromStream", "PulseWeapon: deserialize from stream"),
 
-    # --- TorpedoTube (14) ---
-    0x005762b0: ("TorpedoTube__LaunchFromNetwork", "Serialize beam fire event for network"),
+    # --- TorpedoTube (25) ---
+    0x00574f40: ("TorpedoTube__GetArcHeightAngleMin", "TorpedoTube: height arc min from property"),
+    0x00574f50: ("TorpedoTube__GetArcHeightAngleMax", "TorpedoTube: height arc max from property"),
+    0x00574f60: ("TorpedoTube__GetArcWidthAngleMin", "TorpedoTube: width arc min from property"),
+    0x00574f70: ("TorpedoTube__GetArcWidthAngleMax", "TorpedoTube: width arc max from property"),
+    0x00574f80: ("TorpedoTube__GetArcHeightAngleRange", "TorpedoTube: get height angle min+max pair"),
+    0x00574fa0: ("TorpedoTube__GetArcWidthAngleRange", "TorpedoTube: get width angle min+max pair"),
+    0x00574fc0: ("TorpedoTube__GetLaunchSpeed", "TorpedoTube: property+0xC8 launch speed"),
+    0x00575230: ("TorpedoTube__GetDamageForPowerLevel", "TorpedoTube: scale damage by power level (0/1/2)"),
+    0x00575a60: ("TorpedoTube__IsTargetInFiringArc", "TorpedoTube: check target within firing arc angles"),
+    0x00575db0: ("TorpedoTube__ComputeRandomDirectionInArc", "TorpedoTube: random direction within firing arc"),
+    0x005762b0: ("TorpedoTube__LaunchFromNetwork", "TorpedoTube: network receive path for torpedo launch"),
     0x0057c330: ("TorpedoTube__GetProperty", "TorpedoTube method: GetProperty"),
     0x0057c340: ("TorpedoTube__GetDirection", "TorpedoTube method: GetDirection"),
     0x0057c3a0: ("TorpedoTube__GetRight", "TorpedoTube method: GetRight"),
@@ -1186,39 +1309,53 @@ KEY_FUNCTIONS = {
     0x0057c480: ("TorpedoTube__Cast", "TorpedoTube method: Cast"),
     0x0057c4b0: ("TorpedoTube__ctor", "TorpedoTube method: ctor"),
     0x0057c5f0: ("TorpedoTube__dtor", "TorpedoTube method: dtor"),
+    0x0057c740: ("TorpedoTube__ClearReadySlots", "TorpedoTube: zero all ready slots array"),
     0x0057c9e0: ("TorpedoTube__Fire", "TorpedoTube method: Fire"),
     0x0057d8a0: ("TorpedoTube__ReloadTorpedo", "TorpedoTube method: ReloadTorpedo"),
     0x0057d9a0: ("TorpedoTube__UnloadTorpedo", "TorpedoTube method: UnloadTorpedo"),
     0x0057da90: ("TorpedoTube__CanHit", "TorpedoTube method: CanHit"),
     0x0057dc10: ("TorpedoTube__IsInArc", "TorpedoTube method: IsInArc"),
+    0x0057de90: ("TorpedoTube__GetWorldDirection", "TorpedoTube: transform local direction to world space"),
+    0x0057df40: ("TorpedoTube__WriteToStream", "TorpedoTube: serialize tube state to stream"),
+    0x0057dfd0: ("TorpedoTube__ReadFromStream", "TorpedoTube: deserialize tube state from stream"),
 
     # --- PulseWeaponSystem (3) ---
     0x00577380: ("PulseWeaponSystem__Cast", "PulseWeaponSystem method: Cast"),
     0x005773b0: ("PulseWeaponSystem__ctor", "PulseWeaponSystem method: ctor"),
     0x005774b0: ("PulseWeaponSystem__dtor", "PulseWeaponSystem method: dtor"),
 
-    # --- Torpedo (13) ---
+    # --- Torpedo (19) ---
     0x00578110: ("Torpedo__Cast", "Torpedo method: Cast"),
     0x00578140: ("Torpedo__RegisterHandlerNames", "Torpedo method: RegisterHandlerNames"),
     0x00578160: ("Torpedo__RegisterHandlers", "Torpedo method: RegisterHandlers"),
-    0x00578180: ("Torpedo__Create", "Create phaser beam visual from spawn to target"),
+    0x00578180: ("Torpedo__Create", "Create torpedo entity from Python script + schedule lifetime"),
     0x00578340: ("Torpedo__GetLaunchSpeed", "Torpedo method: GetLaunchSpeed"),
     0x00578370: ("Torpedo__GetLaunchSound", "Torpedo method: GetLaunchSound"),
-    0x005783d0: ("Torpedo__ctor", "Torpedo method: ctor"),
+    0x005783d0: ("Torpedo__ctor", "Torpedo ctor: 0x170 bytes, vtable 0x00893458"),
     0x00578660: ("Torpedo__dtor", "Torpedo method: dtor"),
     0x005786a0: ("Torpedo__CreateDisruptorModel", "Torpedo method: CreateDisruptorModel"),
     0x00578730: ("Torpedo__CreateTorpedoModel", "Torpedo method: CreateTorpedoModel"),
-    0x00579010: ("Torpedo__DetectCollision", "Torpedo method: DetectCollision"),
+    0x00578800: ("Torpedo__OrientToVelocity", "Torpedo: compute orientation matrix from velocity dir"),
+    0x00578cb0: ("Torpedo__UpdateGuidance", "Torpedo: homing guidance (predict target, clamp turn rate)"),
+    0x00579010: ("Torpedo__DetectCollision", "Torpedo: shield intersection + hull damage"),
+    0x00579530: ("Torpedo__ApplyTorque", "Torpedo: apply angular torque for turning"),
+    0x00579610: ("Torpedo__ComputeSplineTurnTime", "Torpedo: spline-based turn time computation"),
+    0x00579a30: ("Torpedo__GetVelocity", "Torpedo: compute velocity = speed * direction"),
+    0x00579a90: ("Torpedo__SetClampedAngularAcceleration", "Torpedo: set clamped angular acceleration for homing"),
+    0x00579cc0: ("Torpedo__WriteNetworkState", "Torpedo: serialize owner/target/flags + CompressedVec4"),
     0x0057a280: ("Torpedo__WriteToStream", "Torpedo method: WriteToStream"),
     0x0057a400: ("Torpedo__ReadFromStream", "Torpedo method: ReadFromStream"),
 
-    # --- TorpedoSystem (8) ---
+    # --- TorpedoSystem (11) ---
     0x0057aff0: ("TorpedoSystem__Cast", "TorpedoSystem method: Cast"),
     0x0057b020: ("TorpedoSystem__ctor", "Torpedo weapon system constructor"),
     0x0057b170: ("TorpedoSystem__dtor", "TorpedoSystem method: dtor"),
     0x0057b1c0: ("TorpedoSystem__SetSkewFire", "TorpedoSystem method: SetSkewFire"),
     0x0057b230: ("TorpedoSystem__SetAmmoType", "SWIG target: sets ammo type with reload flag"),
     0x0057b740: ("TorpedoSystem__GetNumAvailableTorpsToType", "TorpedoSystem method: GetNumAvailableTorpsToType"),
+    0x0057b780: ("TorpedoSystem__WriteToStream", "TorpedoSystem: serialize to stream (parent + ammo type)"),
+    0x0057b7b0: ("TorpedoSystem__ReadFromStream", "TorpedoSystem: deserialize from stream (parent + ammo type)"),
+    0x0057b8e0: ("TorpedoSystem__ResolveObjectRefs", "TorpedoSystem: resolve parent + child object refs"),
     0x0057d890: ("TorpedoSystem__RegisterHandlerNames_Stub", "TorpedoSystem method: RegisterHandlerNames_Stub"),
     0x00584380: ("TorpedoSystem__RegisterHandlers", "TorpedoSystem method: RegisterHandlers"),
 
@@ -1239,6 +1376,18 @@ KEY_FUNCTIONS = {
     0x00696c10: ("TractorBeamProperty__SetTextureName", "TractorBeamProperty method: SetTextureName"),
     0x006983a0: ("TractorBeamProperty__SetOrientation", "TractorBeamProperty method: SetOrientation"),
 
+    # --- TractorBeam (10) ---
+    0x0057fcd0: ("TractorBeam__ApplyMode0_Drag", "TractorBeam: mode 0 drag toward tractor source"),
+    0x0057ff60: ("TractorBeam__ApplyMode1_Push", "TractorBeam: mode 1 push away from source"),
+    0x00580590: ("TractorBeam__ApplyMode2_Hold", "TractorBeam: mode 2 hold at fixed position"),
+    0x00580740: ("TractorBeam__ApplyMode3_Repel", "TractorBeam: mode 3 repel away"),
+    0x00580910: ("TractorBeam__ApplyMode5_Dock", "TractorBeam: mode 5 docking approach"),
+    0x00580d70: ("TractorBeam__InitBeamAndStartFiring", "TractorBeam: init beam visual and start firing"),
+    0x00580e90: ("TractorBeam__SetBeamEndpoints", "TractorBeam: update beam start/end points"),
+    0x00580f50: ("TractorBeam__ComputeDamageForBeam", "TractorBeam: per-tick damage calculation"),
+    0x005814f0: ("TractorBeam__WriteToStream", "TractorBeam: serialize (parent + mode byte)"),
+    0x00581550: ("TractorBeam__ReadFromStream", "TractorBeam: deserialize (parent + mode byte)"),
+
     # --- TractorBeamProjector (2) ---
     0x0057ec70: ("TractorBeamProjector__ctor", "TractorBeamProjector method: ctor"),
     0x0057edb0: ("TractorBeamProjector__dtor", "TractorBeamProjector method: dtor"),
@@ -1256,24 +1405,50 @@ KEY_FUNCTIONS = {
     0x00583260: ("Weapon__GetDamageRadiusFactor", "Weapon method: GetDamageRadiusFactor"),
     0x00583270: ("Weapon__IsDumbFire", "Weapon method: IsDumbFire"),
 
-    # --- WeaponSubsystem (2) ---
+    # --- WeaponSubsystem (4) ---
     0x00583280: ("WeaponSubsystem__ctor", "WeaponSubsystem method: ctor"),
     0x005833d0: ("WeaponSubsystem__dtor", "WeaponSubsystem method: dtor"),
+    0x00583400: ("WeaponSubsystem__WriteToStream", "WeaponSubsystem: serialize (parent + target)"),
+    0x00583440: ("WeaponSubsystem__ReadFromStream", "WeaponSubsystem: deserialize (parent + target)"),
 
-    # --- WeaponSystem (13) ---
+    # --- WeaponSystem (28) ---
+    0x00584070: ("WeaponSystem__GetSingleFireMode", "WeaponSystem: get single-fire flag from property+0x51"),
     0x00584080: ("WeaponSystem__FindTargetByObjectID", "Extracts obj+4 ID, delegates to FindTargetEntry"),
     0x00584090: ("WeaponSystem__RemoveFromTargetList", "WeaponSystem method: RemoveFromTargetList"),
     0x005840a0: ("WeaponSystem__Constructor", "WeaponSystem method: Constructor"),
     0x00584270: ("WeaponSystem__dtor", "WeaponSystem method: dtor"),
     0x00584360: ("WeaponSystem__RegisterHandlerNames", "WeaponSystem method: RegisterHandlerNames"),
+    0x00584390: ("WeaponSystem__StartFiringAtTarget", "WeaponSystem: add target to list, start firing"),
+    0x00584560: ("WeaponSystem__StopFiringAll", "WeaponSystem: clear targets, stop all children"),
     0x005845a0: ("WeaponSystem__StopFiringAtTarget", "WeaponSystem method: StopFiringAtTarget"),
     0x00584750: ("WeaponSystem__ClearTargetList", "WeaponSystem method: ClearTargetList"),
+    0x005847d0: ("WeaponSystem__Update", "WeaponSystem: per-tick update (fire loop, single-fire, cooldown)"),
     0x00584930: ("WeaponSystem__UpdateWeapons", "WeaponSystem method: UpdateWeapons"),
     0x00584cc0: ("WeaponSystem__UpdateTargetList", "WeaponSystem method: UpdateTargetList"),
     0x00584fa0: ("WeaponSystem__SetFiringChainMode", "WeaponSystem method: SetFiringChainMode"),
     0x00584fc0: ("WeaponSystem__GetFiringChain", "WeaponSystem method: GetFiringChain"),
+    0x00585020: ("WeaponSystem__ParseFiringChains", "WeaponSystem: parse firing chain string into bitmask groups"),
+    0x005852a0: ("WeaponSystem__GetTargetWorldPosition", "WeaponSystem: transform target offset to world position"),
     0x00585360: ("WeaponSystem__FindTargetEntry", "Searches +0xC4 target list by object ID"),
+    0x00585390: ("WeaponSystem__RemoveTarget", "WeaponSystem: remove target from linked list, free entry"),
     0x00585580: ("WeaponSystem__SetTargetOffset", "Updates target entry offset + clears child subsystem targets"),
+    0x005856b0: ("WeaponSystem__OnDisabled", "WeaponSystem: post disabled event, clear targets"),
+    0x005856d0: ("WeaponSystem__BuildVisibleTargetList", "WeaponSystem: build target list from weapons + sensor visibility"),
+    0x005859d0: ("WeaponSystem__IsTargetVisible", "WeaponSystem: check if target in visible list"),
+    0x00585a10: ("WeaponSystem__WriteState", "WeaponSystem: serialize state (parent + firing flag)"),
+    0x00585a40: ("WeaponSystem__ReadState", "WeaponSystem: deserialize state (parent + firing flag)"),
+    0x00585a70: ("WeaponSystem__WriteToStream", "WeaponSystem: full serialize (targets + firing chains)"),
+    0x00585b80: ("WeaponSystem__ReadFromStream", "WeaponSystem: full deserialize (targets + firing chains)"),
+    0x00585f40: ("WeaponSystem__GetTargets_Py", "WeaponSystem: SWIG Python target list query"),
+
+    # --- WeaponTargetEntry (2) ---
+    0x00585ec0: ("WeaponTargetEntry__WriteToStream", "WeaponTargetEntry: serialize (objectID + 3 offset floats)"),
+    0x00585f00: ("WeaponTargetEntry__ReadFromStream", "WeaponTargetEntry: deserialize (objectID + 3 offset floats)"),
+
+    # --- FiringChain (3) ---
+    0x00586220: ("FiringChain__GetFirstGroupIndex", "FiringChain: get first set bit index from bitmask"),
+    0x00586250: ("FiringChain__GetNextGroupIndex", "FiringChain: get next set bit index from bitmask"),
+    0x00586280: ("FiringChain__WriteToStream", "FiringChain: serialize (uint mask + bits)"),
 
     # --- DamageableObject (17) ---
     0x00590a50: ("DamageableObject__FindByObjectID", "DamageableObject method: FindByObjectID"),
@@ -1761,9 +1936,12 @@ KEY_FUNCTIONS = {
     0x006cf8b0: ("TGBufferStream__WriteFloat", "TGBufferStream method: WriteFloat"),
     0x006cf930: ("TGBufferStream__WriteObjectID", "TGBufferStream method: WriteObjectID"),
     0x006cf9b0: ("TGBufferStream__GetCursor", "TGBufferStream method: GetCursor"),
+    0x006cf6a0: ("TGBufferStream__vReadInt", "Virtual ReadInt thunk (JMP [vtable+0x68])"),
     0x006d2370: ("TGBufferStream__ReadString", "TGBufferStream method: ReadString"),
+    0x006d30e0: ("TGBufferStream__ReadCompressedVector4_ByteScale", "Read 4 bytes + decompress position with custom scale"),
 
-    # --- TGLManager (2) ---
+    # --- TGLManager (3) ---
+    0x006d04f0: ("TGLManager__ReleaseFile", "Decrement refcount on loaded TGL file"),
     0x006d0670: ("TGLManager__SaveToStream", "TGLManager method: SaveToStream"),
     0x006d06d0: ("TGLManager__LoadFromStream", "TGLManager method: LoadFromStream"),
 
@@ -1785,14 +1963,16 @@ KEY_FUNCTIONS = {
     0x006d3950: ("TGBufferedFileStream__WriteFloat", "Grow-check + write 4 bytes at buffer offset"),
     0x006d39d0: ("TGBufferedFileStream__WriteID", "Virtual dispatch via +0x6C"),
 
-    # --- TGEvent (7) ---
+    # --- TGEvent (9) ---
     0x006d5c00: ("TGEvent__ctor", "TGEvent method: ctor"),
     0x006d5d70: ("TGEvent__dtor", "TGEvent method: dtor"),
     0x006d6270: ("TGEvent__SetSource", "TGEvent method: SetSource"),
     0x006d62b0: ("TGEvent__SetDestination", "TGEvent method: SetDestination"),
-    0x006d6300: ("TGEvent__Release", "TGEvent method: Release"),
+    0x006d6300: ("TGEvent__Release", "TGEvent method: Release (refcount--, dtor at 0)"),
+    0x006d63a0: ("TGEvent__LookupInEventTable", "Lookup event by object ID in g_pTGEventObjectTable"),
+    0x006d63f0: ("TGEvent__RegisterInEventTable", "Register event in g_pTGEventObjectTable hash table"),
     0x006d6480: ("TGEvent__UnregisterFromEventTable", "TGEvent method: UnregisterFromEventTable"),
-    0x006d6810: ("TGEvent__Duplicate", "TGEvent method: Duplicate"),
+    0x006d6810: ("TGEvent__Duplicate", "TGEvent method: Duplicate (factory clone)"),
 
     # --- TGStreamedObject (6) ---
     0x006d6200: ("TGStreamedObject__FactoryDeserialize", "Polymorphic factory: class ID -> construct from stream"),
@@ -1818,11 +1998,34 @@ KEY_FUNCTIONS = {
     0x006db620: ("TGEventManager__DispatchToBroadcastHandlers", "TGEventManager method: DispatchToBroadcastHandlers"),
     0x006de370: ("TGEventManager__DequeueEvent", "TGEventManager method: DequeueEvent"),
 
-    # --- TGEventHandlerTable (2) ---
-    0x006db530: ("TGEventHandlerTable__RemoveBroadcastHandler", "TGEventHandlerTable method: RemoveBroadcastHandler"),
-    0x006db590: ("TGEventHandlerTable__RemoveAllHandlersForObject", "TGEventHandlerTable method: RemoveAllHandlersForObject"),
+    # --- TGHandlerNameTable (2) ---
+    0x006da3d0: ("TGHandlerNameTable__Register", "Register handler name + hash in g_TGHandlerNameTable"),
+    0x006da450: ("TGHandlerNameTable__LookupByHash", "Lookup handler function ptr by hash in name table"),
 
-    # --- TGTimerManager (7) ---
+    # --- TGEventHandlerTable (12) ---
+    0x006d5850: ("TGEventHandlerTable__RegisterObject", "Create handler chain entry for object in global table"),
+    0x006d8230: ("TGEventHandlerTable__FindHandlerChain", "Look up handler chain for event type (hash table)"),
+    0x006d8270: ("TGEventHandlerTable__FindHandlerInParentChain", "Walk parent chain to find handler for event type"),
+    0x006d82b0: ("TGEventHandlerTable__RemoveAllHandlers", "Remove all handler chains from table"),
+    0x006d83e0: ("TGEventHandlerTable__DispatchToNextHandler", "Walk chain, invoke callbacks via TGConditionHandler"),
+    0x006db530: ("TGEventHandlerTable__RemoveBroadcastHandler", "Remove broadcast handler by name"),
+    0x006db590: ("TGEventHandlerTable__RemoveAllHandlersForObject", "Remove all handlers registered by an object"),
+    0x006daf70: ("TGEventHandlerTable__SaveBroadcastHandlers", "Serialize broadcast handler table"),
+    0x006db020: ("TGEventHandlerTable__LoadBroadcastHandlers", "Deserialize broadcast handler table"),
+    0x006db1b0: ("TGEventHandlerTable__FixupBroadcastRefs", "Fixup broadcast handler object references"),
+    0x006db230: ("TGEventHandlerTable__FixupBroadcastComplete", "Complete broadcast handler reference fixup"),
+    0x006db670: ("TGEventHandlerTable__ClearBroadcastHandlers", "Remove and free all broadcast handler chains"),
+
+    # --- TGInstanceHandlerTable (5) ---
+    0x006d7b30: ("TGInstanceHandlerTable__ctor", "Per-object handler hash table (0x25 buckets)"),
+    0x006d7b80: ("TGInstanceHandlerTable__dtor", "Destroy per-object handler table"),
+    0x006d7c30: ("TGInstanceHandlerTable__SaveToStream", "Serialize per-object handler chains"),
+    0x006d7d00: ("TGInstanceHandlerTable__LoadFromStream", "Deserialize per-object handler chains"),
+    0x006d7eb0: ("TGInstanceHandlerTable__AddHandler", "Add callback for event type in instance table"),
+
+    # --- TGTimerManager (9) ---
+    0x006dc240: ("TGTimerManager__ctor", "TGTimerManager constructor (stores event mgr at +0x08)"),
+    0x006dc5d0: ("TGTimerManager__Init", "TGTimerManager init (+0x04=0)"),
     0x006dc2e0: ("TGTimerManager__SaveToStream", "TGTimerManager method: SaveToStream"),
     0x006dc310: ("TGTimerManager__LoadFromStream", "TGTimerManager method: LoadFromStream"),
     0x006dc3c0: ("TGTimerManager__FixupReferences", "TGTimerManager method: FixupReferences"),
@@ -1844,16 +2047,56 @@ KEY_FUNCTIONS = {
     # --- TGEventTarget (1) ---
     0x006dd680: ("TGEventTarget__LoadAllFromStream", "TGEventTarget method: LoadAllFromStream"),
 
-    # --- TGEventQueue (1) ---
+    # --- TGEventQueue (7) ---
+    0x006de1d0: ("TGEventQueue__SaveToStream", "Serialize event queue (head/tail IDs + count)"),
+    0x006de240: ("TGEventQueue__LoadFromStream", "Deserialize event queue from stream"),
+    0x006de280: ("TGEventQueue__FixupReferences", "Resolve event queue object ID references"),
+    0x006de2c0: ("TGEventQueue__FixupComplete", "Complete event queue reference fixup"),
+    0x006de310: ("TGEventQueue__Clear", "Dequeue all events from queue"),
     0x006de330: ("TGEventQueue__Enqueue", "TGEventQueue method: Enqueue"),
+    0x006dee60: ("TGEventQueue__ctor_inner", "Init event queue fields (head=0, tail=0, count=0)"),
 
     # --- TGSortedTimerList (2) ---
     0x006df000: ("TGSortedTimerList__Insert", "TGSortedTimerList method: Insert"),
     0x006df0a0: ("TGSortedTimerList__PopHead", "TGSortedTimerList method: PopHead"),
 
-    # --- TGConditionHandler (3) ---
-    0x006e0c30: ("TGConditionHandler__InvokeCallback", "TGConditionHandler method: InvokeCallback"),
-    0x006e21d0: ("TGConditionHandler__DispatchEvent", "TGConditionHandler method: DispatchEvent"),
+    # --- TGCallback (8) ---
+    0x006e09e0: ("TGCallback__ctor", "TGCallback ctor (vtable 0x008960f4, 5 fields, 0x14 bytes)"),
+    0x006e0a00: ("TGCallback__dtor", "TGCallback dtor (free owned string)"),
+    0x006e0a10: ("TGCallback__FreeString", "Free function name string at +0x10 if owned"),
+    0x006e0d40: ("TGCallback__InvokePythonFunction", "Import module.func and call from C++"),
+    0x006e0e00: ("TGCallback__SetFunctionByName", "Set callback as named C++ function (string copy)"),
+    0x006e0e70: ("TGCallback__SetFunctionByHash", "Set callback by hash lookup in handler name table"),
+    0x006e0ec0: ("TGCallback__SetIsPythonCallback", "Set/clear bit 1 of flags (Python vs C++ callback)"),
+    0x006e0ee0: ("TGCallback__SetIsMethodCallback", "Set/clear bit 0 of flags (method vs function)"),
+
+    # --- TGConditionHandler (19) ---
+    0x006e0c30: ("TGConditionHandler__InvokeCallback", "Invoke C++/Python callback with event + handler object"),
+    0x006e1870: ("TGConditionHandler__ctor", "TGConditionHandler ctor (two sorted arrays, vtable 0x00896104)"),
+    0x006e1900: ("TGConditionHandler__dtor", "TGConditionHandler dtor (free sorted arrays)"),
+    0x006e1960: ("TGConditionHandler__SaveHandlerEntries", "Serialize handler entries with object IDs"),
+    0x006e1a30: ("TGConditionHandler__LoadHandlerEntries", "Deserialize handler entries, rebuild sorted array"),
+    0x006e1c00: ("TGConditionHandler__FixupReferences", "Resolve handler entry object IDs to pointers"),
+    0x006e1c50: ("TGConditionHandler__FixupComplete", "Complete handler entry reference fixup"),
+    0x006e1cd0: ("TGConditionHandler__AddEntry", "Create entry node and insert in sorted position"),
+    0x006e1d60: ("TGConditionHandler__InsertSorted", "Insert handler entry with sort key from object ID"),
+    0x006e1ed0: ("TGConditionHandler__RemoveByName", "Find and remove handler by name hash"),
+    0x006e2030: ("TGConditionHandler__MatchEntry", "Match handler entry by object + name/hash"),
+    0x006e20b0: ("TGConditionHandler__RemoveAllForObject", "Remove all handler entries for a given object"),
+    0x006e21d0: ("TGConditionHandler__DispatchEvent", "Dispatch event to all matching handlers (broadcast + targeted)"),
+    0x006e2310: ("TGConditionHandler__RemoveAllEntries", "Iterate all entries and remove each"),
+    0x006e2330: ("TGConditionHandler__FindInsertionPoint", "Binary search for sorted insertion index"),
+    0x006e2380: ("TGConditionHandler__FindFirstByKey", "Binary search for first entry with matching key"),
+    0x006e23f0: ("TGConditionHandler__RemoveAtIndex", "Remove handler entry at specific index"),
+    0x006e24d0: ("TGConditionHandler__SetAtIndex", "Set entry in sorted array with active-count tracking"),
+    0x006e25a0: ("TGConditionHandler__Resize", "Reallocate sorted handler array"),
+
+    # --- TGHandlerListEntry (3) ---
+    0x006e2f60: ("TGHandlerListEntry__ctor", "Handler list entry ctor (obj=0, callback=0, deleted=0)"),
+    0x006e2f70: ("TGHandlerListEntry__dtor", "Handler list entry dtor (destroy callback, free)"),
+    0x006e2f90: ("TGHandlerListEntry__GetObjectID", "Get object ID from handler list entry chain"),
+
+    # --- TGConditionHandler persistence (1, already named) ---
     0x006ea2a0: ("TGConditionHandler__SaveToStream", "TGConditionHandler method: SaveToStream"),
 
     # --- TGInputManager (16) ---
@@ -2138,6 +2381,885 @@ KEY_FUNCTIONS = {
     0x00859865: ("CRT__ArrayDestructor", "CRT method: ArrayDestructor"),
     0x008599b9: ("CRT__sprintf", "CRT method: sprintf"),
     0x00859d64: ("CRT__ArrayConstructor", "CRT method: ArrayConstructor"),
+
+    # =======================================================================
+    # Phase 8H: Cross-reference mining (103 functions)
+    # =======================================================================
+
+    # --- UI / Map Window (1) ---
+    0x004fea50: ("MapWindow__ExitMapView", "MapWindow: exit map view"),
+
+    # --- Weapons Display (11) ---
+    0x005499a0: ("WeaponsDisplay__HandleFireButton", "WeaponsDisplay: handle fire button"),
+    0x00549a50: ("WeaponsDisplay__HandleCloakButton", "WeaponsDisplay: handle cloak button"),
+    0x00549d70: ("WeaponsDisplay__UpdateFiringStatus", "WeaponsDisplay: update firing status"),
+    0x00549ed0: ("WeaponsDisplay__UpdateWarpStatus", "WeaponsDisplay: update warp status"),
+    0x00549f30: ("WeaponsDisplay__UpdateTorpedoSelector", "WeaponsDisplay: update torpedo selector"),
+    0x00549c60: ("WeaponsDisplay__ScheduleRefreshTimer", "WeaponsDisplay: schedule refresh timer"),
+    0x00549850: ("WeaponsDisplay__CycleTorpedoType", "WeaponsDisplay: cycle torpedo type"),
+    0x00549920: ("WeaponsDisplay__HandleFiringChainChanged", "WeaponsDisplay: handle firing chain changed"),
+    0x00549980: ("WeaponsDisplay__HandleFireButtonEvent", "WeaponsDisplay: handle fire button event"),
+    0x00549ac0: ("WeaponsDisplay__HandleKeyboardNavigation", "WeaponsDisplay: handle keyboard navigation"),
+    0x0054a120: ("WeaponsDisplay__HandleSetPlayerEvent", "WeaponsDisplay: handle set player event"),
+
+    # --- Weapons Control Pane (3) ---
+    0x00548120: ("WeaponsCtrlPane__BuildTorpedoControls", "WeaponsCtrlPane: build torpedo toggle/spread controls"),
+    0x00548a00: ("WeaponsCtrlPane__BuildPhaserControls", "WeaponsCtrlPane: build phaser intensity toggle"),
+    0x00548e60: ("WeaponsCtrlPane__BuildTractorCloakControls", "WeaponsCtrlPane: build tractor/cloak toggles"),
+
+    # --- Tactical Weapons Control (1) ---
+    0x00544a00: ("TacWeaponsCtrl__HandleTorpedoReloadEvent", "TacWeaponsCtrl: handle torpedo reload event"),
+
+    # --- Camera / Trail (4) ---
+    0x00410730: ("GameSet__UpdateCameraAnimation", "GameSet: update camera animation"),
+    0x004201f0: ("TrailTracker__RecordPositionSample", "TrailTracker: record position sample"),
+    0x00420640: ("TrailTracker__InterpolateRotation", "TrailTracker: interpolate rotation"),
+    0x004204a0: ("TrailTracker__InterpolatePosition", "TrailTracker: interpolate position"),
+
+    # --- Camera Mode (2) ---
+    0x00423820: ("CameraMode__ComputeSweepPosition", "CameraMode: compute sweep position"),
+    0x004272d0: ("CameraMode__ComputeTorpedoCameraPosition", "CameraMode: compute torpedo follow camera position"),
+
+    # --- Interface Module (1) ---
+    0x004624f0: ("InterfaceModule__InitializeFromRenderer", "InterfaceModule: initialize from renderer"),
+
+    # --- AI: Sensor (2) ---
+    0x0047fa40: ("SensorAI__RecordContactTimestamp", "SensorAI: record contact timestamp"),
+    0x0047fb00: ("SensorAI__BuildVisibleObjectList", "SensorAI: build visible object list"),
+
+    # --- AI: Attack (4) ---
+    0x00481cc0: ("AttackAI__ctor", "AttackAI: constructor"),
+    0x00480250: ("AttackAI__ComputeBestEvasionDirection", "AttackAI: compute best evasion direction"),
+    0x0047f5f0: ("AttackAI__EvaluateThreatsAndEvade", "AttackAI: evaluate threats and compute evasion"),
+    0x00484a90: ("AttackAI__PredictTargetPosition", "AttackAI: predict target position with lead"),
+
+    # --- NiTimeController / NiPathController (3) ---
+    0x004ca220: ("NiTimeController__StartAnimation", "NiTimeController: start animation"),
+    0x00451ac0: ("NiPathController__BuildPathAnimation", "NiPathController: build path animation"),
+    0x007dc690: ("NiPathController__ComputeControlPoints", "NiPathController: compute control points"),
+
+    # --- Warp Effect (1) ---
+    0x004d4950: ("WarpEffect__StartWarpFlash", "WarpEffect: start warp flash"),
+
+    # --- NiApplication (1) ---
+    0x007ba5a0: ("NiApplication__ProcessAllMessages", "NiApplication: process all messages"),
+
+    # --- Input Manager (3) ---
+    0x006e6290: ("TGInputManager__GetMouseTimestampAsInt", "TGInputManager: get mouse timestamp as int"),
+    0x006e62d0: ("TGInputManager__GetKeyTimestampAsInt", "TGInputManager: get key timestamp as int"),
+    0x005599d0: ("TGKeyBindingTable__ProcessInput", "TGKeyBindingTable: process input"),
+
+    # --- Target Reticle / Tactical Overlay (3) ---
+    0x005140e0: ("TargetReticleDisplay__Initialize", "TargetReticleDisplay: initialize"),
+    0x00512310: ("TargetReticleDisplay__UpdateLayout", "TargetReticleDisplay: update layout"),
+    0x00543310: ("TacticalOverlay__UpdateTargetArrow", "TacticalOverlay: update target direction arrow"),
+
+    # --- Tactical Overlay Radar (1) ---
+    0x00544200: ("TacticalOverlay__UpdateRadarDots", "TacticalOverlay: update radar dot positions"),
+
+    # --- Damage Display (2) ---
+    0x00540aa0: ("DamageDisplay__UpdateSubsystemIndicator", "DamageDisplay: update subsystem indicator"),
+    0x00540800: ("DamageDisplay__HandleSetPlayerEvent", "DamageDisplay: handle set player event"),
+
+    # --- Engineering Power Control (1) ---
+    0x0054cfe0: ("EngPowerCtrl__ctor", "EngPowerCtrl: constructor"),
+
+    # --- Renderer (1) ---
+    0x00554750: ("NiDX7Renderer__GetCurrentFrameFormat", "NiDX7Renderer: get current frame format"),
+
+    # --- Streamed Objects (1) ---
+    0x006fea70: ("TGStreamedObject__ReadFromStream_Base", "TGStreamedObject: read from stream base"),
+
+    # --- Small Block Allocator (1) ---
+    0x006fba70: ("TGSmallBlockAllocator__AllocBlock", "TGSmallBlockAllocator: allocate block"),
+
+    # --- NIF Loading (1) ---
+    0x0045f990: ("NiMorphData__ReadFromStream", "NiMorphData: read from stream"),
+
+    # --- TGL System (3) ---
+    0x006d0470: ("TGLManager__AddResource", "TGLManager: add resource"),
+    0x006d18b0: ("TGLFile__ReadHeader", "TGLFile: read header"),
+    0x006d1980: ("TGLFile__ReadEntries", "TGLFile: read entries"),
+
+    # --- Paragraph / Status Bar (2) ---
+    0x00733bf0: ("TGParagraph__ReadFromStream", "TGParagraph: read from stream"),
+    0x007be320: ("NiStatusBar__Destroy", "NiStatusBar: destroy"),
+
+    # --- Paragraph Text (1) ---
+    0x00738f60: ("TGParagraph__AddAnnotatedText", "TGParagraph: add annotated text"),
+
+    # --- Menu (2) ---
+    0x00516b80: ("SortedRegionMenu__ctor_FromWString", "SortedRegionMenu: ctor from WString"),
+    0x00516fd0: ("SortedRegionMenu__ctor", "SortedRegionMenu: ctor"),
+
+    # --- Display Name (2) ---
+    0x0040e3b0: ("TGDisplayName__SetDatabaseName", "TGDisplayName: set database name"),
+    0x0040e530: ("TGDisplayName__FlushPendingObjects", "TGDisplayName: flush pending objects"),
+
+    # --- WString (1) ---
+    0x00416870: ("TGWString__AllocBuffer", "TGWString: allocate buffer"),
+
+    # --- Sensor / Subsystem (2) ---
+    0x00568ad0: ("SensorSubsystem__SchedulePeriodicScan", "SensorSubsystem: schedule periodic scan"),
+    0x0056c130: ("Subsystem__GetLocalizedName", "Subsystem: get localized name from TGL"),
+
+    # --- Timer System (2) ---
+    0x007023e0: ("TGTimerCallback__RescheduleTimer", "TGTimerCallback: reschedule timer"),
+    0x007008e0: ("TGTimerManager__ProcessTimerCallbacks", "TGTimerManager: process timer callbacks"),
+
+    # --- Scrollbar (1) ---
+    0x00531e60: ("STScrollbar__HandleDragEvent", "STScrollbar: handle drag event"),
+
+    # --- VarManager (3) ---
+    0x00448060: ("VarManagerNode__SetName", "VarManagerNode: set name"),
+    0x004480d0: ("VarManagerNode__SetVariable", "VarManagerNode: set variable"),
+    0x00447510: ("VarManagerEntry__SetKey", "VarManagerEntry: set key"),
+
+    # --- Sound System (5) ---
+    0x0070b0c0: ("TGSound__CopyFrom", "TGSound: copy from"),
+    0x0070c7a0: ("TGSoundCache__LoadOrGetFile", "TGSoundCache: load or get file"),
+    0x0070c6f0: ("TGSoundFileEntry__ctor", "TGSoundFileEntry: ctor"),
+    0x0070d580: ("TGLinkedList__AllocNodes", "TGLinkedList: allocate nodes"),
+    0x00710910: ("TGSoundManager__RegisterSoundEvent", "TGSoundManager: register sound event"),
+
+    # --- DX7 / Renderer (2) ---
+    0x0078df20: ("NiDX7TextureGroup__AddTexture", "NiDX7TextureGroup: add texture"),
+    0x0078f550: ("NiDX7SoundObject__OpenStream", "NiDX7SoundObject: open stream"),
+
+    # --- NiString (1) ---
+    0x00721200: ("NiString__AllocBuffer", "NiString: allocate buffer"),
+
+    # --- Placement Editor (2) ---
+    0x0049d390: ("PlacementEditor__BuildLightEditDialog", "PlacementEditor: build light edit dialog"),
+    0x0049da50: ("PlacementEditor__BuildAsteroidFieldDialog", "PlacementEditor: build asteroid field dialog"),
+
+    # --- File List / Main Menu (2) ---
+    0x0051fc60: ("STFileListWindow__Create", "STFileListWindow: create"),
+    0x00524040: ("MainMenu__BuildLoadDeleteButtons", "MainMenu: build load/delete buttons"),
+
+    # --- STWidget (1) ---
+    0x00529f00: ("STWidget__ctor", "STWidget: ctor"),
+
+    # --- Mission Log Pane (1) ---
+    0x005286d0: ("MissionLogPane__ctor", "MissionLogPane: ctor (scrollable, config-driven line limit)"),
+
+    # --- Sensor Menu / Target Menu (5) ---
+    0x00535800: ("SensorMenu__UpdateUnidentifiedContactLabel", "SensorMenu: update unidentified contact label"),
+    0x005367c0: ("SubsystemTargetMenu__PopulateItems", "SubsystemTargetMenu: populate subsystem items"),
+    0x00535590: ("SubsystemRepairMenu__PopulateItems", "SubsystemRepairMenu: populate repair items"),
+    0x00536160: ("SubsystemTargetMenu__HandleTargetSelected", "SubsystemTargetMenu: handle target selected"),
+    0x00538c90: ("SubsystemTargetMenu__RefreshTargetList", "SubsystemTargetMenu: refresh visible target list"),
+
+    # --- STTimerButton (2) ---
+    0x0053e600: ("STTimerButton__ctor", "STTimerButton: ctor (ASCII)"),
+    0x0053e800: ("STTimerButton__ctorW", "STTimerButton: ctor (wide string)"),
+
+    # --- Helm Display (1) ---
+    0x0054c200: ("HelmDisplay__UpdateSpeedReadout", "HelmDisplay: update speed readout"),
+
+    # --- Shields / Ship Display (2) ---
+    0x00545d30: ("ShieldsDisplay__HandleSetPlayerEvent", "ShieldsDisplay: handle set player event"),
+    0x00546e40: ("ShipDisplay__HandleShipDestroyedEvent", "ShipDisplay: handle ship destroyed event"),
+
+    # --- Character / Animation (3) ---
+    0x00667420: ("CharacterClass__dtor", "CharacterClass: destructor (cleanup models, anims, hash tables)"),
+    0x0066fb90: ("TGAnimAction__ctor", "TGAnimAction: constructor (extends TGAction)"),
+    0x0066fcd0: ("TGAnimAction__dtor", "TGAnimAction: destructor"),
+
+    # --- GameSpy Browser (1) ---
+    0x0069c140: ("GameSpyBrowser__dtor", "GameSpyBrowser: destructor (TGL, heartbeat, event cleanup)"),
+
+    # --- Cloaking Subsystem (2) ---
+    0x0055f9d0: ("CloakingSubsystem__HandleCloakStartedEvent", "CloakingSubsystem: handle cloak started event"),
+    0x0055fa00: ("CloakingSubsystem__HandleCloakStoppedEvent", "CloakingSubsystem: handle cloak stopped event"),
+
+    # --- Physics (3) ---
+    0x005a88e0: ("PhysicsObjectClass__CheckCollision", "PhysicsObjectClass: check collision between two objects"),
+    0x005a05c0: ("PhysicsObject__IntegrateMotion", "PhysicsObject: integrate motion (velocity + rotation)"),
+    0x005a1dc0: ("PhysicsObjectClass__WriteNetworkState", "PhysicsObjectClass: write network state (pos, rot, vel, name) [vtable slot 68]"),
+
+    # --- Torpedo System (2) ---
+    0x00591ee0: ("TorpedoSystem__LaunchProjectile", "TorpedoSystem: create torpedo, set velocity, add to scene"),
+    0x00576080: ("TorpedoTube__CreateAndLaunchProjectile", "TorpedoTube: create and launch projectile with sound"),
+
+    # --- NiNode / NiAVObject (2) ---
+    0x007e4220: ("NiNode__BuildPropertyState", "NiNode: build property state (recursive)"),
+    0x007dc7b0: ("NiAVObject__AccumulateProperties", "NiAVObject: accumulate properties into state"),
+
+    # --- Main Window (4) ---
+    0x004fecf0: ("MainWindow__UpdateVisibleObjectNames", "MainWindow: update visible object display names"),
+    0x00501510: ("MainWindow__HandleObjectClickedForTarget", "MainWindow: handle object clicked for targeting"),
+    0x00501610: ("MainWindow__HandleObjectEnteredScene", "MainWindow: handle object entered scene"),
+    0x005018f0: ("MainWindow__HandleTargetChangedEvent", "MainWindow: handle target changed event"),
+
+
+    # =================================================================
+    # Pass 8 (2026-02-24): 10 parallel agents across event system,
+    # weapons, UI, scene graph, Ship vtable, subsystems, TGObject
+    # hierarchy, mission/game, xref mining
+    # =================================================================
+
+    # --- BridgeWindow (2) ---
+    0x004fb750: ("BridgeWindow__ctor", "BridgeWindow: ctor"),
+    0x004fb830: ("BridgeWindow__scalar_deleting_dtor", "BridgeWindow: scalar_deleting_dtor"),
+
+    # --- CinematicWindow (2) ---
+    0x005024e0: ("CinematicWindow__scalar_deleting_dtor", "CinematicWindow: scalar_deleting_dtor"),
+    0x00502520: ("CinematicWindow__ctor_FromStream", "CinematicWindow: ctor_FromStream"),
+
+    # --- DamageableObject (6) ---
+    0x00590980: ("DamageableObject__RegisterEventHandlers", "DamageableObject: RegisterEventHandlers"),
+    0x005909b0: ("DamageableObject__UnregisterEventHandlers", "DamageableObject: UnregisterEventHandlers"),
+    0x00590ec0: ("DamageableObject__ctor_stream", "DamageableObject: ctor_stream"),
+    0x00594310: ("DamageableObject__RayIntersect", "DamageableObject: RayIntersect"),
+    0x00594440: ("DamageableObject__CollisionTest_A", "DamageableObject: CollisionTest_A"),
+    0x005945b0: ("DamageableObject__CollisionTest_B", "DamageableObject: CollisionTest_B"),
+
+    # --- EnergyWeapon (12) ---
+
+    # --- Episode (3) ---
+    0x004047e0: ("Episode__GetNextEventType", "Episode: GetNextEventType"),
+    0x00404a60: ("Episode__RemoveGoal", "Episode: RemoveGoal"),
+    0x0043d8b0: ("Episode__ctor_stream", "Episode: ctor_stream"),
+
+    # --- FiringChain (3) ---
+
+    # --- ForceVector (1) ---
+    0x005965f0: ("ForceVector__Init", "ForceVector: Init"),
+
+    # --- LoadEpisodeAction (1) ---
+    0x004027d0: ("LoadEpisodeAction__ctor", "LoadEpisodeAction: ctor"),
+
+    # --- LoadMissionAction (1) ---
+    0x00403460: ("LoadMissionAction__ctor", "LoadMissionAction: ctor"),
+
+    # --- MainWindow (6) ---
+    0x0050ea00: ("MainWindow__scalar_deleting_dtor", "MainWindow: scalar_deleting_dtor"),
+    0x0050ea30: ("MainWindow__ToggleVisibility", "MainWindow: ToggleVisibility"),
+    0x0050eab0: ("MainWindow__IsCurrentWindow", "MainWindow: IsCurrentWindow"),
+    0x0050eb00: ("MainWindow__SetVisibleWithFocus", "MainWindow: SetVisibleWithFocus"),
+    0x0050f480: ("MainWindow__AddToObjectList", "MainWindow: AddToObjectList"),
+    0x0050f590: ("MainWindow__RemoveFromObjectList", "MainWindow: RemoveFromObjectList"),
+
+    # --- Mission (2) ---
+    0x00409170: ("Mission__PlayerExitedSetHandler", "Mission: PlayerExitedSetHandler"),
+    0x00409270: ("Mission__PlayerChangedHandler", "Mission: PlayerChangedHandler"),
+
+    # --- MultiplayerGame (1) ---
+    0x00442940: ("MultiplayerGame__scalar_deleting_dtor", "MultiplayerGame: scalar_deleting_dtor"),
+
+    # --- MultiplayerWindow (11) ---
+    0x00504360: ("MultiplayerWindow__Cast", "MultiplayerWindow: Cast"),
+    0x00504530: ("MultiplayerWindow__scalar_deleting_dtor", "MultiplayerWindow: scalar_deleting_dtor"),
+    0x00504560: ("MultiplayerWindow__dtor", "MultiplayerWindow: dtor"),
+    0x00505480: ("MultiplayerWindow__HideAllChildren", "MultiplayerWindow: HideAllChildren"),
+    0x00505500: ("MultiplayerWindow__WriteToStream", "MultiplayerWindow: WriteToStream"),
+    0x00505660: ("MultiplayerWindow__ReadFromStream", "MultiplayerWindow: ReadFromStream"),
+    0x00505770: ("MultiplayerWindow__ResolveIDs", "MultiplayerWindow: ResolveIDs"),
+    0x00505880: ("MultiplayerWindow__RestoreIDsToPointers", "MultiplayerWindow: RestoreIDsToPointers"),
+    0x00505d70: ("MultiplayerWindow__ButtonSelectionHandler", "MultiplayerWindow: ButtonSelectionHandler"),
+    0x00506910: ("MultiplayerWindow__InitClientUI", "MultiplayerWindow: InitClientUI"),
+    0x00506eb0: ("MultiplayerWindow__SetVisible", "MultiplayerWindow: SetVisible"),
+
+    # --- NamedReticleWindow (2) ---
+    0x00510270: ("NamedReticleWindow__scalar_deleting_dtor", "NamedReticleWindow: scalar_deleting_dtor"),
+    0x005102a0: ("NamedReticleWindow__dtor", "NamedReticleWindow: dtor"),
+
+    # --- NiAVObject (5) ---
+    0x007dc330: ("NiAVObject__SetParent", "NiAVObject: SetParent"),
+    0x007dcb80: ("NiAVObject__CullAgainstPlanes", "NiAVObject: CullAgainstPlanes"),
+    0x007dcdb0: ("NiAVObject__TestBoundIntersection", "NiAVObject: TestBoundIntersection"),
+    0x007dcf00: ("NiAVObject__TestBoundIntersection_Detail", "NiAVObject: TestBoundIntersection_Detail"),
+    0x007dd230: ("NiAVObject__GetObjectByName", "NiAVObject: GetObjectByName (vtable slot 22, name compare)"),
+
+    # --- NiAssetLoader (1) ---
+    0x00819000: ("NiAssetLoader__LoadFromPath", "NiAssetLoader: LoadFromPath"),
+
+    # --- NiBound (8) ---
+    0x007dd170: ("NiBound__IntersectRay", "NiBound: IntersectRay"),
+    0x008122c0: ("NiBound__Init", "NiBound: Init"),
+    0x00812300: ("NiBound__ComputeFromPoints", "NiBound: ComputeFromPoints"),
+    0x008124f0: ("NiBound__TestPlane", "NiBound: TestPlane"),
+    0x00812540: ("NiBound__TestSweepIntersection", "NiBound: TestSweepIntersection"),
+    0x00812690: ("NiBound__FindSweepIntersection", "NiBound: FindSweepIntersection"),
+    0x00812f30: ("NiBound__SetFromCenterRadius", "NiBound: SetFromCenterRadius"),
+    0x00813070: ("NiBound__Merge", "NiBound: Merge"),
+
+    # --- NiDynamicEffect (1) ---
+    0x007e2330: ("NiDynamicEffect__AttachAffectedNode", "NiDynamicEffect: AttachAffectedNode"),
+
+    # --- NiDynamicEffectState (3) ---
+    0x00820f00: ("NiDynamicEffectState__Clone", "NiDynamicEffectState: Clone"),
+    0x00821020: ("NiDynamicEffectState__AddEffect", "NiDynamicEffectState: AddEffect"),
+    0x00821220: ("NiDynamicEffectState__InsertSorted", "NiDynamicEffectState: InsertSorted"),
+
+    # --- NiFile (3) ---
+    0x0086e550: ("NiFile__ctor", "NiFile: ctor"),
+    0x0086e620: ("NiFile__dtor", "NiFile: dtor"),
+    0x0086ec40: ("NiFile__ReadLine", "NiFile: ReadLine"),
+
+    # --- NiMatrix3 (1) ---
+    0x008136c0: ("NiMatrix3__Copy", "NiMatrix3: Copy"),
+
+    # --- NiMemStream (1) ---
+    0x0086ed70: ("NiMemStream__ctor", "NiMemStream: ctor"),
+
+    # --- NiNode (3) ---
+    0x004321a0: ("NiNode__GetChildAt", "NiNode: GetChildAt"),
+    0x007e4400: ("NiNode__PushLocalEffects", "NiNode: PushLocalEffects"),
+    0x007e4770: ("NiNode__AttachEffect", "NiNode: AttachEffect"),
+
+    # --- NiObjectNET (2) ---
+    0x007db120: ("NiObjectNET__GetName", "NiObjectNET: GetName"),
+    0x007db440: ("NiObjectNET__GetExtraData", "NiObjectNET: GetExtraData"),
+
+    # --- NiPoint3 (6) ---
+    0x00414560: ("NiPoint3__CopyFromPtr", "NiPoint3: CopyFromPtr"),
+    0x004145b0: ("NiPoint3__Length", "NiPoint3: Length"),
+    0x004234a0: ("NiPoint3__Scale", "NiPoint3: Scale"),
+    0x00423560: ("NiPoint3__Unitize", "NiPoint3: Unitize"),
+    0x00426c30: ("NiPoint3__Add", "NiPoint3: Add"),
+    0x00580570: ("NiPoint3__Negate", "NiPoint3: Negate"),
+
+    # --- NiPropertyState (2) ---
+    0x008204e0: ("NiPropertyState__CopyFrom", "NiPropertyState: CopyFrom"),
+    0x00820590: ("NiPropertyState__dtor", "NiPropertyState: dtor"),
+
+    # --- NiSmartPtr (4) ---
+    0x0040cfe0: ("NiSmartPtr__DecRefCount", "NiSmartPtr: DecRefCount"),
+    0x00416ec0: ("NiSmartPtr__Release", "NiSmartPtr: Release"),
+    0x00416fa0: ("NiSmartPtr__SetValue", "NiSmartPtr: SetValue"),
+    0x007e6520: ("NiSmartPtr__Assign", "NiSmartPtr: Assign"),
+
+    # --- NiStream (8) ---
+    0x00816c60: ("NiStream__ctor", "NiStream: ctor"),
+    0x00816da0: ("NiStream__dtor", "NiStream: dtor"),
+    0x00817120: ("NiStream__HashIndex", "NiStream: HashIndex"),
+    0x008172a0: ("NiStream__CleanupHashTable", "NiStream: CleanupHashTable"),
+    0x008173a0: ("NiStream__GetObjectFromLinkID", "NiStream: GetObjectFromLinkID"),
+    0x00817420: ("NiStream__ReadHeader", "NiStream: ReadHeader"),
+    0x00817b60: ("NiStream__LoadFromBuffer", "NiStream: LoadFromBuffer"),
+    0x00818cb0: ("NiStream__PostLinkObjects", "NiStream: PostLinkObjects"),
+
+    # --- NiTArray (2) ---
+    0x00818d80: ("NiTArray__RemoveAll", "NiTArray: RemoveAll"),
+    0x00818df0: ("NiTArray__SetAtGrow_Raw", "NiTArray: SetAtGrow_Raw"),
+
+    # --- NiTArray_NiAVObjectPtr (5) ---
+    0x007e5e20: ("NiTArray_NiAVObjectPtr__SetAt", "NiTArray_NiAVObjectPtr: SetAt"),
+    0x007e5f40: ("NiTArray_NiAVObjectPtr__SetAtGrow", "NiTArray_NiAVObjectPtr: SetAtGrow"),
+    0x007e60c0: ("NiTArray_NiAVObjectPtr__Add", "NiTArray_NiAVObjectPtr: Add"),
+    0x007e6130: ("NiTArray_NiAVObjectPtr__AddFirstEmpty", "NiTArray_NiAVObjectPtr: AddFirstEmpty"),
+    0x007e6230: ("NiTArray_NiAVObjectPtr__RemoveAt", "NiTArray_NiAVObjectPtr: RemoveAt"),
+
+    # --- NiTArray_NiSmartPtr (1) ---
+    0x00416f50: ("NiTArray_NiSmartPtr__GetAt", "NiTArray_NiSmartPtr: GetAt"),
+
+    # --- NiTArray_Raw (1) ---
+    0x007e6560: ("NiTArray_Raw__SetAtGrow", "NiTArray_Raw: SetAtGrow"),
+
+    # --- NiTList (2) ---
+    0x007e2840: ("NiTList__Prepend", "NiTList: Prepend"),
+    0x007e6360: ("NiTList__CountItems", "NiTList: CountItems"),
+
+    # --- NiTListNode (2) ---
+    0x00416ee0: ("NiTListNode__ctor", "NiTListNode: ctor"),
+    0x004e11f0: ("NiTListNode__GetValue", "NiTListNode: GetValue"),
+
+    # --- NiTList_Int (1) ---
+    0x007e6380: ("NiTList_Int__Prepend", "NiTList_Int: Prepend"),
+
+    # --- ObjectClass (1) ---
+    0x004356a0: ("ObjectClass__CreateCollisionProxy", "ObjectClass: CreateCollisionProxy"),
+
+    # --- PhaserBank (14) ---
+    0x00572800: ("PhaserBank__InitBeamAndStartFiring", "PhaserBank: InitBeamAndStartFiring"),
+    0x00572950: ("PhaserBank__SetBeamEndpoints", "PhaserBank: SetBeamEndpoints"),
+    0x00572a50: ("PhaserBank__ComputeDamageForBeam", "PhaserBank: ComputeDamageForBeam"),
+
+    # --- PhaserSystem (1) ---
+
+    # --- PhysicsObjectClass (3) ---
+    0x005a15a0: ("PhysicsObjectClass__SetTargetObject", "PhysicsObjectClass: SetTargetObject"),
+    0x005a1cf0: ("PhysicsObjectClass__SerializeToBuffer", "PhysicsObjectClass: SerializeToBuffer"),
+    0x005a2060: ("PhysicsObjectClass__DeserializeFromNetwork", "PhysicsObjectClass: DeserializeFromNetwork"),
+
+    # --- PlayViewWindow (1) ---
+    0x004fc5e0: ("PlayViewWindow__ctor_stream", "PlayViewWindow: ctor_stream"),
+
+    # --- PlayWindow (9) ---
+    0x00405a90: ("PlayWindow__InitHandlerTable", "PlayWindow: InitHandlerTable"),
+    0x004062b0: ("PlayWindow__TerminateWithEvent", "PlayWindow: TerminateWithEvent"),
+    0x004062d0: ("PlayWindow__ReallyTerminate", "PlayWindow: ReallyTerminate"),
+    0x00406640: ("PlayWindow__SetLastSavedGame", "PlayWindow: SetLastSavedGame"),
+    0x00406770: ("PlayWindow__SetUIShipID", "PlayWindow: SetUIShipID"),
+    0x00406d80: ("PlayWindow__WriteToStream", "PlayWindow: WriteToStream"),
+    0x00407070: ("PlayWindow__ResolveIDs", "PlayWindow: ResolveIDs"),
+    0x004070f0: ("PlayWindow__RestoreIDsToPointers", "PlayWindow: RestoreIDsToPointers"),
+    0x00508520: ("PlayWindow__LoadSubtitlePositions", "PlayWindow: LoadSubtitlePositions"),
+
+    # --- PulseWeapon (2) ---
+
+    # --- STButton (1) ---
+    0x00518e30: ("STButton__scalar_deleting_dtor", "STButton: scalar_deleting_dtor"),
+
+    # --- STMenu (13) ---
+    0x00525720: ("STMenu__scalar_deleting_dtor", "STMenu: scalar_deleting_dtor"),
+    0x00525820: ("STMenu__Setup", "STMenu: Setup"),
+    0x00525b00: ("STMenu__dtor", "STMenu: dtor"),
+    0x00525c30: ("STMenu__GetArrowOffsetX", "STMenu: GetArrowOffsetX"),
+    0x00525c90: ("STMenu__Layout", "STMenu: Layout"),
+    0x00525d10: ("STMenu__GotFocus", "STMenu: GotFocus"),
+    0x00525d70: ("STMenu__AddChild", "STMenu: AddChild"),
+    0x00525e00: ("STMenu__GetNestingDepth", "STMenu: GetNestingDepth"),
+    0x00526120: ("STMenu__PositionChildren", "STMenu: PositionChildren"),
+    0x00526910: ("STMenu__ResizeAndUpdateParentWindows", "STMenu: ResizeAndUpdateParentWindows"),
+    0x00526b40: ("STMenu__ReleaseChosenEvent", "STMenu: ReleaseChosenEvent"),
+    0x00526c10: ("STMenu__Open", "STMenu: Open"),
+    0x00526d50: ("STMenu__Close", "STMenu: Close"),
+
+    # --- STStylizedWindow (4) ---
+    0x005310f0: ("STStylizedWindow__scalar_deleting_dtor", "STStylizedWindow: scalar_deleting_dtor"),
+    0x00531120: ("STStylizedWindow__dtor", "STStylizedWindow: dtor"),
+    0x005314f0: ("STStylizedWindow__ClearFixedSize", "STStylizedWindow: ClearFixedSize"),
+    0x00531730: ("STStylizedWindow__EnsureChildVisible", "STStylizedWindow: EnsureChildVisible"),
+
+    # --- STWidget (8) ---
+    0x0073f770: ("STWidget__dtor", "STWidget: dtor"),
+    0x0073fa40: ("STWidget__ReleaseCompletionEvent", "STWidget: ReleaseCompletionEvent"),
+    0x0073fa80: ("STWidget__SetHighlightedEvent", "STWidget: SetHighlightedEvent"),
+    0x0073fad0: ("STWidget__SetUnhighlightedEvent", "STWidget: SetUnhighlightedEvent"),
+    0x0073fb20: ("STWidget__HandleClick", "STWidget: HandleClick"),
+    0x0073fb90: ("STWidget__WriteToStream", "STWidget: WriteToStream"),
+    0x0073fc10: ("STWidget__ReadFromStream", "STWidget: ReadFromStream"),
+    0x0073fc60: ("STWidget__ResolveIDs", "STWidget: ResolveIDs"),
+
+    # --- ShieldSubsystem (1) ---
+    0x0056a160: ("ShieldSubsystem__ScalarDeletingDtor", "ShieldSubsystem: ScalarDeletingDtor"),
+
+    # --- SortedRegionMenuWindow (1) ---
+    0x004fd6f0: ("SortedRegionMenuWindow__ctor", "SortedRegionMenuWindow: ctor"),
+
+    # --- Standalone (4) ---
+    0x004068c0: ("GetDifficultyDamageScale", "GetDifficultyDamageScale"),
+    0x0086e3f0: ("NiOutputDebugString", "NiOutputDebugString"),
+    0x0086e400: ("NiStricmp", "NiStricmp"),
+    0x0086e420: ("NiStrncmp", "NiStrncmp"),
+
+    # --- TGDialogWindow (4) ---
+    0x00738a90: ("TGDialogWindow__ctor", "TGDialogWindow: ctor"),
+    0x00738c10: ("TGDialogWindow__Create", "TGDialogWindow: Create"),
+    0x00738e40: ("TGDialogWindow__AddButtons", "TGDialogWindow: AddButtons"),
+    0x00739060: ("TGDialogWindow__LayoutContent", "TGDialogWindow: LayoutContent"),
+
+    # --- TGEventHandlerObject (2) ---
+    0x006d9240: ("TGEventHandlerObject__HandleEvent", "TGEventHandlerObject: HandleEvent"),
+    0x006da4e0: ("TGEventHandlerObject__RegisterConditionHandler", "TGEventHandlerObject: RegisterConditionHandler"),
+
+    # --- TGPane (22) ---
+    0x0072e000: ("TGPane__KillChildren", "TGPane: KillChildren"),
+    0x0072e060: ("TGPane__Render", "TGPane: Render"),
+    0x0072e0a0: ("TGPane__Update", "TGPane: Update"),
+    0x0072e3a0: ("TGPane__GamepadHandler", "TGPane: GamepadHandler"),
+    0x0072e3d0: ("TGPane__ControlHandler", "TGPane: ControlHandler"),
+    0x0072e5b0: ("TGPane__RemoveChild", "TGPane: RemoveChild"),
+    0x0072e6c0: ("TGPane__DeleteChild", "TGPane: DeleteChild"),
+    0x0072e7e0: ("TGPane__SetFocus", "TGPane: SetFocus"),
+    0x0072e920: ("TGPane__MoveToFront", "TGPane: MoveToFront"),
+    0x0072e970: ("TGPane__MoveToBack", "TGPane: MoveToBack"),
+    0x0072eac0: ("TGPane__MoveTowardsBack", "TGPane: MoveTowardsBack"),
+    0x0072ec60: ("TGPane__GetFocusLeaf", "TGPane: GetFocusLeaf"),
+    0x0072ec80: ("TGPane__InvalidateAllChildPolys", "TGPane: InvalidateAllChildPolys"),
+    0x0072ecb0: ("TGPane__SetClipRectOnChildren", "TGPane: SetClipRectOnChildren"),
+    0x0072ece0: ("TGPane__BuildPolyList", "TGPane: BuildPolyList"),
+    0x0072ed80: ("TGPane__GetNthChild", "TGPane: GetNthChild"),
+    0x0072edd0: ("TGPane__GetFirstVisibleChild", "TGPane: GetFirstVisibleChild"),
+    0x0072eeb0: ("TGPane__SetNotVisibleRecursive", "TGPane: SetNotVisibleRecursive"),
+    0x0072ef50: ("TGPane__SetEnabledRecursive", "TGPane: SetEnabledRecursive"),
+    0x0072efa0: ("TGPane__ClearDirtyAndLayoutChildren", "TGPane: ClearDirtyAndLayoutChildren"),
+    0x0072f060: ("TGPane__WriteToStream", "TGPane: WriteToStream"),
+    0x0072f0e0: ("TGPane__ReadFromStream", "TGPane: ReadFromStream"),
+
+    # --- TGPoolAllocator (1) ---
+    0x00586c50: ("TGPoolAllocator__Init", "TGPoolAllocator: Init"),
+
+    # --- TGRootPane (11) ---
+    0x00727620: ("TGRootPane__ctor", "TGRootPane: ctor"),
+    0x00727760: ("TGRootPane__scalar_deleting_dtor", "TGRootPane: scalar_deleting_dtor"),
+    0x00727840: ("TGRootPane__dtor", "TGRootPane: dtor"),
+    0x007278a0: ("TGRootPane__DestroyAll", "TGRootPane: DestroyAll"),
+    0x00727920: ("TGRootPane__DestroyCursor", "TGRootPane: DestroyCursor"),
+    0x00727940: ("TGRootPane__CreateTooltip", "TGRootPane: CreateTooltip"),
+    0x00727a10: ("TGRootPane__ReleaseCursor", "TGRootPane: ReleaseCursor"),
+    0x00727b30: ("TGRootPane__SetMouseCursor", "TGRootPane: SetMouseCursor"),
+    0x00727e30: ("TGRootPane__RestorePreviousCursor", "TGRootPane: RestorePreviousCursor"),
+    0x00727ee0: ("TGRootPane__PushCursor", "TGRootPane: PushCursor"),
+    0x00727fa0: ("TGRootPane__PopCursor", "TGRootPane: PopCursor"),
+
+    # --- TGSceneObject (3) ---
+    0x00430cf0: ("TGSceneObject__Update", "TGSceneObject: Update"),
+    0x00430e20: ("TGSceneObject__SetScene", "TGSceneObject: SetScene"),
+    0x00431e20: ("TGSceneObject__ResolveObjectRefs", "TGSceneObject: ResolveObjectRefs"),
+
+    # --- TGStreamedObject (2) ---
+    0x006f2750: ("TGStreamedObject__WriteToStreamChain", "TGStreamedObject: WriteToStreamChain"),
+    0x006f3400: ("TGStreamedObject__AddEventHandler", "TGStreamedObject: AddEventHandler"),
+
+    # --- TGStreamedObjectEx (1) ---
+    0x006f2810: ("TGStreamedObjectEx__PostDeserialize", "TGStreamedObjectEx: PostDeserialize"),
+
+    # --- TGTextBlock (4) ---
+    0x007367a0: ("TGTextBlock__AddParagraph", "TGTextBlock: AddParagraph"),
+    0x00736ac0: ("TGTextBlock__ProcessAndAddPrompt", "TGTextBlock: ProcessAndAddPrompt"),
+    0x00736ba0: ("TGTextBlock__ScrollToBottom", "TGTextBlock: ScrollToBottom"),
+    0x00736f30: ("TGTextBlock__EvalString", "TGTextBlock: EvalString"),
+
+    # --- TGUIObject (9) ---
+    0x0072fe40: ("TGUIObject__GetConceptualParent", "TGUIObject: GetConceptualParent"),
+    0x0072fed0: ("TGUIObject__SetEnabled", "TGUIObject: SetEnabled"),
+    0x0072ff10: ("TGUIObject__SetDisabled", "TGUIObject: SetDisabled"),
+    0x0072ff30: ("TGUIObject__SetBounds", "TGUIObject: SetBounds"),
+    0x0072ff80: ("TGUIObject__GetScreenOffset", "TGUIObject: GetScreenOffset"),
+    0x0072ffc0: ("TGUIObject__GetClipRect", "TGUIObject: GetClipRect"),
+    0x007300e0: ("TGUIObject__Move", "TGUIObject: Move"),
+    0x007302f0: ("TGUIObject__SetPosition", "TGUIObject: SetPosition"),
+    0x007305d0: ("TGUIObject__AlignTo", "TGUIObject: AlignTo"),
+
+    # --- TGWindow (5) ---
+    0x0073e7d0: ("TGWindow__dtor", "TGWindow: dtor"),
+    0x0073e8c0: ("TGWindow__SetDefaultChild", "TGWindow: SetDefaultChild"),
+    0x0073e940: ("TGWindow__AddChild", "TGWindow: AddChild"),
+    0x0073e980: ("TGWindow__RemoveChild", "TGWindow: RemoveChild"),
+    0x0073e9b0: ("TGWindow__InsertChild", "TGWindow: InsertChild"),
+
+    # --- TacticalWindow (1) ---
+    0x0050b290: ("TacticalWindow__ctor", "TacticalWindow: ctor"),
+
+    # --- TopWindow (7) ---
+    0x0050e110: ("TopWindow__IsBridgeVisible", "TopWindow: IsBridgeVisible"),
+    0x0050e130: ("TopWindow__IsTacticalVisible", "TopWindow: IsTacticalVisible"),
+    0x0050e170: ("TopWindow__SetLastRenderedSet", "TopWindow: SetLastRenderedSet"),
+    0x0050e190: ("TopWindow__GetLastRenderedSet", "TopWindow: GetLastRenderedSet"),
+    0x0050e630: ("TopWindow__WriteToStream", "TopWindow: WriteToStream"),
+    0x0050e7c0: ("TopWindow__ReadFromStream", "TopWindow: ReadFromStream"),
+    0x0050e910: ("TopWindow__ClearGlobal", "TopWindow: ClearGlobal"),
+
+    # --- Torpedo (7) ---
+
+    # --- TorpedoSystem (5) ---
+    0x0057b560: ("TorpedoSystem__IncrementLoadedTorps", "TorpedoSystem: IncrementLoadedTorps"),
+    0x0057b570: ("TorpedoSystem__DecrementLoadedTorps", "TorpedoSystem: DecrementLoadedTorps"),
+
+    # --- TorpedoTube (17) ---
+    0x00574f30: ("TorpedoTube__GetTorpedoSystemProperty", "TorpedoTube: GetTorpedoSystemProperty"),
+    0x00575270: ("TorpedoTube__GetSkewFireDamageScale", "TorpedoTube: GetSkewFireDamageScale"),
+    0x0057cd90: ("TorpedoTube__LaunchLocal_ClientPath", "TorpedoTube: LaunchLocal_ClientPath"),
+
+    # --- TractorBeam (10) ---
+
+    # --- WeaponSubsystem (3) ---
+    0x00584f70: ("WeaponSubsystem__SetTargetIDAndOffset", "WeaponSubsystem: SetTargetIDAndOffset"),
+
+    # --- WeaponSystem (17) ---
+    0x00584050: ("WeaponSystem__GetProperty", "WeaponSystem: GetProperty"),
+    0x00584060: ("WeaponSystem__IsSingleFire", "WeaponSystem: IsSingleFire"),
+
+    # --- WeaponTargetEntry (2) ---
+
+    # =================================================================
+    # Pass 8 consolidated (2026-02-24): Phases 8B-8J across 8 agents
+    # Ship vtable, UI, Subsystems, SceneGraph, TGObject, Xref, Weapons, Mission
+    # =================================================================
+    # --- BridgeObjectClass (2) ---
+    0x006617e0: ("BridgeObjectClass__ctor_Impl", "BridgeObjectClass: ctor_Impl"),
+    0x00664660: ("BridgeObjectClass__PlayDamageReaction", "BridgeObjectClass: PlayDamageReaction"),
+    # --- CharacterClass (1) ---
+    0x00668250: ("CharacterClass__LoadCharacterModel", "CharacterClass: LoadCharacterModel"),
+    # --- CloakingSubsystem (7) ---
+    0x0055e400: ("CloakingSubsystem__ScalarDeletingDtor", "CloakingSubsystem: ScalarDeletingDtor"),
+    0x0055e500: ("CloakingSubsystem__Update", "CloakingSubsystem: Update"),
+    0x0055f930: ("CloakingSubsystem__TurnOff", "CloakingSubsystem: TurnOff"),
+    0x0055f970: ("CloakingSubsystem__WriteState_A", "CloakingSubsystem: WriteState_A"),
+    0x0055f9a0: ("CloakingSubsystem__ReadState_A", "CloakingSubsystem: ReadState_A"),
+    0x0055fa30: ("CloakingSubsystem__WriteToStream", "CloakingSubsystem: WriteToStream"),
+    0x0055faa0: ("CloakingSubsystem__ReadFromStream", "CloakingSubsystem: ReadFromStream"),
+    # --- CollisionEvent (8) ---
+    0x005b7cf0: ("CollisionEvent__SetPositionFromObject", "CollisionEvent: SetPositionFromObject"),
+    0x005b8840: ("CollisionEvent__scalar_deleting_dtor", "CollisionEvent: scalar_deleting_dtor"),
+    0x005b8880: ("CollisionEvent__FixupObjectRef", "CollisionEvent: FixupObjectRef"),
+    0x005b88b0: ("CollisionEvent__GetSourceAsGameObject", "CollisionEvent: GetSourceAsGameObject"),
+    0x005b8980: ("CollisionEvent__GetWorldPosition", "CollisionEvent: GetWorldPosition"),
+    0x005b89d0: ("CollisionEvent__CopyFrom", "CollisionEvent: CopyFrom"),
+    0x005b8a50: ("CollisionEvent__WriteToStream", "CollisionEvent: WriteToStream"),
+    0x005b8b10: ("CollisionEvent__ReadFromStream", "CollisionEvent: ReadFromStream"),
+    # --- DamageableObject (1) ---
+    0x00593270: ("DamageableObject__SpawnDeathAnimation", "DamageableObject: SpawnDeathAnimation"),
+    # --- FleetAI (1) ---
+    0x00484f10: ("FleetAI__CheckTargetInRange", "FleetAI: CheckTargetInRange"),
+    # --- FrameBudgetTask (1) ---
+    0x0046f740: ("FrameBudgetTask__IsReady", "FrameBudgetTask: IsReady"),
+    # --- Game (1) ---
+    0x004434d0: ("Game__LoadMissionWithUI", "Game: LoadMissionWithUI"),
+    # --- ImpulseEngineSubsystem (3) ---
+    0x00561140: ("ImpulseEngineSubsystem__ScalarDeletingDtor", "ImpulseEngineSubsystem: ScalarDeletingDtor"),
+    0x005616a0: ("ImpulseEngineSubsystem__WriteToStream", "ImpulseEngineSubsystem: WriteToStream"),
+    0x00561710: ("ImpulseEngineSubsystem__ReadFromStream", "ImpulseEngineSubsystem: ReadFromStream"),
+    # --- IntegrityHash (1) ---
+    0x005b6c10: ("IntegrityHash__AccumulateFloat", "IntegrityHash: AccumulateFloat"),
+    # --- MissionBase (2) ---
+    0x0040a250: ("MissionBase__LoadTGLFile", "MissionBase: LoadTGLFile"),
+    0x0040a400: ("MissionBase__ReadFromStream", "MissionBase: ReadFromStream"),
+    # --- ModalDialogWindow (2) ---
+    0x00502550: ("ModalDialogWindow__BuildDialog", "ModalDialogWindow: BuildDialog"),
+    0x00502990: ("ModalDialogWindow__BuildQuitDialog", "ModalDialogWindow: BuildQuitDialog"),
+    # --- NetworkAI (1) ---
+    0x0047de70: ("NetworkAI__Update", "NetworkAI: Update"),
+    # --- NiAVObject (4) ---
+    0x007dc390: ("NiAVObject__GetProperty", "NiAVObject: GetProperty"),
+    0x007dc490: ("NiAVObject__RemoveProperty", "NiAVObject: RemoveProperty"),
+    0x007dc5c0: ("NiAVObject__AttachProperty", "NiAVObject: AttachProperty"),
+    0x007dc950: ("NiAVObject__UpdateEffects", "NiAVObject: UpdateEffects"),
+    # --- NiApplication (1) ---
+    0x007b7540: ("NiApplication__ParseRendererArgs", "NiApplication: ParseRendererArgs"),
+    # --- NiClock (2) ---
+    0x00407c50: ("NiClock__GetActiveCameraSmartPtr", "NiClock: GetActiveCameraSmartPtr"),
+    0x004460f0: ("NiClock__SetActiveCamera", "NiClock: SetActiveCamera"),
+    # --- NiDX7Renderer (1) ---
+    0x00555b90: ("NiDX7Renderer__HandleFocusChange", "NiDX7Renderer: HandleFocusChange"),
+    # --- NiDX7RendererManager (3) ---
+    0x006af650: ("NiDX7RendererManager__InitializeRenderer", "NiDX7RendererManager: InitializeRenderer"),
+    0x006afa40: ("NiDX7RendererManager__RecreateRenderer", "NiDX7RendererManager: RecreateRenderer"),
+    0x006afd10: ("NiDX7RendererManager__GetRenderWindow", "NiDX7RendererManager: GetRenderWindow"),
+    # --- NiDynamicEffect (1) ---
+    0x007e2380: ("NiDynamicEffect__DetachAffectedNode", "NiDynamicEffect: DetachAffectedNode"),
+    # --- NiNode (24) ---
+    0x007e37c0: ("NiNode__ctor", "NiNode: ctor"),
+    0x007e3880: ("NiNode__dtor", "NiNode: dtor"),
+    0x007e39b0: ("NiNode__AttachChild", "NiNode: AttachChild (vtable slot 39)"),
+    0x007e3a30: ("NiNode__DetachChildAt", "NiNode: DetachChildAt (vtable slot 41)"),
+    0x007e3b30: ("NiNode__DetachChild", "NiNode: DetachChild (vtable slot 40)"),
+    0x007e3c50: ("NiNode__SetAt", "NiNode: SetAt (vtable slot 42)"),
+    0x007e4330: ("NiNode__UpdateEffectsUpward", "NiNode: UpdateEffectsUpward"),
+    0x007e47c0: ("NiNode__DetachEffect", "NiNode: DetachEffect"),
+    0x007e4900: ("NiNode__ApplyTransform", "NiNode: ApplyTransform (vtable slot 14)"),
+    0x007e4940: ("NiNode__vfn15_IterateChildren", "NiNode: vfn15 IterateChildren (+0x3C)"),
+    0x007e4980: ("NiNode__SetSelectiveUpdateFlags", "NiNode: SetSelectiveUpdateFlags"),
+    0x007e49c0: ("NiNode__UpdateDownwardPass", "NiNode: UpdateDownwardPass"),
+    0x007e4a00: ("NiNode__UpdateSelectedDownwardPass", "NiNode: UpdateSelectedDownwardPass"),
+    0x007e4a40: ("NiNode__UpdateRigidDownwardPass", "NiNode: UpdateRigidDownwardPass"),
+    0x007e4a80: ("NiNode__UpdateWorldBound", "NiNode: UpdateWorldBound"),
+    0x007e4ac0: ("NiNode__Display", "NiNode: Display"),
+    0x007e4ee0: ("NiNode__GetObjectByName", "NiNode: GetObjectByName (vtable slot 22, +0x58)"),
+    0x007e4f30: ("NiNode__CreateClone", "NiNode: CreateClone"),
+    0x007e50c0: ("NiNode__ProcessClone", "NiNode: ProcessClone"),
+    0x007e5300: ("NiNode__CopyEffectListClones", "NiNode: CopyEffectListClones"),
+    0x007e4530: ("NiNode__UpdatePropertiesDownward", "NiNode: UpdatePropertiesDownward"),
+    0x007e4610: ("NiNode__UpdateEffectsDownward", "NiNode: UpdateEffectsDownward"),
+    0x007e53e0: ("NiNode__PostLinkObject", "NiNode: PostLinkObject"),
+    0x007e5630: ("NiNode__RegisterStreamables", "NiNode: RegisterStreamables"),
+    0x007e57d0: ("NiNode__LoadBinary", "NiNode: LoadBinary"),
+    0x007e58d0: ("NiNode__LinkObject", "NiNode: LinkObject"),
+    0x007e5940: ("NiNode__SaveBinary", "NiNode: SaveBinary"),
+    0x007e5a00: ("NiNode__IsEqual", "NiNode: IsEqual"),
+    0x007e5b30: ("NiNode__AddViewerStrings", "NiNode: AddViewerStrings"),
+    0x007e67d0: ("NiNode__scalar_deleting_dtor", "NiNode: scalar_deleting_dtor"),
+    # --- NiObject (2) ---
+    0x007d87a0: ("NiObject__ctor", "NiObject: ctor (vtable + refcount=0 + instanceCount++)"),
+    0x007d87f0: ("NiObject__dtor", "NiObject: dtor"),
+    # --- NiObjectNET (4) ---
+    0x007dad10: ("NiObjectNET__dtor", "NiObjectNET: dtor"),
+    0x007dae10: ("NiObjectNET__ProcessClone", "NiObjectNET: ProcessClone"),
+    0x007db390: ("NiObjectNET__PrependController", "NiObjectNET: PrependController"),
+    0x007db450: ("NiObjectNET__RemoveController", "NiObjectNET: RemoveController"),
+    # --- NiTArray (2) ---
+    0x007e5d10: ("NiTArray__ctor", "NiTArray: ctor"),
+    0x007e5d80: ("NiTArray__dtor_Simple", "NiTArray: dtor_Simple"),
+    # --- NiTObjectArray (1) ---
+    0x007e5df0: ("NiTObjectArray__dtor", "NiTObjectArray: dtor"),
+    # --- NiTimeController (8) ---
+    0x007d9c10: ("NiTimeController__dtor", "NiTimeController: dtor"),
+    0x007d9cb0: ("NiTimeController__ItemsInList", "NiTimeController: ItemsInList"),
+    0x007d9cc0: ("NiTimeController__Start", "NiTimeController: Start"),
+    0x007d9cf0: ("NiTimeController__Stop", "NiTimeController: Stop"),
+    0x007d9fc0: ("NiTimeController__StartAnimations", "NiTimeController: StartAnimations"),
+    0x007da140: ("NiTimeController__StopAnimations", "NiTimeController: StopAnimations"),
+    0x007da2c0: ("NiTimeController__SetTarget", "NiTimeController: SetTarget"),
+    0x007da340: ("NiTimeController__ProcessClone", "NiTimeController: ProcessClone"),
+    # --- PhaserSubsystem (1) ---
+    0x0056fb30: ("PhaserSubsystem__ScalarDeletingDtor", "PhaserSubsystem: ScalarDeletingDtor"),
+    # --- PhaserSystem (1) ---
+    0x00573ea0: ("PhaserSystem__StartFiringAtTarget", "PhaserSystem: StartFiringAtTarget"),
+    # --- PhysicsObject (3) ---
+    0x005a09d0: ("PhysicsObject__AdvanceSimulation", "PhysicsObject: AdvanceSimulation"),
+    0x005a0c20: ("PhysicsObject__PredictOrientation", "PhysicsObject: PredictOrientation"),
+    0x005a0d80: ("PhysicsObject__IntegrateRotation", "PhysicsObject: IntegrateRotation"),
+    # --- PlayWindow (2) ---
+    0x004fc8b0: ("PlayWindow__ShowOptionsMenu", "PlayWindow: ShowOptionsMenu"),
+    0x00501590: ("PlayWindow__HandleSetAdded", "PlayWindow: HandleSetAdded"),
+    # --- PowerSubsystem (1) ---
+    0x00560530: ("PowerSubsystem__ScalarDeletingDtor", "PowerSubsystem: ScalarDeletingDtor"),
+    # --- PoweredMaster (2) ---
+    0x004401d0: ("PoweredMaster__ScalarDeletingDtor", "PoweredMaster: ScalarDeletingDtor"),
+    0x00563f00: ("PoweredMaster__WriteToStream", "PoweredMaster: WriteToStream"),
+    # --- PoweredSubsystem (1) ---
+    0x00562330: ("PoweredSubsystem__ScalarDeletingDtor", "PoweredSubsystem: ScalarDeletingDtor"),
+    # --- PulseWeapon (1) ---
+    0x005750e0: ("PulseWeapon__ScalarDeletingDtor", "PulseWeapon: ScalarDeletingDtor"),
+    # --- PulseWeaponSystem (1) ---
+    0x00577480: ("PulseWeaponSystem__ScalarDeletingDtor", "PulseWeaponSystem: ScalarDeletingDtor"),
+    # --- RepairSubsystem (2) ---
+    0x00565190: ("RepairSubsystem__ScalarDeletingDtor", "RepairSubsystem: ScalarDeletingDtor"),
+    0x00565e80: ("RepairSubsystem__ReadFromStream", "RepairSubsystem: ReadFromStream"),
+    # --- STMissionLog (4) ---
+    0x00528b70: ("STMissionLog__SetNumStoredLines", "STMissionLog: SetNumStoredLines"),
+    0x00528c20: ("STMissionLog__AddLine", "STMissionLog: AddLine"),
+    0x00528d70: ("STMissionLog__ClearLines", "STMissionLog: ClearLines"),
+    0x00529170: ("STMissionLog__Close", "STMissionLog: Close"),
+    # --- STToggle (1) ---
+    0x0053bd60: ("STToggle__SetStateValueAndEvent", "STToggle: SetStateValueAndEvent"),
+    # --- SensorSubsystem (1) ---
+    0x00566e20: ("SensorSubsystem__ScalarDeletingDtor", "SensorSubsystem: ScalarDeletingDtor"),
+    # --- SetManager (1) ---
+    0x0042c210: ("SetManager__SetActiveCamera", "SetManager: SetActiveCamera"),
+    # --- ShieldSubsystem (2) ---
+    0x0056acc0: ("ShieldSubsystem__ResolveObjectRefs", "ShieldSubsystem: ResolveObjectRefs"),
+    0x0056ad00: ("ShieldSubsystem__FixupObjectRefs", "ShieldSubsystem: FixupObjectRefs"),
+    # --- Ship (1) ---
+    0x005a22a0: ("Ship__CheckCollisionRateLimit", "Ship: CheckCollisionRateLimit"),
+    # --- ShipSubsystem (4) ---
+    0x0056b920: ("ShipSubsystem__GetPosition", "ShipSubsystem: GetPosition"),
+    0x0056bb60: ("ShipSubsystem__ScalarDeletingDtor", "ShipSubsystem: ScalarDeletingDtor"),
+    0x0056d170: ("ShipSubsystem__ResolveObjectRefs", "ShipSubsystem: ResolveObjectRefs"),
+    0x0056d1f0: ("ShipSubsystem__FixupObjectRefs", "ShipSubsystem: FixupObjectRefs"),
+    # --- ShipSubsystemList (3) ---
+    0x005b6ca0: ("ShipSubsystemList__WriteToStream", "ShipSubsystemList: WriteToStream"),
+    0x005b6e40: ("ShipSubsystemList__ReadFromStream", "ShipSubsystemList: ReadFromStream"),
+    0x005b6fe0: ("ShipSubsystemList__VerifyReferences", "ShipSubsystemList: VerifyReferences"),
+    # --- Subsystem (1) ---
+    0x005b6170: ("Subsystem__ComputeIntegrityHash", "Subsystem: ComputeIntegrityHash"),
+    # --- SubtitleAction (4) ---
+    0x006b1ba0: ("SubtitleAction__ctor", "SubtitleAction: ctor"),
+    0x006b1dd0: ("SubtitleAction__scalar_deleting_dtor", "SubtitleAction: scalar_deleting_dtor"),
+    0x006b1e00: ("SubtitleAction__ctor_stream", "SubtitleAction: ctor_stream"),
+    0x006b1f30: ("SubtitleAction__dtor", "SubtitleAction: dtor"),
+    # --- TGEvent (8) ---
+    0x006d5d40: ("TGEvent__scalar_deleting_dtor", "TGEvent: scalar_deleting_dtor"),
+    0x006d5ec0: ("TGEvent__WriteToStream", "TGEvent: WriteToStream"),
+    0x006d5ff0: ("TGEvent__ReadFromStream", "TGEvent: ReadFromStream"),
+    0x006d6050: ("TGEvent__ResolveObjectRefs", "TGEvent: ResolveObjectRefs"),
+    0x006d60b0: ("TGEvent__FixupReferences", "TGEvent: FixupReferences"),
+    0x006d6130: ("TGEvent__WriteNetworkStream", "TGEvent: WriteNetworkStream"),
+    0x006d61c0: ("TGEvent__ReadNetworkStream", "TGEvent: ReadNetworkStream"),
+    0x006d6230: ("TGEvent__CopyFrom", "TGEvent: CopyFrom"),
+    # --- TGEventHandlerObject (2) ---
+    0x006d9030: ("TGEventHandlerObject__scalar_deleting_dtor", "TGEventHandlerObject: scalar_deleting_dtor"),
+    0x006d95d0: ("TGEventHandlerObject__FindHandler", "TGEventHandlerObject: FindHandler"),
+    # --- TGHashTable (5) ---
+    0x006f65c0: ("TGHashTable__ctor", "TGHashTable: ctor"),
+    0x006f6610: ("TGHashTable__scalar_deleting_dtor", "TGHashTable: scalar_deleting_dtor"),
+    0x006f6630: ("TGHashTable__dtor", "TGHashTable: dtor"),
+    0x006f67e0: ("TGHashTable__FindByKey", "TGHashTable: FindByKey"),
+    0x006f6830: ("TGHashTable__Insert", "TGHashTable: Insert"),
+    # --- TGIcon (7) ---
+    0x0073d540: ("TGIcon__SetColor", "TGIcon: SetColor"),
+    0x0073d590: ("TGIcon__SetIconGroupName", "TGIcon: SetIconGroupName"),
+    0x0073d610: ("TGIcon__BuildPolyList", "TGIcon: BuildPolyList"),
+    0x0073d750: ("TGIcon__Move", "TGIcon: Move"),
+    0x0073d9a0: ("TGIcon__SetPosition", "TGIcon: SetPosition"),
+    0x0073dbd0: ("TGIcon__WriteToStream", "TGIcon: WriteToStream"),
+    0x0073dc40: ("TGIcon__ReadFromStream", "TGIcon: ReadFromStream"),
+    # --- TGMessage (1) ---
+    0x006b8720: ("TGMessage__FragmentForSend", "TGMessage: FragmentForSend"),
+    # --- TGModelContainer (1) ---
+    0x006ca9b0: ("TGModelContainer__LoadNIFFile", "TGModelContainer: LoadNIFFile"),
+    # --- TGMovieAction (5) ---
+    0x006ae180: ("TGMovieAction__ctor_stream", "TGMovieAction: ctor_stream"),
+    0x006b0620: ("TGMovieAction__ctor", "TGMovieAction: ctor"),
+    0x006b06f0: ("TGMovieAction__dtor", "TGMovieAction: dtor"),
+    0x006b0ed0: ("TGMovieAction__ProcessScheduledFrames", "TGMovieAction: ProcessScheduledFrames"),
+    0x006b1010: ("TGMovieAction__DestroyAllFrameActions", "TGMovieAction: DestroyAllFrameActions"),
+    # --- TGObjPtrEvent (4) ---
+    0x00403320: ("TGObjPtrEvent__scalar_deleting_dtor", "TGObjPtrEvent: scalar_deleting_dtor"),
+    0x006d6da0: ("TGObjPtrEvent__CopyFrom", "TGObjPtrEvent: CopyFrom"),
+    0x006d6e20: ("TGObjPtrEvent__WriteToStream", "TGObjPtrEvent: WriteToStream"),
+    0x006d6e50: ("TGObjPtrEvent__ReadFromStream", "TGObjPtrEvent: ReadFromStream"),
+    # --- TGObject (5) ---
+    0x00518ab0: ("TGObject__IsTypeOf", "TGObject: IsTypeOf"),
+    0x006f0730: ("TGObject__InitDeserializationQueue", "TGObject: InitDeserializationQueue"),
+    0x006f07f0: ("TGObject__InitFixupCallbackQueue", "TGObject: InitFixupCallbackQueue"),
+    0x006f14e0: ("TGObject__IntToHexString", "TGObject: IntToHexString"),
+    0x006f1570: ("TGObject__BuildPythonName", "TGObject: BuildPythonName"),
+    # --- TGPane (1) ---
+    0x0072de40: ("TGPane__dtor", "TGPane: dtor"),
+    # --- TGParagraph (3) ---
+    0x00731ed0: ("TGParagraph__InvalidatePolys", "TGParagraph: InvalidatePolys"),
+    0x00731f40: ("TGParagraph__SetClipRectOnChildren", "TGParagraph: SetClipRectOnChildren"),
+    0x00732120: ("TGParagraph__RecalcLayout", "TGParagraph: RecalcLayout"),
+    # --- TGRect (2) ---
+    0x0073a130: ("TGRect__WriteToStream", "TGRect: WriteToStream"),
+    0x0073a170: ("TGRect__ReadFromStream", "TGRect: ReadFromStream"),
+    # --- TGRootPane (1) ---
+    0x00728720: ("TGRootPane__UnregisterFocus", "TGRootPane: UnregisterFocus"),
+    # --- TGSceneObject (2) ---
+    0x004315c0: ("TGSceneObject__SetDatabaseName", "TGSceneObject: SetDatabaseName"),
+    0x00436250: ("TGSceneObject__GetObjectGroup", "TGSceneObject: GetObjectGroup"),
+    # --- TGStreamedObject (2) ---
+    0x006f3240: ("TGStreamedObject__scalar_deleting_dtor", "TGStreamedObject: scalar_deleting_dtor"),
+    0x006f33a0: ("TGStreamedObject__FindChild", "TGStreamedObject: FindChild"),
+    # --- TGStreamedObjectEx (1) ---
+    0x006f2620: ("TGStreamedObjectEx__scalar_deleting_dtor", "TGStreamedObjectEx: scalar_deleting_dtor"),
+    # --- TGTimerCallback (2) ---
+    0x006fe800: ("TGTimerCallback__RecordStartTime", "TGTimerCallback: RecordStartTime"),
+    0x007022f0: ("TGTimerCallback__StartTimer", "TGTimerCallback: StartTimer"),
+    # --- TGUIObject (7) ---
+    0x0072fd70: ("TGUIObject__dtor", "TGUIObject: dtor"),
+    0x0072fe00: ("TGUIObject__ClearCallbackList", "TGUIObject: ClearCallbackList"),
+    0x00730b80: ("TGUIObject__GetRenderTarget", "TGUIObject: GetRenderTarget"),
+    0x00730df0: ("TGUIObject__IsFocused", "TGUIObject: IsFocused"),
+    0x00731030: ("TGUIObject__WriteToStream", "TGUIObject: WriteToStream"),
+    0x007310a0: ("TGUIObject__ReadFromStream", "TGUIObject: ReadFromStream"),
+    0x00731120: ("TGUIObject__ResolveIDs", "TGUIObject: ResolveIDs"),
+    # --- TargetReticleDisplay (2) ---
+    0x00511e70: ("TargetReticleDisplay__UpdateCrosshair", "TargetReticleDisplay: UpdateCrosshair"),
+    0x00515310: ("TargetReticleDisplay__Update", "TargetReticleDisplay: Update"),
+    # --- TopWindow (1) ---
+    0x00406f30: ("TopWindow__ReadFromStream", "TopWindow: ReadFromStream"),
+    # --- Torpedo (1) ---
+    0x00578320: ("Torpedo__SetOwnerShipID", "Torpedo: SetOwnerShipID"),
+    # --- TorpedoSystem (1) ---
+    0x0057b140: ("TorpedoSystem__ScalarDeletingDtor", "TorpedoSystem: ScalarDeletingDtor"),
+    # --- TorpedoTube (1) ---
+    0x0057d110: ("TorpedoTube__LaunchLocal", "TorpedoTube: LaunchLocal"),
+    # --- TractorBeamSystem (3) ---
+    0x00582170: ("TractorBeamSystem__ScalarDeletingDtor", "TractorBeamSystem: ScalarDeletingDtor"),
+    0x00582710: ("TractorBeamSystem__WriteToStream", "TractorBeamSystem: WriteToStream"),
+    0x00582780: ("TractorBeamSystem__ReadFromStream", "TractorBeamSystem: ReadFromStream"),
+    # --- UtopiaApp (2) ---
+    0x0043bc50: ("UtopiaApp__CleanupAndReset", "UtopiaApp: CleanupAndReset"),
+    0x00496b40: ("UtopiaApp__dtor", "UtopiaApp: dtor"),
+    # --- ViewScreenObject (3) ---
+    0x00678990: ("ViewScreenObject__GetOrCreateCamera", "ViewScreenObject: GetOrCreateCamera"),
+    0x00678a80: ("ViewScreenObject__HandleTargetEvent", "ViewScreenObject: HandleTargetEvent"),
+    0x00678c30: ("ViewScreenObject__CreateCameraForTarget", "ViewScreenObject: CreateCameraForTarget"),
+    # --- WarpEngineSubsystem (3) ---
+    0x0056dfa0: ("WarpEngineSubsystem__ScalarDeletingDtor", "WarpEngineSubsystem: ScalarDeletingDtor"),
+    0x0056ed40: ("WarpEngineSubsystem__WriteToStream", "WarpEngineSubsystem: WriteToStream"),
+    0x0056ee20: ("WarpEngineSubsystem__ReadFromStream", "WarpEngineSubsystem: ReadFromStream"),
+    # --- WeaponHitEvent (2) ---
+    0x005b8750: ("WeaponHitEvent__ctor", "WeaponHitEvent: ctor"),
+    0x005b8890: ("WeaponHitEvent__SetFiringPlayerID", "WeaponHitEvent: SetFiringPlayerID"),
+    # --- WeaponSubsystem (3) ---
+    0x005833a0: ("WeaponSubsystem__ScalarDeletingDtor", "WeaponSubsystem: ScalarDeletingDtor"),
+    0x005833e0: ("WeaponSubsystem__Update", "WeaponSubsystem: Update"),
+    0x005b6560: ("WeaponSubsystem__ComputeIntegrityHash", "WeaponSubsystem: ComputeIntegrityHash"),
+    # --- WeaponSystem (2) ---
+    0x00584240: ("WeaponSystem__ScalarDeletingDtor", "WeaponSystem: ScalarDeletingDtor"),
+    0x005b6330: ("WeaponSystem__ComputeIntegrityHash", "WeaponSystem: ComputeIntegrityHash"),
+    # --- WeaponsDisplay (1) ---
+    0x00549940: ("WeaponsDisplay__SetFiringChainMode", "WeaponsDisplay: SetFiringChainMode"),
+    # --- _Global (2) ---
+    0x00407620: ("ClearTopWindowAndMPGame", "ClearTopWindowAndMPGame"),
+    0x005a0b50: ("PredictPositionAtTime", "PredictPositionAtTime"),
 
 }
 

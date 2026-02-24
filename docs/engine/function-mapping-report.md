@@ -10,7 +10,7 @@ Run order matters — later scripts benefit from names applied by earlier ones.
 
 | # | Script | What It Does | Functions Named |
 |---|--------|-------------|---------------------|
-| 1 | `ghidra_annotate_globals.py` | Labels 13 globals, 1,553 key RE'd functions, 22 Python module tables | 1,588 |
+| 1 | `ghidra_annotate_globals.py` | Labels 19 globals, 2,280 key RE'd functions, 22 Python module tables | 2,321 |
 | 2 | `ghidra_annotate_nirtti.py` | Labels 117 NiRTTI factory + 117 registration functions, guard flags | 234 |
 | 3 | `ghidra_annotate_swig.py` | Names 3,990 SWIG wrapper functions from PyMethodDef table | 3,990 |
 | 4 | `ghidra_annotate_vtables.py` | Auto-discovers vtables from 97 factories, names constructors + slots | 1,270 |
@@ -30,15 +30,15 @@ Scripts 1-3 and 7 provide foundational names that scripts 4-5 use for helper det
 | Category | Count | % of 18,247 |
 |----------|-------|-------------|
 | Auto-generated (Unwind/Catch handlers) | ~4,695 | 26% |
-| Named by annotation scripts | ~7,522 | 41% |
-| Named by Ghidra MCP sessions (Passes 1-7) | ~1,468 | 8% |
-| **Total named/excluded** | **~13,685** | **75%** |
-| Remaining unnamed (game-specific) | ~1,762 | 10% |
-| Remaining unnamed (compiler/helper) | ~2,800 | 15% |
+| Named by annotation scripts | ~8,255 | 45% |
+| Named by Ghidra MCP sessions (Passes 1-8) | ~2,184 | 12% |
+| **Total named/excluded** | **~15,134** | **83%** |
+| Remaining unnamed (game-specific) | ~1,113 | 6% |
+| Remaining unnamed (compiler/helper) | ~2,000 | 11% |
 
 ### Ghidra MCP Naming Sessions (2026-02-23 through 2026-02-24)
 
-Seven rounds of systematic function naming via the Ghidra MCP bridge, plus three supplementary agents:
+Eight rounds of systematic function naming via the Ghidra MCP bridge. Pass 8 used 10 parallel agents covering event system, weapons, UI, scene graph, Ship vtable, subsystems, TGObject hierarchy, mission/game, and xref mining:
 
 **Pass 1 (string mining + xref walking)**: 156 functions renamed. Method: search for `ClassName::MethodName` debug strings compiled into the binary from original TG source, trace xrefs to containing functions, rename. Covered: Game, Mission, Episode, ShipClass, AsteroidField, CameraMode, NiDX7Renderer, UI handlers, and more.
 
@@ -65,6 +65,12 @@ Seven rounds of systematic function naming via the Ghidra MCP bridge, plus three
 **Pass 7 (massive SWIG + constructor + xref sweep)**: ~968 renames via main agent, plus ~234 (string mining), ~90 (bulk import from docs), ~53 (Pass 3 continuation), ~42 (Pass 4 continuation) from supplementary agents. Total: ~1,387 rename operations across 5 agents, yielding 1,468 unique addressed names (1,222 new + 86 updated existing names + 180 overlapping with pre-existing script entries). Methods: (1) Exhaustive SWIG wrapper decompilation — systematically decompiled swig_ClassName_Method wrappers to identify direct C++ CALL targets; (2) Constructor callee chain walking — traced constructors' FUN_ callees through entire class hierarchies (TGObject → TGStreamedObject → TGStreamedObjectEx → TGEventHandlerObject, AI class trees, power system classes); (3) Xref-based discovery — used get_xrefs_to on key functions (NiAlloc, EventManager_PostEvent, DoDamage) to find callers and name them by context; (4) Name normalization — updated 86 existing names from single-underscore to double-underscore convention and added proper class prefixes (e.g., `GetPlayerShip` → `Game__GetPlayerShip`, `RemovePeerAddress` → `TGWinsockNetwork__RemovePeerAddress`). Coverage spans 277 distinct classes including Episode, PlayWindow, Game, Mission, NiNode, NiDX7Renderer, NiApplication, TGPeerArray, TGSetManager, TGFileStream, Ship subsystems, AI classes, weapon systems, sensor systems, camera modes, sound system, and more.
 
 **Pass 7 annotation script update**: Complete rebuild of `ghidra_annotate_globals.py` KEY_FUNCTIONS dict (331 → 1,553 entries), organized by class into 277 categories. Includes all prior passes plus 1,222 new entries from Pass 7 agents. UTOPIA_GLOBALS (13) and PYTHON_MODULES (22) unchanged.
+
+**Pass 8A (multiplayer handler callees)**: 38 renames — decompiled all 15 MP dispatcher handler functions, traced unnamed callees. 9 game-specific (NiPoint3__Copy, NiMatrix3__TransformPoint, WString__Clear/AssignSubstring, TGDisplayTextAction ctors, TGBufferStream__vReadInt, TGBufferStream__ReadCompressedVector4_ByteScale, TGLManager__ReleaseFile) + 29 Python C API functions (PyErr_*, PyDict_*, PyString_*, PyObject_*, PyFile_*, PySys_*, PyTraceBack_Print, etc.).
+
+**Pass 8C (TGEventManager deep-dive)**: 61 renames + 6 globals — full event dispatch infrastructure: TGEventHandlerTable (10), TGInstanceHandlerTable (5), TGCallback (8), TGConditionHandler (16), TGHandlerListEntry (3), TGEventQueue (6), TGEvent infrastructure (2), TGLinkedList (2), and supporting functions (9).
+
+**Pass 8A+8C annotation script update**: Added 220 net new entries to `ghidra_annotate_globals.py` (1,553 → 1,773 function entries, 318 classes). Includes Phase 8A game/Python C API functions and Phase 8C event system infrastructure.
 
 All renames are high-confidence only — backed by debug strings from original source code, clear behavioral patterns in decompiled code, or verified against live game traces.
 

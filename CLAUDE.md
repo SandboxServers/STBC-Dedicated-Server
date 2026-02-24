@@ -303,7 +303,7 @@ Then opcode 0x01 (single byte).
 ## Ghidra Annotation Scripts
 Bulk annotation scripts in `tools/`. Run from Ghidra Script Manager with stbc.exe loaded.
 Run order: globals → nirtti → swig → python_capi → pymodules → vtables → swig_targets → discover_strings
-- `tools/ghidra_annotate_globals.py` - Labels 13 globals, 1,553 key RE'd functions (277 classes), 22 Python module tables (1,588 total)
+- `tools/ghidra_annotate_globals.py` - Labels 19 globals, 2,280 key RE'd functions (393 classes), 22 Python module tables (2,321 total)
 - `tools/ghidra_annotate_nirtti.py` - Labels 117 NiRTTI factory + 117 registration functions (234 total)
 - `tools/ghidra_annotate_swig.py` - Names 3,990 SWIG wrapper functions from PyMethodDef table
 - `tools/ghidra_annotate_python_capi.py` - Names 113 Python C API functions, 10 module inits, type objects, globals (137 total)
