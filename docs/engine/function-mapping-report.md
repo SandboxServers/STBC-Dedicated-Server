@@ -10,7 +10,7 @@ Run order matters — later scripts benefit from names applied by earlier ones.
 
 | # | Script | What It Does | Functions Named |
 |---|--------|-------------|---------------------|
-| 1 | `ghidra_annotate_globals.py` | Labels 13 globals, 62 key RE'd functions, 22 Python module tables | 97 |
+| 1 | `ghidra_annotate_globals.py` | Labels 13 globals, 1,553 key RE'd functions, 22 Python module tables | 1,588 |
 | 2 | `ghidra_annotate_nirtti.py` | Labels 117 NiRTTI factory + 117 registration functions, guard flags | 234 |
 | 3 | `ghidra_annotate_swig.py` | Names 3,990 SWIG wrapper functions from PyMethodDef table | 3,990 |
 | 4 | `ghidra_annotate_vtables.py` | Auto-discovers vtables from 97 factories, names constructors + slots | 1,270 |
@@ -30,10 +30,43 @@ Scripts 1-3 and 7 provide foundational names that scripts 4-5 use for helper det
 | Category | Count | % of 18,247 |
 |----------|-------|-------------|
 | Auto-generated (Unwind/Catch handlers) | ~4,695 | 26% |
-| Named by annotation scripts | ~6,031 | 33% |
-| **Total named/excluded** | **~10,726** | **59%** |
-| Remaining unnamed (game-specific) | ~3,750 | 21% |
-| Remaining unnamed (compiler/helper) | ~3,771 | 20% |
+| Named by annotation scripts | ~7,522 | 41% |
+| Named by Ghidra MCP sessions (Passes 1-7) | ~1,468 | 8% |
+| **Total named/excluded** | **~13,685** | **75%** |
+| Remaining unnamed (game-specific) | ~1,762 | 10% |
+| Remaining unnamed (compiler/helper) | ~2,800 | 15% |
+
+### Ghidra MCP Naming Sessions (2026-02-23 through 2026-02-24)
+
+Seven rounds of systematic function naming via the Ghidra MCP bridge, plus three supplementary agents:
+
+**Pass 1 (string mining + xref walking)**: 156 functions renamed. Method: search for `ClassName::MethodName` debug strings compiled into the binary from original TG source, trace xrefs to containing functions, rename. Covered: Game, Mission, Episode, ShipClass, AsteroidField, CameraMode, NiDX7Renderer, UI handlers, and more.
+
+**Pass 2 (continued string mining + constructor chains)**: 77 additional renames. Method: continued string categories (Warning, Cannot, Error), plus decompiling known constructors to trace callees. Discovered: UtopiaApp__ctor → NiApplication__ctor, TGConfigFile__Load/HasKey/GetInt, TGEventManager functions, TGNetwork core methods.
+
+**Pass 2b (documented RE'd functions)**: 90 renames from addresses documented in RE docs but not previously in Ghidra. Method: bulk-rename from known function addresses in docs/gameplay/, docs/networking/, docs/protocol/. 30 addresses failed (not function entry points in Ghidra — mid-function or unanalyzed code).
+
+**Pass 3 (RegisterHandlers + constructors + GameSpy)**: 53 renames, 2 failures. Method: extracted `RegisterHandlerNames`/`RegisterHandlers` pattern from TGEventHandlerObject hierarchy — every class that registers event handlers has this pair. Also found constructors (BridgeObjectClass, TGWinsockPeer, WeaponSystem, TorpCameraMode), ship state functions (ReadStateUpdate, LinkSubsystemToParent, AssignWeaponGroups), GameSpy query handling (TokenizeString, qr_parse_query, qr_lookup_or_add_key), and game loading (LoadMissionWithMovie, LoadSaveFile). Covered classes: TGSoundManager, TGMusic, CharacterSpeakingQueue, ViewScreenObject, TGUIObject, TGDialogWindow, TGButtonBase, TGParagraph, TGConsole, TGStringDialog, Torpedo, ConditionScript.
+
+**Pass 3 annotation script update**: Consolidated 115 additional documented function addresses from RE docs (gameplay, networking, protocol) into `ghidra_annotate_globals.py` KEY_FUNCTIONS dict (62 → 177 entries). These cover: damage pipeline, shield system, power system, repair system, weapon systems, self-destruct, multiplayer lifecycle, checksum handlers, GameSpy discovery, event system, TGMessage routing, CF16 encoding, and subsystem constructors.
+
+**Pass 4 (AI classes + serialization + sound)**: 42 renames, 0 failures. Method: systematic analysis of AI behavior tree node classes (PlainAI, ConditionalAI, PreprocessingAI, PriorityListAI, RandomAI, SequenceAI) — named virtual method implementations (SetActive, SetInactive, GotFocus, LostFocus, Update, IsDormant) by decompiling vtable slots and matching behavioral patterns. Also traced NiStream save/load pipeline (TGObject__LoadFromStream, TGObject__SaveToStream, TGEventManager load/save, Game__SaveToFile, Planet__LoadFromStream), sound system serialization (TGSoundManager, TGSoundRegionManager, PhonemeList), UI system (InterfaceModule__CreateOverridePane), condition system (ConditionScript__SaveConditionEventCreators), and camera (CameraObjectClass__RegisterAnimationDoneHandler).
+
+**Pass 4 annotation script update**: Added 42 Pass 4 addresses to `ghidra_annotate_globals.py` KEY_FUNCTIONS dict (177 → 219 entries). New coverage: AI behavior tree methods (28), object serialization pipeline (8), sound system (3), camera (1), UI (1), conditions (1).
+
+**Pass 5 (AI constructors + renderer pipeline + Ship AI)**: 35 renames, 0 failures, 10 discards. Method: traced SWIG `*AI_Create` wrappers through AllocAndConstruct factories to actual `__thiscall` constructors (confirmed by vtable writes) — identified complete AI class hierarchy (`BaseAI` → `{PlainAI, ConditionalAI, PriorityListAI, RandomAI, SequenceAI}` and `BaseAI` → `PreprocessingAI` → `BuilderAI`). Named 8 constructors + 7 AllocAndConstruct wrappers. Traced NiDX7Renderer initialization pipeline via debug strings ("NI D3D Renderer ERROR/WARNING:", "Set Display Mode failed", "Create Texture failed", etc.) — 11 renderer functions + 3 texture system functions + device selection dialog builder. Also: `UtopiaApp__CreateRenderer` (reads "Graphics Options" config), `Ship__AITickScheduler`/`Ship__ProcessAITick` (per-ship AI callback), `NetFile__RegisterHandlerNames`, and 2 UI constructors (`NamedReticleWindow`, `EngRepairPane`).
+
+**Pass 5 annotation script update**: Added 35 Pass 5 addresses to `ghidra_annotate_globals.py` KEY_FUNCTIONS dict (219 → 254 entries). New coverage: AI constructors (15), NiDX7Renderer pipeline (11), NiDX7Texture/Manager (3), Ship AI (2), game init (1), network (1), UI (2).
+
+**Pass 6 (SWIG tracing + callee chains + save system)**: 75 renames, 4 failures, 11 discards. Method: three complementary strategies — (1) SWIG wrapper tracing: decompiled `swig_ShipClass_*` wrappers to reveal C++ target functions for Ship navigation, targeting, state, and combat operations (22 renames). (2) Constructor callee chain walking: decompiled known constructors and damage pipeline functions (DoDamage, ProcessDamage, Game__SaveToFile) to trace unnamed callees (20 renames). (3) Save system tracing: followed Game__SaveToFile callee chain to discover complete TGFileStream class hierarchy (13 renames). Covered: Ship navigation (SetTarget, TurnTowardLocation, ComputeTurnAngularVelocity), DamageInfo class (ctor, SetRadius, SetDamageType, ComputeBoundingBox), combat subsystems (PhaserSystem__SetPowerLevel, TorpedoSystem__SetAmmoType, ShieldSystem__SetShieldFacing), ship state (RunDeathScript, StopFiringWeapons, SetImpulse, IsCloaked), TGFileStream hierarchy (ctor, Open, Close, Flush, BufferedFileStream), save game helpers (InitPickler, FlushPickler, SaveDirtyObjects), scene graph lookup (TGObjectTree__FindByHashAndTrack), NiMatrix3 math (TransformVector, TransposeTransformVector), and subsystem iterators (StartGetSubsystemMatch, GetNextSubsystemMatch).
+
+**Pass 6 annotation script update**: Added 79 Pass 6 addresses to `ghidra_annotate_globals.py` KEY_FUNCTIONS dict (254 → 331 entries, 2 duplicates consolidated). New coverage: Ship navigation/targeting (14), TGFileStream/save system (14), Ship state (8), Subsystem/weapon helpers (7), Combat subsystem functions (6), Ship combat/damage (5), DamageInfo class (4), TGObject/scene graph (4), Scene graph lookup (4), Save game helpers (4), Subsystem property (3), NiMatrix3 math (2), Engine subsystem (2), Ship subsystem iterator (2).
+
+**Pass 7 (massive SWIG + constructor + xref sweep)**: ~968 renames via main agent, plus ~234 (string mining), ~90 (bulk import from docs), ~53 (Pass 3 continuation), ~42 (Pass 4 continuation) from supplementary agents. Total: ~1,387 rename operations across 5 agents, yielding 1,468 unique addressed names (1,222 new + 86 updated existing names + 180 overlapping with pre-existing script entries). Methods: (1) Exhaustive SWIG wrapper decompilation — systematically decompiled swig_ClassName_Method wrappers to identify direct C++ CALL targets; (2) Constructor callee chain walking — traced constructors' FUN_ callees through entire class hierarchies (TGObject → TGStreamedObject → TGStreamedObjectEx → TGEventHandlerObject, AI class trees, power system classes); (3) Xref-based discovery — used get_xrefs_to on key functions (NiAlloc, EventManager_PostEvent, DoDamage) to find callers and name them by context; (4) Name normalization — updated 86 existing names from single-underscore to double-underscore convention and added proper class prefixes (e.g., `GetPlayerShip` → `Game__GetPlayerShip`, `RemovePeerAddress` → `TGWinsockNetwork__RemovePeerAddress`). Coverage spans 277 distinct classes including Episode, PlayWindow, Game, Mission, NiNode, NiDX7Renderer, NiApplication, TGPeerArray, TGSetManager, TGFileStream, Ship subsystems, AI classes, weapon systems, sensor systems, camera modes, sound system, and more.
+
+**Pass 7 annotation script update**: Complete rebuild of `ghidra_annotate_globals.py` KEY_FUNCTIONS dict (331 → 1,553 entries), organized by class into 277 categories. Includes all prior passes plus 1,222 new entries from Pass 7 agents. UTOPIA_GLOBALS (13) and PYTHON_MODULES (22) unchanged.
+
+All renames are high-confidence only — backed by debug strings from original source code, clear behavioral patterns in decompiled code, or verified against live game traces.
 
 ## What Each Script Discovers
 

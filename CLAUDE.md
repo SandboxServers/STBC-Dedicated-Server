@@ -249,6 +249,8 @@ Then opcode 0x01 (single byte).
 - [docs/gameplay/collision-shield-interaction.md](docs/gameplay/collision-shield-interaction.md) - Collision-shield: directional absorption, two-step damage
 - [docs/gameplay/self-destruct-pipeline.md](docs/gameplay/self-destruct-pipeline.md) - Self-destruct: opcode 0x13, 3 execution paths, PowerSubsystem cascade
 - [docs/gameplay/objcreate-unknown-species-analysis.md](docs/gameplay/objcreate-unknown-species-analysis.md) - ObjCreate with unknown species: failure modes, crash risks
+- [docs/gameplay/ai-architecture.md](docs/gameplay/ai-architecture.md) - AI behavior tree: 8 C++ classes, vtable layouts, Python bridge, tick scheduling, shipped behavior catalog
+- [docs/gameplay/ship-navigation.md](docs/gameplay/ship-navigation.md) - Ship targeting pipeline, turn computation, impulse model, in-system warp, network authority
 - [docs/gamemode-system.md](docs/gamemode-system.md) - Gamemode/mission system RE: two-layer architecture, scoring, wire formats, team system, end/restart flow
 
 ### Engine
@@ -257,7 +259,7 @@ Then opcode 0x01 (single byte).
 - [docs/engine/nirtti-factory-catalog.md](docs/engine/nirtti-factory-catalog.md) - 117 NiRTTI factory registrations with addresses
 - [docs/engine/netimmerse-vtables.md](docs/engine/netimmerse-vtables.md) - Vtable maps for 6 core NI classes
 - [docs/engine/function-map.md](docs/engine/function-map.md) - 18K-function organized map
-- [docs/engine/function-mapping-report.md](docs/engine/function-mapping-report.md) - ~6,031 functions named (33%), annotation script docs
+- [docs/engine/function-mapping-report.md](docs/engine/function-mapping-report.md) - ~7,500 functions named (41%), annotation script docs
 - [docs/engine/decompiled-functions.md](docs/engine/decompiled-functions.md) - Key function analysis
 
 ### Guides
@@ -295,11 +297,13 @@ Then opcode 0x01 (single byte).
 - **OpenBC**: `../OpenBC/docs/wire-formats/delete-player-anim-wire-format.md` - Clean-room DeletePlayerAnim (0x18) wire format + TGL crash risk
 - **OpenBC**: `../OpenBC/docs/wire-formats/event-forward-wire-format.md` - Clean-room GenericEventForward (0x07-0x12, 0x1B) group spec
 - **OpenBC**: `../OpenBC/docs/gamemode-system.md` - Clean-room gamemode spec: scoring rules, wire formats, team system, end/restart flow, server implementation requirements, state tracking
+- **OpenBC**: `../OpenBC/docs/game-systems/ai-system.md` - Clean-room AI behavior tree spec: node types, conditions, compound behaviors, difficulty, fleet commands
+- **OpenBC**: `../OpenBC/docs/game-systems/ship-movement.md` - Clean-room ship movement spec: targeting, impulse model, turn computation, in-system warp, network authority
 
 ## Ghidra Annotation Scripts
 Bulk annotation scripts in `tools/`. Run from Ghidra Script Manager with stbc.exe loaded.
 Run order: globals → nirtti → swig → python_capi → pymodules → vtables → swig_targets → discover_strings
-- `tools/ghidra_annotate_globals.py` - Labels 13 globals, 62 key RE'd functions, 22 Python module tables (97 total)
+- `tools/ghidra_annotate_globals.py` - Labels 13 globals, 1,553 key RE'd functions (277 classes), 22 Python module tables (1,588 total)
 - `tools/ghidra_annotate_nirtti.py` - Labels 117 NiRTTI factory + 117 registration functions (234 total)
 - `tools/ghidra_annotate_swig.py` - Names 3,990 SWIG wrapper functions from PyMethodDef table
 - `tools/ghidra_annotate_python_capi.py` - Names 113 Python C API functions, 10 module inits, type objects, globals (137 total)
@@ -307,7 +311,7 @@ Run order: globals → nirtti → swig → python_capi → pymodules → vtables
 - `tools/ghidra_annotate_vtables.py` - Auto-discovers 97 vtables from NiRTTI factories: 1,090 virtuals + 96 ctors + 84 dtors (1,270 total)
 - `tools/ghidra_annotate_swig_targets.py` - Traces SWIG wrappers to C++ targets (4 named; 3,986 are inline field accessors)
 - `tools/ghidra_discover_strings.py` - Names 33 functions from debug strings + adds 515 comments (runs last)
-- See [docs/engine/function-mapping-report.md](docs/engine/function-mapping-report.md) for full coverage (~6,031 functions named, 33% of 18,247)
+- See [docs/engine/function-mapping-report.md](docs/engine/function-mapping-report.md) for full coverage (~7,500 functions named, 41% of 18,247)
 
 ## Knowledge Preservation
 

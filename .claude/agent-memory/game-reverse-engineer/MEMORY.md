@@ -14,6 +14,7 @@
 - [complete-opcode-table.md](complete-opcode-table.md) - FULL verified opcode table (41 + Python)
 - [main-loop-timing.md](main-loop-timing.md) - Main loop architecture, NiApp vtable, clock sources
 - [hardpoint-property-system.md](hardpoint-property-system.md) - COMPLETE: AddToSet, SetupProperties, CT_ type IDs
+- [ghidra-naming-passes.md](ghidra-naming-passes.md) - Function naming passes 5-7 (254 renames total, ~6285 named, ~34.4%)
 
 ## TGObjPtrEvent System (2026-02-21, COMPLETE)
 - See [docs/protocol/tgobjptrevent-class.md](../../docs/protocol/tgobjptrevent-class.md)
