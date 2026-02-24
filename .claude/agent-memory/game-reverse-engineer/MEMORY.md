@@ -14,18 +14,15 @@
 - [complete-opcode-table.md](complete-opcode-table.md) - FULL verified opcode table (41 + Python)
 - [main-loop-timing.md](main-loop-timing.md) - Main loop architecture, NiApp vtable, clock sources
 - [hardpoint-property-system.md](hardpoint-property-system.md) - COMPLETE: AddToSet, SetupProperties, CT_ type IDs
-- [ghidra-naming-passes.md](ghidra-naming-passes.md) - Function naming passes 5-7 (254 renames total, ~6285 named, ~34.4%)
+- [ghidra-naming-passes.md](ghidra-naming-passes.md) - Function naming passes 5-8B+8E (774 renames total, ~6805 named, ~37.3%)
+- [subsystem-vtable-map.md](subsystem-vtable-map.md) - Phase 8E: subsystem class hierarchy, 19 vtable addresses, 30-slot map
+- [weapon-class-hierarchy.md](weapon-class-hierarchy.md) - Phase 8J: weapon/projectile class hierarchy (86 renames)
+- [ui-class-hierarchy.md](ui-class-hierarchy.md) - Phase 8D: UI system classes (135 renames)
 
 ## TGObjPtrEvent System (2026-02-21, COMPLETE)
 - See [docs/protocol/tgobjptrevent-class.md](../../docs/protocol/tgobjptrevent-class.md)
-- Factory 0x010C, ctor 0x00403290, vtable 0x0088869C, size 0x2C
-- +0x28 = obj_ptr (object ID, NOT raw pointer)
-- 30 C++ xrefs to ctor; 11 distinct event types from analyzed functions
-- Key types: ET_SET_PLAYER(0x80000E), ET_TARGET_WAS_CHANGED(0x800058), ET_SUBSYSTEM_HIT(0x80006B), ET_WEAPON_FIRED(0x80007C), ET_SENSORS_SHIP_IDENTIFIED(0x800088), ET_STOP_FIRING_AT_TARGET_NOTIFY(0x8000DC)
-- Dual-fire pattern: phaser/tractor create 2 events (specific + generic ET_WEAPON_FIRED)
-- Timer events (0x50001) use TGObjPtrEvent as delivery vehicle, dest=0x99b010
-- 27+ Python event types via TGObjPtrEvent_Create SWIG API
-- Network-relevant: 0x6B(subsystem hit), 0xDC(stop firing notify), 0x7C(weapon fired), 0x76(repair priority)
+- Factory 0x010C, ctor 0x00403290, vtable 0x0088869C, size 0x2C, +0x28 = obj_ptr (TGObject ID)
+- Key types: ET_SUBSYSTEM_HIT(0x6B), ET_WEAPON_FIRED(0x7C), ET_STOP_FIRING_NOTIFY(0xDC)
 
 ## Hardpoint/Property System (2026-02-21, COMPLETE)
 - Properties attached via `AddToSet("Scene Root", prop)` — flat, order-independent
@@ -51,6 +48,15 @@
 - Slot 0 = GetRTTI (NOT dtor); slot 10 = dtor (+0x28)
 - NiObject:12 | NiObjectNET:12 | NiAVObject:39 | NiNode:43 | NiGeometry:64 | NiTriShape:68
 
+## TG Hierarchy Vtable Layout (Phase 8B, 2026-02-24)
+- See [docs/engine/tg-hierarchy-vtables.md](../../docs/engine/tg-hierarchy-vtables.md)
+- **DIFFERENT from NiObject**: TG slot 0 = scalar_deleting_dtor (NOT GetRTTI)
+- Ship does NOT inherit from NiObject; chain: TGObject->TGStreamedObject->TGStreamedObjectEx->TGEventHandlerObject->TGSceneObject->ObjectClass->PhysicsObjectClass->DamageableObject->Ship
+- Ship vtable at 0x00894340, 92 slots (0x170 bytes), object size 0x328
+- DamageableObject has 90 slots; Ship adds 2 (slots 90-91)
+- Key slots: 4/5=Write/ReadFromStream, 20=HandleEvent, 21=Update, 70=InitObject, 72/73=Write/ReadStateUpdate, 85=CollisionDamageWrapper, 88/89=SetupProperties/LinkSubsystems
+- 23 functions renamed across 8 TG hierarchy classes in Phase 8B
+
 ## CRITICAL FLAGS
 - 0x0097FA88=IsClient(0=host), 0x0097FA89=IsHost(1=host), 0x0097FA8A=IsMultiplayer
 
@@ -69,13 +75,7 @@
 
 ## Power Mode Assignments (2026-02-21, COMPLETE)
 - PoweredSubsystem+0xA0 = powerMode: 0=main-first, 1=backup-first, 2=backup-only
-- DEFAULT (mode 0): ALL subsystems via PoweredSubsystem ctor (FUN_00562240)
-- **CloakingSubsystem** (FUN_0055e2b0): sets +0xA0=2 (backup-only), vtable 0x892C04
-- **TractorBeamSystem** (FUN_00582080): sets +0xA0=1 (backup-first), vtable 0x893794
-- All others (phaser, torpedo, impulse, sensor, shield, warp, repair, pulse) inherit mode 0
-- Shield recharge has HARDCODED DrawFromBackupBattery call (bypasses powerMode switch) when dead
-- Exhaustive search: `mov [reg+0xa0], 1/2` found 5 hits; 2 are PoweredSubsystem descendants, 3 are unrelated classes with coincidental +0xA0 offset
-- NOTE: vtable 0x892EAC = SensorSubsystem (NOT CloakingSubsystem as previously assumed)
+- CloakingSubsystem: mode 2 (backup-only); TractorBeamSystem: mode 1 (backup-first); all others: mode 0
 
 ## 0x1C State Update & Subsystem Wire Format (2026-02-18)
 - See [docs/protocol/stateupdate-subsystem-wire-format.md](../../docs/protocol/stateupdate-subsystem-wire-format.md)
@@ -88,20 +88,10 @@
 
 ## Multiplayer Mission Infrastructure (2026-02-21, COMPLETE)
 - See [docs/architecture/multiplayer-mission-infrastructure.md](../../docs/architecture/multiplayer-mission-infrastructure.md)
-- C++ is mission-agnostic; ALL game mode logic is in Python (scripts/Multiplayer/)
-- TWO network groups: "NoMe" (0x008e5528, all except self) and "Forward" (0x008d94a0, all)
-- Score broadcasts -> "NoMe"; event relay -> "Forward"
-- Mission name flows: Settings pkt -> VarManager("Multiplayer","Mission") -> Episode.py -> LoadMission
-- 3 C++->Python call points: AI.Setup.GameInit(), MissionMenusShared.g_iPlayerLimit, <mission>.InitNetwork(connID)
-- MultiplayerGame ctor (0x0069e590): 16 player slots (0x18 bytes each at +0x74), vtable 0x0088b480
+- TWO network groups: "NoMe" (all except self) and "Forward" (all)
+- MultiplayerGame ctor (0x0069e590): 16 player slots (0x18 bytes each at +0x74)
 - Player slot: +0x04=active, +0x08=connID, +0x10=baseObjID (N*0x40000+0x3FFFFFFF)
-- maxPlayers at +0x1FC (capped at 16), readyForNewPlayers at +0x1F8
-- 26 C++ event handlers registered (see doc for full table)
-- Python messages 0x35-0x39: MISSION_INIT, SCORE_CHANGE, SCORE, END_GAME, RESTART_GAME
-- Score = (shieldDmg + hullDmg) / 10.0; frag limit or score limit (g_iUseScoreLimit)
-- ObjectExploding in MP: serialized as opcode 0x06 to "NoMe" group (not applied locally by C++)
-- HostMsg (0x13): self-destruct via FUN_005af5f0(ship, ship->powerSubsystem)
-- Explosion (0x29): [int:objID][CompressedVec4:pos][CF16:radius][CF16:damage] -> ProcessDamage
+- maxPlayers at +0x1FC, readyForNewPlayers at +0x1F8
 
 ## Memory Allocator
 - FUN_00717840=NiAlloc (4-byte size header), FUN_00717960=NiFree, FUN_007179c0=NiRealloc
@@ -115,13 +105,11 @@
 - Subsystem IDs are NOT derived from ship base ID; they are sequential from global counter
 - See [docs/gameplay/repair-event-object-ids.md](../../docs/gameplay/repair-event-object-ids.md)
 
-## TGEvent System (2026-02-20)
-- TGEvent (0x28 bytes, factory 0x101): +0x08=source ptr, +0x0C=dest ptr, +0x10=eventType
-- TGCharEvent (0x2C bytes, factory 0x10C): extends TGEvent, +0x28=charData (int)
-- FUN_006d6270=SetSource(+0x08), FUN_006d62b0=SetDest(+0x0C)
-- WriteToStream: writes factoryType, eventType, *(source+0x04), *(dest+0x04)
-- HostEventHandler (0x006a1150): serializes events as opcode 0x06 PythonEvent
-- SUBSYSTEM_HIT=0x0080006B (TGCharEvent), ADD_TO_REPAIR_LIST=0x008000DF (TGEvent)
+## TGEvent System (2026-02-20, EXPANDED 2026-02-24)
+- TGEvent (0x28 bytes): +0x08=source, +0x0C=dest, +0x10=eventType
+- TGCharEvent (0x2C bytes, factory 0x10C): +0x28=charData
+- TGEventManager (0x0097f838): singleton, PostEvent -> ProcessEvent + broadcast
+- See [ghidra-naming-passes.md](ghidra-naming-passes.md) Pass 8C for complete function table
 
 ## Key Functions
 | Address | Name | Role |
@@ -184,14 +172,12 @@
 
 ## Self-Destruct Pipeline (2026-02-21, COMPLETE)
 - See [docs/gameplay/self-destruct-pipeline.md](../../docs/gameplay/self-destruct-pipeline.md)
-- SHIPPED FEATURE (not cut content), works SP + MP
-- Ctrl+D -> ET_INPUT_SELF_DESTRUCT (0x8001DD) -> TopWindow::SelfDestructHandler (0x0050D070)
-- Client: sends 1-byte opcode 0x13 to host; Host/SP: direct DoDamageToSelf
-- DoDamageToSelf (0x005af5f0): applies maxHP damage to PowerSubsystem (ship+0x2C4)
-- DoDamageToSelf_Inner (0x005af4a0): force_kill=1 bypasses protections, gates on GodMode+0x2EA
-- Ship death -> ShipDeathHandler (0x005afea0) -> ET_OBJECT_EXPLODING -> scoring + network
-- Scoring: FiringPlayerID=0 (no kill credit), death counted, team kill awarded to opponents
-- AI version uses DestroySystem(hull) instead (PlainAI/SelfDestruct.py)
+- Ctrl+D -> opcode 0x13 -> DoDamageToSelf(0x005af5f0) -> PowerSubsystem maxHP damage
+
+## Game Flow Class Hierarchy (2026-02-24, COMPLETE)
+- PlayWindow = "Game" in SWIG (g_TopWindow), vtable 0x008887e8, +0x54=playerShip, +0x60=godMode
+- PlayWindow -> MultiplayerGame (vtable 0x0088b480)
+- TWO PlayWindow classes: PlayWindow(0x00405c10)=game state vs PlayViewWindow(0x004fc480)=UI
 
 ## Cut Content (2026-02-16)
 - See [docs/analysis/cut-content-analysis.md](../../docs/analysis/cut-content-analysis.md)

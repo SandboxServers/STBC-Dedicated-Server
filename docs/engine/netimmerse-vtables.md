@@ -120,7 +120,7 @@ Slots 12-38 are NiAVObject-specific additions.
 | 19 | +0x4C | 0x00434290 | UpdateRigidDownwardPass? | |
 | 20 | +0x50 | 0x00434180 | UpdatePropertiesDownward? | |
 | 21 | +0x54 | 0x004341a0 | UpdateEffectsDownward? | |
-| 22 | +0x58 | FUN_007dd230 | UpdateWorldData | |
+| 22 | +0x58 | NiAVObject__GetObjectByName | **GetObjectByName** | Confirmed: strcmp(this->name, searchName), returns this if match. NiNode override recurses children. |
 | 23 | +0x5C | 0x00434210 | UpdateWorldBound? | |
 | 24 | +0x60 | 0x00434220 | Display? | |
 | 25 | +0x64 | FUN_007dc5f0 | PurgeRendererData? | |
@@ -165,21 +165,21 @@ Slots 39-42 are NiNode-specific additions.
 | 11 | +0x2C | 0x0040da50 | (no-op) | Never overridden |
 | 12 | +0x30 | 0x007e3e30 | UpdateControllers | NiNode override iterates children |
 | 13 | +0x34 | 0x004341c0 | (stub) | Inherited from NiAVObject |
-| 14 | +0x38 | FUN_007e4900 | (override) | |
-| 15 | +0x3C | FUN_007e4940 | (override) | |
-| 16 | +0x40 | FUN_007e4980 | (override) | |
-| 17 | +0x44 | FUN_007e49c0 | (override) | |
-| 18 | +0x48 | FUN_007e4a00 | (override) | |
-| 19 | +0x4C | FUN_007e4a40 | (override) | |
+| 14 | +0x38 | NiNode__ApplyTransform | **ApplyTransform** | NiNode override |
+| 15 | +0x3C | NiNode__vfn15_IterateChildren | **(unknown)** | Iterates children calling +0x3C; purpose unclear in NI 3.1 |
+| 16 | +0x40 | NiNode__SetSelectiveUpdateFlags | **SetSelectiveUpdateFlags** | NiNode override |
+| 17 | +0x44 | NiNode__UpdateDownwardPass | **UpdateDownwardPass** | NiNode override iterates children |
+| 18 | +0x48 | NiNode__UpdateSelectedDownwardPass | **UpdateSelectedDownwardPass** | NiNode override |
+| 19 | +0x4C | NiNode__UpdateRigidDownwardPass | **UpdateRigidDownwardPass** | NiNode override |
 | 20 | +0x50 | 0x00434180 | (inherited) | Same as NiAVObject |
 | 21 | +0x54 | 0x004341a0 | (inherited) | Same as NiAVObject |
-| 22 | +0x58 | FUN_007e4ee0 | UpdateWorldData | NiNode override |
-| 23 | +0x5C | FUN_007e4a80 | UpdateWorldBound | NiNode override |
-| 24 | +0x60 | FUN_007e4ac0 | Display | NiNode override iterates children |
+| 22 | +0x58 | NiNode__GetObjectByName | **GetObjectByName** | Calls NiAVObject base (name check), then recurses children |
+| 23 | +0x5C | NiNode__UpdateWorldBound | **UpdateWorldBound** | NiNode override |
+| 24 | +0x60 | NiNode__Display | **Display** | NiNode override iterates children |
 | 25 | +0x64 | FUN_007e3ff0 | PurgeRendererData | NiNode override |
 | 26 | +0x68 | 0x004d5170 | (override) | |
-| 27 | +0x6C | FUN_007e4530 | (override) | |
-| 28 | +0x70 | FUN_007e4610 | (override) | |
+| 27 | +0x6C | NiNode__UpdatePropertiesDownward | **UpdatePropertiesDownward** | NiNode override |
+| 28 | +0x70 | NiNode__UpdateEffectsDownward | **UpdateEffectsDownward** | NiNode override |
 | 29 | +0x74 | FUN_007dc780 | (inherited) | Same as NiAVObject |
 | 30 | +0x78 | FUN_007dca40 | (inherited) | Same as NiAVObject |
 | 31 | +0x7C | FUN_007e46f0 | (override) | |

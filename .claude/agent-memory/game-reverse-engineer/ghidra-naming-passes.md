@@ -486,3 +486,908 @@ Key insight: ~60% of SWIG wrappers use vtable-indirect calls `(**(code **)(*para
 - **~25 SWIG modules explored**, 17+ yielded at least 1 rename
 - **Highest yield modules**: TGSound (22), CharacterClass (24), TopWindow (11), TGSoundManager (10)
 - **Total across all passes: ~6,285 functions named (~34.4% of 18,247)**
+
+## Pass 8C (2026-02-24) - TGEventManager & Event Dispatch System - 61 renames + 6 globals
+
+### Method
+Deep-dive of the TGEventManager, TGEventHandlerTable, TGConditionHandler, TGCallback, and supporting
+infrastructure. Started from known named functions, followed all unnamed callees through the full
+event dispatch chain: PostEvent -> DispatchToBroadcastHandlers -> DispatchEvent -> InvokeCallback.
+
+### TGEventHandlerTable (10 new)
+| Address | Name | Description |
+|---------|------|-------------|
+| 0x006d5850 | TGEventHandlerTable__RegisterObject | Create handler chain for object in global table |
+| 0x006d8230 | TGEventHandlerTable__FindHandlerChain | Hash table lookup for event type |
+| 0x006d8270 | TGEventHandlerTable__FindHandlerInParentChain | Walk parent chain to find handler |
+| 0x006d82b0 | TGEventHandlerTable__RemoveAllHandlers | Iterate all buckets, remove handlers |
+| 0x006d83e0 | TGEventHandlerTable__DispatchToNextHandler | Walk chain, invoke via TGConditionHandler |
+| 0x006daf70 | TGEventHandlerTable__SaveBroadcastHandlers | Serialize broadcast handler table |
+| 0x006db020 | TGEventHandlerTable__LoadBroadcastHandlers | Deserialize broadcast handler table |
+| 0x006db1b0 | TGEventHandlerTable__FixupBroadcastRefs | Fixup broadcast handler object references |
+| 0x006db230 | TGEventHandlerTable__FixupBroadcastComplete | Complete broadcast handler reference fixup |
+| 0x006db670 | TGEventHandlerTable__ClearBroadcastHandlers | Remove and free all broadcast handler chains |
+
+### TGInstanceHandlerTable (5 new)
+Per-object handler table (0x25 buckets hash table, lives at TGEventHandlerObject+0x10).
+| Address | Name | Description |
+|---------|------|-------------|
+| 0x006d7b30 | TGInstanceHandlerTable__ctor | Create hash table (0x25 buckets) |
+| 0x006d7b80 | TGInstanceHandlerTable__dtor | Destroy hash table |
+| 0x006d7c30 | TGInstanceHandlerTable__SaveToStream | Serialize handler chains |
+| 0x006d7d00 | TGInstanceHandlerTable__LoadFromStream | Deserialize handler chains |
+| 0x006d7eb0 | TGInstanceHandlerTable__AddHandler | Add callback for event type |
+
+### TGCallback (8 new)
+0x14-byte object (vtable 0x008960f4). Wraps C++ function pointer or Python callable.
+Fields: +0x00=vtable, +0x04=flags(bit0=isMethod,bit1=isPython,bit2=active,bit3=pendingDelete), +0x08=nextChain, +0x0C=sentinel, +0x10=funcPtr/string
+| Address | Name | Description |
+|---------|------|-------------|
+| 0x006e09e0 | TGCallback__ctor | Initialize 5 fields |
+| 0x006e0a00 | TGCallback__dtor | Restore vtable, free string |
+| 0x006e0a10 | TGCallback__FreeString | Free owned string at +0x10 |
+| 0x006e0d40 | TGCallback__InvokePythonFunction | Import module.func, call |
+| 0x006e0e00 | TGCallback__SetFunctionByName | Named C++ function (string copy) |
+| 0x006e0e70 | TGCallback__SetFunctionByHash | Lookup by hash in name table |
+| 0x006e0ec0 | TGCallback__SetIsPythonCallback | Set/clear bit 1 |
+| 0x006e0ee0 | TGCallback__SetIsMethodCallback | Set/clear bit 0 |
+
+### TGConditionHandler (16 new)
+Manages sorted handler arrays with binary search. Vtable 0x00896104. Two arrays: broadcast (this+0x00) and per-object (this+0x18). Supports deferred add/remove during dispatch (reentrant).
+| Address | Name | Description |
+|---------|------|-------------|
+| 0x006e1870 | TGConditionHandler__ctor | Allocate two sorted arrays |
+| 0x006e1900 | TGConditionHandler__dtor | Free sorted arrays |
+| 0x006e1960 | TGConditionHandler__SaveHandlerEntries | Serialize entries with object IDs |
+| 0x006e1a30 | TGConditionHandler__LoadHandlerEntries | Deserialize, rebuild sorted array |
+| 0x006e1c00 | TGConditionHandler__FixupReferences | Resolve object IDs to pointers |
+| 0x006e1c50 | TGConditionHandler__FixupComplete | Complete reference fixup |
+| 0x006e1cd0 | TGConditionHandler__AddEntry | Create node, insert sorted |
+| 0x006e1d60 | TGConditionHandler__InsertSorted | Insert with sort key |
+| 0x006e1ed0 | TGConditionHandler__RemoveByName | Find and remove by name hash |
+| 0x006e2030 | TGConditionHandler__MatchEntry | Compare by object + name |
+| 0x006e20b0 | TGConditionHandler__RemoveAllForObject | Remove all for given object |
+| 0x006e2310 | TGConditionHandler__RemoveAllEntries | Iterate all, remove each |
+| 0x006e2330 | TGConditionHandler__FindInsertionPoint | Binary search for index |
+| 0x006e2380 | TGConditionHandler__FindFirstByKey | Binary search for first match |
+| 0x006e23f0 | TGConditionHandler__RemoveAtIndex | Remove at specific index |
+| 0x006e24d0 | TGConditionHandler__SetAtIndex | Set with active-count tracking |
+| 0x006e25a0 | TGConditionHandler__Resize | Reallocate sorted array |
+
+### TGHandlerListEntry (3 new)
+0xC-byte linked list node: +0x00=objectPtr, +0x04=callbackPtr, +0x08=deleted
+| Address | Name | Description |
+|---------|------|-------------|
+| 0x006e2f60 | TGHandlerListEntry__ctor | Zero 3 fields |
+| 0x006e2f70 | TGHandlerListEntry__dtor | Destroy callback, free |
+| 0x006e2f90 | TGHandlerListEntry__GetObjectID | Get object ID from chain |
+
+### TGEvent Infrastructure (2 new)
+| Address | Name | Description |
+|---------|------|-------------|
+| 0x006d63a0 | TGEvent__LookupInEventTable | Lookup by objID in g_pTGEventObjectTable |
+| 0x006d63f0 | TGEvent__RegisterInEventTable | Register in g_pTGEventObjectTable hash table |
+
+### TGLinkedList (2 new)
+| Address | Name | Description |
+|---------|------|-------------|
+| 0x006d6f80 | TGLinkedList__Pop | Pop front from singly-linked list |
+| 0x006d7100 | TGDoublyLinkedList__Remove | Remove node (head/tail/mid) |
+
+### TGEventQueue (6 new)
+| Address | Name | Description |
+|---------|------|-------------|
+| 0x006de1d0 | TGEventQueue__SaveToStream | Serialize queue |
+| 0x006de240 | TGEventQueue__LoadFromStream | Deserialize queue |
+| 0x006de280 | TGEventQueue__FixupReferences | Resolve references |
+| 0x006de2c0 | TGEventQueue__FixupComplete | Complete fixup |
+| 0x006de310 | TGEventQueue__Clear | Dequeue all events |
+| 0x006dee60 | TGEventQueue__ctor_inner | Init (head=0, tail=0, count=0) |
+
+### Other (9 new)
+| Address | Name | Description |
+|---------|------|-------------|
+| 0x006d9330 | TGEventHandlerObject__EnsureInstanceTable | Lazy-init per-object table |
+| 0x006da3d0 | TGHandlerNameTable__Register | Register name + hash |
+| 0x006da450 | TGHandlerNameTable__LookupByHash | Lookup function by hash |
+| 0x006dc240 | TGTimerManager__ctor | Stores event mgr at +0x08 |
+| 0x006dc5d0 | TGTimerManager__Init | Sets +0x04=0 |
+| 0x006f8bd0 | TG_CallPythonFunctionSimple | Wrapper: no-safe, no-decref |
+| 0x006f8c00 | TG_CallPythonFunctionEx | With safe-call + decref control |
+| 0x006f8cf0 | TG_CallPythonMethod | Call method on Python object |
+
+### Globals (6 new)
+| Address | Name | Description |
+|---------|------|-------------|
+| 0x0097f838 | g_TGEventManager | TGEventManager singleton |
+| 0x009983a4 | g_pTGEventObjectTable | Event tracking hash table |
+| 0x009983a8 | g_pTGEventHandlerTable | Global handler table (0xFB buckets) |
+| 0x00998638 | g_TGHandlerNameTable | Handler name registry |
+| 0x0095adfc | g_pTGEvent_NullTarget | Null-target sentinel |
+| 0x0095adf8 | g_pTGEvent_BroadcastMarker | Broadcast marker sentinel |
+
+### Rejected Candidates
+None - all 61 renames were high-confidence based on decompiled code analysis.
+
+### Architecture Insights
+**TGEventManager Layout (size ~0x40):**
+- +0x00..+0x0B: Primary event queue (head, tail, count) - synchronous events
+- +0x0C..+0x17: Secondary event queue (deferred events)
+- +0x18..+0x2B: Instance handler table (per-object handlers)
+- +0x2C..+0x3F: Broadcast handler table (global handlers)
+
+**Event Dispatch Flow:**
+1. `PostEvent` checks destination object; if valid, calls ProcessEvent vtable slot (+0x50)
+2. If event is not private (bit 1 of +0x18), dispatches to broadcast handlers at +0x2C
+3. If event is logged (bit 0 of +0x18), enqueues for deferred processing
+4. `ProcessEvents` drains queue: dequeue -> increment refcount -> PostEvent -> Release
+
+**Handler Registration:** Two levels:
+- **Broadcast handlers** via TGEventManager::RegisterHandler -> global table at +0x2C
+- **Instance handlers** via TGEventHandlerObject::AddPythonFuncHandler -> per-object table at +0x10
+
+**TGCallback dispatch:** Checks bit 1 (isPython):
+- C++ callback: direct function pointer call, with or without handler object parameter
+- Python callback: getattr method or import+call function, via safe-call wrapper
+
+### Statistics
+- **61 successful renames + 6 globals** in Pass 8C
+- **Total across all passes: ~6,346 functions named (~34.8% of 18,247)**
+
+## Pass 8A (2026-02-24) - Multiplayer Handler Callees - 38 renames
+
+### Method
+Systematic decompilation of all 15 multiplayer game dispatcher handler functions (opcodes 0x02-0x2A),
+identifying unnamed callees (FUN_XXXXXXXX) in each handler and tracing them to determine purpose.
+Additionally followed the PyErr_PrintEx call chain deep into statically-linked Python C API.
+
+### Game-Specific Functions (9 renames)
+| Address | Name | Evidence |
+|---------|------|----------|
+| 0x00423480 | NiPoint3__Copy | Copies 3 floats (12 bytes) between NiPoint3 structs |
+| 0x004166d0 | WString__Clear | Clear/reset MSVC basic_string<unsigned short> buffer |
+| 0x00416bc0 | WString__AssignSubstring | Assign substring from another WString (offset+length) |
+| 0x00459cb0 | NiMatrix3__TransformPoint | 3x3 matrix * vector rotation |
+| 0x0055c690 | TGDisplayTextAction__ctor_tgl | Floating text ctor from TGL resource entry |
+| 0x0055c790 | TGDisplayTextAction__ctor_string | Floating text ctor from C string |
+| 0x006cf6a0 | TGBufferStream__vReadInt | 2-instruction vtable dispatch: MOV EAX,[ECX]; JMP [EAX+0x68] |
+| 0x006d04f0 | TGLManager__ReleaseFile | Decrement refcount on loaded TGL file |
+| 0x006d30e0 | TGBufferStream__ReadCompressedVector4_ByteScale | Read 4 bytes + decompress with custom scale |
+
+### Python C API Functions (29 renames)
+Statically-linked Python 1.5.2 C API functions, traced from PyErr_PrintEx call chain.
+| Address | Name |
+|---------|------|
+| 0x0074af10 | PyErr_Print |
+| 0x0074af20 | PyErr_PrintEx |
+| 0x0074b490 | PyErr_ParseSyntaxError |
+| 0x0074bb10 | Py_HandleSystemExit |
+| 0x0074bc90 | PyObject_Print |
+| 0x0074bdb0 | PyObject_Repr |
+| 0x0074be20 | PyObject_Str |
+| 0x0074c100 | PyObject_Hash |
+| 0x0074c200 | PyObject_SetAttr |
+| 0x0074c7c0 | PyInt_AsLong |
+| 0x00751b80 | PyString_InternFromString |
+| 0x00751cf0 | PyDict_GetItem |
+| 0x00752cd0 | PyDict_GetItemString |
+| 0x00752d10 | PyDict_SetItemString |
+| 0x00752d70 | PyDict_DelItemString |
+| 0x00752db0 | PyErr_Restore |
+| 0x00752e40 | PyErr_SetObject |
+| 0x00752e80 | PyErr_SetString |
+| 0x00752ec0 | PyErr_Occurred |
+| 0x00752ed0 | PyErr_GivenExceptionMatches |
+| 0x00752f90 | PyErr_NormalizeException |
+| 0x00753110 | PyErr_Fetch |
+| 0x00753140 | PyErr_Clear |
+| 0x00753150 | PyErr_BadArgument |
+| 0x00753230 | PyErr_SetNone |
+| 0x00753240 | PyErr_BadInternalCall |
+| 0x007506c0 | PyString_FromString |
+| 0x007507d0 | PyString_AsString |
+| 0x00776c90 | Py_FlushLine |
+| 0x00779f90 | PySys_GetObject |
+| 0x00779fe0 | PySys_SetObject |
+| 0x0077c130 | PyThreadState_Get |
+| 0x007835d0 | PyFile_SoftSpace |
+| 0x00783690 | PyFile_WriteObject |
+| 0x00783800 | PyFile_WriteString |
+| 0x00783ce0 | PyTraceBack_Print |
+
+### Rejected Candidates (3)
+| Address | Candidate | Reason |
+|---------|-----------|--------|
+| 0x0057d110 | TorpedoTube__ProcessNetworkFire | Already named TorpedoTube__LaunchLocal |
+| 0x00578320 | Torpedo__SetFiringShipID | Already named Torpedo__SetOwnerShipID |
+| 0x0069f9e0 | MultiplayerGame__SettingsHandler | Wrongly named — contains torpedo fire code, 0 xrefs, likely Ghidra split artifact |
+
+### Key Discoveries
+1. **TGDisplayTextAction** (vtable 0x0088b568): Used by DeletePlayerAnimHandler (0x18) and NewPlayerInGameHandler (0x2A) for floating join/leave text. Two ctor variants: one from TGL resource, one from C string.
+2. **Python C API addresses differ from python_capi script**: The annotation script `ghidra_annotate_python_capi.py` has entries at different addresses. The functions renamed here are the actual implementations used at runtime.
+3. **MultiplayerGame__SettingsHandler at 0x0069f9e0 is MISNAMED**: Contains torpedo fire code identical to TorpedoFireHandler. Zero xrefs. Ghidra function split artifact — left alone.
+
+### Statistics
+- **38 successful renames** (9 game + 29 Python C API)
+- **3 rejected candidates**
+- **Total across all passes: ~6,384 functions named (~35.0% of 18,247)**
+
+## Pass 8H (2026-02-24) - Cross-Reference Mining - 103 renames
+
+### Strategy
+Systematic xref analysis from high-value functions: TGEvent__SetSource, Ship__GetVelocity,
+Game__GetPlayerShip, TGEventHandlerObject__CallNextHandler, NiAlloc, TGObject__LookupByID.
+For each: get_xrefs_to -> decompile unnamed callers -> name if HIGH confidence.
+
+### Categories and Counts
+| Category | Count | Key Functions |
+|----------|-------|---------------|
+| Weapons Display | 11 | HandleFireButton, HandleCloakButton, UpdateFiringStatus, CycleTorpedoType |
+| Sensor/Target Menu | 5 | PopulateItems, HandleTargetSelected, RefreshTargetList |
+| Sound System | 5 | CopyFrom, CacheLoad, FileEntry, AllocNodes, RegisterEvent |
+| Main Window | 4 | UpdateVisibleNames, ObjectClicked, ObjectEntered, TargetChanged |
+| Camera/Trail | 4 | UpdateCameraAnimation, RecordPosition, InterpolateRotation/Position |
+| AI Attack | 4 | ctor, BestEvasionDirection, ThreatsAndEvade, PredictTarget |
+| Weapons Control Pane | 3 | TorpedoControls, PhaserControls, TractorCloakControls |
+| VarManager | 3 | SetName, SetVariable, SetKey |
+| TGL System | 3 | AddResource, ReadHeader, ReadEntries |
+| Physics | 3 | CheckCollision, IntegrateMotion, WriteToStream |
+| NiTimeController/Path | 3 | StartAnimation, BuildPath, ControlPoints |
+| Input Manager | 3 | MouseTimestamp, KeyTimestamp, ProcessInput |
+| Character/Animation | 3 | dtor, AnimAction ctor/dtor |
+| Target Reticle | 3 | Initialize, UpdateLayout, UpdateTargetArrow |
+| Other (2 each) | 28 | DamageDisplay, CameraMode, Shields, Torpedo, NiNode, STTimerButton, etc. |
+| Singles | 14 | MapWindow, TacWeaponsCtrl, InterfaceModule, WarpEffect, etc. |
+
+### Key Discoveries
+- **PhysicsObjectClass__CheckCollision (0x005a88e0)**: Gates on g_SettingsByte1, IsPlayerShip, velocity thresholds
+- **AttackAI evasion**: 26-direction search with ProximityManager threat scoring
+- **CallNextHandler**: 100 callers — chain-of-responsibility across entire UI
+- **NiNode__BuildPropertyState**: Recursive parent-to-child property accumulation
+
+### Rejected Candidates (~15)
+- Free-list allocator template instantiations (~8): Identical code, no class distinction
+- FixupReferences/ResolveObjectRefs (~7): Generic ID-to-pointer, too many identical patterns
+
+### Statistics
+- **103 successful renames** in Pass 8H
+- **Total across all passes: ~6,487 functions named (~35.6% of 18,247)**
+
+## Pass 8I (2026-02-24) - Mission/Episode/Game Class Hierarchies - 29 renames
+
+### Strategy
+Deep-dive of high-level game flow classes: MissionBase, Episode, Mission, PlayWindow ("Game" in SWIG),
+MultiplayerGame, MultiplayerWindow, STMissionLog, LoadMissionAction, LoadEpisodeAction.
+Methods: constructor decompilation for vtable/hierarchy, SWIG wrapper target tracing, RegisterHandlerNames
+misname correction pattern (discover_strings systematic error).
+
+### Class Hierarchy Discovered
+```
+TGEventHandlerObject (base)
+  -> MissionBase (vtable at ctor, +0x14=moduleName, +0x1C=type, +0x28=flag, +0x2C/0x30/0x34=zeroed)
+       -> Episode (vtable 0x00888738, size 0x44, type 0x808001)
+            +0x38=unknown, +0x3C=currentMission(Mission*), +0x40=completionEvent
+       -> Mission (size 0x60, +0x4C=2, +0x50-0x5C=ObjectGroups)
+       -> PlayWindow (vtable 0x008887e8, size 0x74, type 0x804001) = "Game" in SWIG API
+            +0x38=score, +0x3C=rating, +0x40=kills, +0x50=lastSavedGame, +0x54=playerShip,
+            +0x58=playerGroup, +0x5C=playerCamera, +0x60=godMode, +0x62=initialized,
+            +0x64=preLoadDoneEvent, +0x68=pendingEvent, +0x6C=terminateEvent, +0x70=episode
+            -> MultiplayerGame (vtable 0x0088b480, +0x74=playerSlots[16], +0x1F8=readyForNewPlayers, +0x1FC=maxPlayers)
+
+TGAction -> TGScriptAction
+  -> LoadMissionAction (vtable 0x008886d8, size 0x34, +0x2C=game, +0x30=episode)
+  -> LoadEpisodeAction (vtable 0x008885dc, size 0x2C)
+
+MainWindow -> TGScrollablePane
+  -> PlayViewWindow (vtable 0x0088e344, 0x004fc480) -- NOT the same as PlayWindow!
+```
+
+### TWO PlayWindow Classes (CRITICAL DISAMBIGUATION)
+- PlayWindow at 0x00405c10 (MissionBase subclass) = "Game" object in SWIG API, manages game state
+- PlayViewWindow at 0x004fc480 (MainWindow/TGScrollablePane subclass) = UI rendering area
+- These are COMPLETELY DIFFERENT classes that happened to share the name "PlayWindow" in Ghidra
+
+### RegisterHandlerNames Misname Pattern (SYSTEMATIC)
+The discover_strings script (Pass 7/8) assigns debug string references to functions. When a function
+calls `TGObject__RegisterHandlerWithName(handlerAddr, "Class::HandlerName")`, the script names the
+CALLING function after the handler string, not the handler itself. This produced systematic misnames.
+
+**Correction rule**: Functions calling RegisterHandlerWithName = "RegisterHandlerNames" (name registration).
+Functions calling RegisterEventHandler = "RegisterHandlers" (actual event binding).
+The `_B` suffix in prior passes often indicates the TRUE RegisterHandlers (uses RegisterEventHandler).
+
+### Corrections of Misnamed Functions (8 renames)
+| # | Address | Old Name | New Name | Evidence |
+|---|---------|----------|----------|----------|
+| 1 | 0x00406a30 | Game__DestroyedPlayer | PlayWindow__RegisterHandlerNames | Calls RegisterHandlerWithName for 8 handlers |
+| 2 | 0x00406a90 | Game__ReallyTerminate | PlayWindow__RegisterHandlers | Calls RegisterEventHandler |
+| 3 | 0x00404730 | Episode__LoadMissionHandler | Episode__RegisterHandlerNames | Calls RegisterHandlerWithName |
+| 4 | 0x00404760 | Episode__ReportGoalInfoHandler | Episode__RegisterHandlers | Calls RegisterEventHandler |
+| 5 | 0x00408720 | Mission__PlayerDied | Mission__RegisterHandlerNames | Calls RegisterHandlerWithName |
+| 6 | 0x0069f250 | MultiplayerGame__KillGameHandler | MultiplayerGame__RegisterMPHandlers | Calls RegisterEventHandler for KillGame+RetryConnect |
+| 7 | 0x0069f9e0 | MultiplayerGame__SettingsHandler | MultiplayerGame__TorpedoFireHandler_Relay | Contains torpedo relay code, Ghidra function split artifact |
+| 8 | 0x005046b0 | MultiplayerWindow__ReceiveMessageHandler | MultiplayerWindow__RegisterHandlerNames | Calls RegisterHandlerWithName for 9 handlers |
+
+### STMissionLog Corrections (4 renames)
+| # | Address | Old Name | New Name | Evidence |
+|---|---------|----------|----------|----------|
+| 9 | 0x00528e10 | STMissionLog__RegisterHandlers | STMissionLog__RegisterHandlerNames | Calls RegisterHandlerWithName |
+| 10 | 0x00528e50 | STMissionLog__RegisterHandlers_B | STMissionLog__RegisterHandlers | Calls RegisterEventHandler |
+| 11 | 0x00529170 | FUN_00529170 | STMissionLog__Close | Unpauses game, hides self, called from RegisterHandlerNames |
+| 12 | 0x00528c20 | FUN_00528c20 | STMissionLog__AddLine | Called from swig_STMissionLog_AddLine |
+
+### STMissionLog SWIG Targets (2 renames)
+| # | Address | Old Name | New Name | Evidence |
+|---|---------|----------|----------|----------|
+| 13 | 0x00528d70 | FUN_00528d70 | STMissionLog__ClearLines | swig_STMissionLog_ClearLines target |
+| 14 | 0x00528b70 | FUN_00528b70 | STMissionLog__SetNumStoredLines | swig_STMissionLog_SetNumStoredLines target |
+
+### New PlayWindow Names (8 renames)
+| # | Address | Old Name | New Name | Evidence |
+|---|---------|----------|----------|----------|
+| 15 | 0x004062d0 | FUN_004062d0 | PlayWindow__ReallyTerminate | Actual game termination: calls MissionBase__Terminate, FreeAllModels, "GameEnded", "ResetViewscreen" |
+| 16 | 0x00406770 | FUN_00406770 | PlayWindow__SetUIShipID | SWIG Game_SetUIShipID target |
+| 17 | 0x00406640 | FUN_00406640 | PlayWindow__SetLastSavedGame | SWIG Game_SetLastSavedGame target |
+| 18 | 0x004062b0 | FUN_004062b0 | PlayWindow__TerminateWithEvent | Called from PlayWindow__ReallyTerminate, sets +0x6C terminate event |
+| 19 | 0x00406d80 | FUN_00406d80 | PlayWindow__WriteToStream | Save serialization: writes score/rating/kills/etc |
+| 20 | 0x00407070 | FUN_00407070 | PlayWindow__ResolveIDs | Stream fixup: resolves object IDs to pointers |
+| 21 | 0x004070f0 | FUN_004070f0 | PlayWindow__RestoreIDsToPointers | Final fixup phase |
+| 22 | 0x00405a90 | FUN_00405a90 | PlayWindow__InitHandlerTable | Initializes handler table entries |
+
+### PlayViewWindow Disambiguation (2 renames)
+| # | Address | Old Name | New Name | Evidence |
+|---|---------|----------|----------|----------|
+| 23 | 0x004fc480 | PlayWindow__ctor | PlayViewWindow__ctor | MainWindow subclass (UI), NOT MissionBase subclass |
+| 24 | 0x004fc5e0 | FUN_004fc5e0 | PlayViewWindow__ctor_stream | Stream constructor for same class |
+
+### Action/Mission/Episode (5 renames)
+| # | Address | Old Name | New Name | Evidence |
+|---|---------|----------|----------|----------|
+| 25 | 0x00403460 | FUN_00403460 | LoadMissionAction__ctor | Sets vtable 0x008886d8, size 0x34 |
+| 26 | 0x004027d0 | FUN_004027d0 | LoadEpisodeAction__ctor | Sets vtable 0x008885dc, size 0x2C |
+| 27 | 0x00409270 | FUN_00409270 | Mission__PlayerChangedHandler | Event handler for player ship changed |
+| 28 | 0x00409170 | FUN_00409170 | Mission__PlayerExitedSetHandler | Event handler for player exiting set |
+| 29 | 0x0043d8b0 | FUN_0043d8b0 | Episode__ctor_stream | Stream constructor for Episode |
+
+### Other (already counted above)
+| # | Address | Old Name | New Name |
+|---|---------|----------|----------|
+| -- | 0x00442940 | FUN_00442940 | MultiplayerGame__scalar_deleting_dtor |
+
+### Failed Renames (no function defined at address)
+| Address | Intended Name | Reason |
+|---------|---------------|--------|
+| 0x00404a60 | Episode__RemoveGoal | func_0x, orphan code, not a Ghidra function |
+| 0x004047e0 | Episode__GetNextEventType | func_0x, not a Ghidra function |
+| 0x00408410 | Mission__AddPrecreatedShip | func_0x, not a Ghidra function |
+| 0x004085b0 | Mission__GetPrecreatedShip | func_0x, not a Ghidra function |
+| 0x00408cd0 | Mission__GetNextEventType | func_0x, not a Ghidra function |
+| 0x006a2720 | MultiplayerGame__IsPlayerInGame | func_0x, not a Ghidra function |
+| 0x006a2a00 | MultiplayerGame__IsPlayerUsingModem | func_0x, not a Ghidra function |
+| 0x006a2750 | MultiplayerGame__DeletePlayerShipsAndTorps | func_0x, not a Ghidra function |
+| 0x006a2830 | MultiplayerGame__DeleteObjectFromGame | func_0x, not a Ghidra function |
+| 0x00506b80 | MultiplayerWindow__IsAnyChildVisible | func_0x, not a Ghidra function |
+| 0x004067e0 | PlayWindow__SetDifficulty | func_0x, not a Ghidra function |
+| 0x00406820 | PlayWindow__SetDifficultyMultipliers | func_0x, not a Ghidra function |
+| 0x00406cd0 | PlayWindow__GetNextEventType | func_0x, not a Ghidra function |
+| 29 LAB_ addresses | MultiplayerGame handler addresses | All 29 handler addresses from RegisterHandlerNames (LAB_006a0c60 through LAB_006a2a40) are orphan code blocks, not function starts |
+
+### Rejected Candidates (not renamed)
+| Address | Candidate | Reason |
+|---------|-----------|--------|
+| Various SWIG wrappers | ~40 Game/Episode/Mission accessors | Inline field reads (e.g., `param_2[0xf]` for +0x3C), no separate C++ function to name |
+| 0x00406250 | MissionBase__OnIdle | Already named by prior pass |
+| Various `_B` suffixed | EngPowerCtrl, Editor, etc. | Same misname pattern found but OUT OF SCOPE for game flow classes (future pass target) |
+| 0x004a2950 | unknown_cleanup | Walks hash table, destroys objects — unclear class ownership |
+| 0x0058c180 | unknown_cleanup | Walks array, calls vtable dtor — unclear class ownership |
+
+### MultiplayerGame Handler Address Map (from RegisterHandlerNames)
+All 29 registered handlers, with the debug string name and code address. These are LAB_/DAT_
+addresses in Ghidra (orphan code, not functions), so they cannot be renamed via MCP API.
+Documented here for future Ghidra manual function creation.
+
+| LAB/DAT Address | Debug Name | Notes |
+|-----------------|-----------|-------|
+| 0x006a0c60 | SystemChecksumPassedHandler | LAB_ |
+| 0x006a0c90 | SystemChecksumFailedHandler | DAT_ |
+| 0x006a0ca0 | DeletePlayerHandler | LAB_ |
+| 0x006a0f90 | ObjectCreatedHandler | LAB_ |
+| 0x006a1150 | HostEventHandler | LAB_ |
+| 0x006a1240 | ObjectExplodingHandler | LAB_ |
+| 0x006a1590 | NewPlayerInGameHandler | LAB_ |
+| 0x006a1790 | StartFiringHandler | LAB_ |
+| 0x006a17a0 | StartWarpHandler | LAB_ |
+| 0x006a17b0 | TorpedoTypeChangeHandler | LAB_ |
+| 0x006a18d0 | StopFiringHandler | LAB_ |
+| 0x006a18e0 | StopFiringAtTargetHandler | LAB_ |
+| 0x006a18f0 | StartCloakingHandler | LAB_ |
+| 0x006a1900 | StopCloakingHandler | LAB_ |
+| 0x006a1910 | SubsystemStatusHandler | LAB_ |
+| 0x006a1920 | AddToRepairListHandler | LAB_ |
+| 0x006a1930 | ClientEventHandler | LAB_ |
+| 0x006a1940 | RepairListPriorityHandler | LAB_ |
+| 0x006a1970 | SetPhaserLevelHandler | LAB_ |
+| 0x006a1a60 | DeleteObjectHandler | DAT_ |
+| 0x006a1a70 | ChangedTargetHandler | LAB_ |
+| 0x006a0a10 | ExitedWarpHandler | DAT_ |
+| 0x006a2640 | KillGameHandler | LAB_ |
+| 0x006a2a40 | RetryConnectHandler | LAB_ |
+
+Additionally, 5 handlers that ARE defined as functions in Ghidra and already named:
+- MultiplayerGame__ReceiveMessage (registered as "ReceiveMessageHandler")
+- MultiplayerGame__EnterSetEventHandler (registered as "DisconnectHandler")
+- MultiplayerGame__NewPlayerHandler (registered as "NewPlayerHandler")
+- MultiplayerGame__ChecksumCompleteHandler (registered as "ChecksumCompleteHandler")
+- MultiplayerGame__RequestObjEventHandler (registered as "EnterSetHandler")
+
+### Known Remaining Misnames (OUT OF SCOPE, future pass)
+The RegisterHandlerNames pattern exists in ~15 more classes with `_B` suffix:
+- EngPowerCtrl__RegisterHandlers should be EngPowerCtrl__RegisterHandlerNames
+- EngRepairPane__RegisterHandlers should be EngRepairPane__RegisterHandlerNames
+- Editor__RegisterHandlers should be Editor__RegisterHandlerNames
+- STMenu__RegisterHandlers should be STMenu__RegisterHandlerNames
+- STSubPane__RegisterHandlers should be STSubPane__RegisterHandlerNames
+- And ~10 more (STComponentMenu, STLoadDialog, STNumericBar, STSaveDialog, STStylizedWindow, STSubsystemMenu, etc.)
+
+### Statistics
+- **29 successful renames** in Pass 8I (8 corrections + 21 new)
+- **~13 failed renames** (func_0x addresses not defined as Ghidra functions)
+- **29 orphan handler addresses documented** for future manual function creation
+- **~15 out-of-scope misnames identified** for future correction pass
+- **Total across all passes: ~6,516 functions named (~35.7% of 18,247)**
+
+## Pass 8J (2026-02-24) - Weapon/Projectile Class Hierarchy - 86 renames
+
+### Strategy
+Deep-dive of weapon and projectile class hierarchies: Torpedo (projectile entity), TorpedoTube,
+TorpedoSystem, PhaserBank, PhaserSystem, EnergyWeapon, PulseWeapon, TractorBeam, WeaponSystem,
+WeaponSubsystem, FiringChain, WeaponTargetEntry. For each: decompile ctor/vtable, trace lifecycle
+(creation -> firing -> hit detection -> damage), name serialization (Read/WriteToStream, Read/WriteState),
+identify helper functions (arc checking, damage scaling, guidance).
+
+### Class Hierarchy (confirmed from vtable analysis)
+```
+ShipSubsystem
+  -> WeaponSubsystem (0x583280, +0x8C=target, +0x9C=enabled)
+       -> EnergyWeapon (0x56f950, +0xA0=charge, +0xBC=chargeRatio)
+            -> PhaserBank (0x570d70, +0x11C-0x124=restPos, 0x128 size)
+            -> TractorBeam (0x581350, +0xFC=mode)
+            -> PulseWeapon (0x574fd0, +0xC8/CC/D0 fields)
+       -> TorpedoTube (0x57c4b0, +0xA0=ammoLoaded, +0xA4=reloadTimer, +0xAC=readySlots)
+
+PoweredSubsystem -> WeaponSystem (0x5840a0, +0xC4=targetList, +0xDC=firingChains, +0xB4=lastFired)
+  -> PhaserSystem (0x573c90, +0xF0=powerLevel)
+  -> TorpedoSystem (0x57b020, +0x114=ammoType)
+  -> TractorBeamSystem (0x582080, powerMode=1)
+  -> PulseWeaponSystem (0x5773b0)
+
+PhysicsObjectClass -> Torpedo (0x5783d0, 0x170 bytes, vtable 0x00893458)
+  +0x108=subObject, +0x118=targetID, +0x128=ownerShipID
+  +0x134=turnRateScale, +0x138=maxSpeed, +0x144=damageRadius
+  +0x14C=isDumbFire, +0x148=hasSkewFire
+
+FiringChain: bitmask-based (32-bit, group indices 1-31)
+WeaponTargetEntry: [objectID, offsetX, offsetY, offsetZ] (16 bytes)
+```
+
+### Renames by Class
+
+#### Torpedo (8 renames)
+| Address | Name |
+|---------|------|
+| 0x00578800 | Torpedo__OrientToVelocity |
+| 0x00578cb0 | Torpedo__UpdateGuidance |
+| 0x00579530 | Torpedo__ApplyTorque |
+| 0x00579610 | Torpedo__ComputeSplineTurnTime |
+| 0x00579a30 | Torpedo__GetVelocity |
+| 0x00579a90 | Torpedo__SetClampedAngularAcceleration |
+| 0x00579cc0 | Torpedo__WriteNetworkState |
+
+#### TorpedoTube (14 renames)
+| Address | Name |
+|---------|------|
+| 0x00574f40 | TorpedoTube__GetArcHeightAngleMin |
+| 0x00574f50 | TorpedoTube__GetArcHeightAngleMax |
+| 0x00574f60 | TorpedoTube__GetArcWidthAngleMin |
+| 0x00574f70 | TorpedoTube__GetArcWidthAngleMax |
+| 0x00574f80 | TorpedoTube__GetArcHeightAngleRange |
+| 0x00574fa0 | TorpedoTube__GetArcWidthAngleRange |
+| 0x00574fc0 | TorpedoTube__GetLaunchSpeed |
+| 0x00575230 | TorpedoTube__GetDamageForPowerLevel |
+| 0x00575a60 | TorpedoTube__IsTargetInFiringArc |
+| 0x00575db0 | TorpedoTube__ComputeRandomDirectionInArc |
+| 0x0057c740 | TorpedoTube__ClearReadySlots |
+| 0x0057de90 | TorpedoTube__GetWorldDirection |
+| 0x0057df40 | TorpedoTube__WriteToStream |
+| 0x0057dfd0 | TorpedoTube__ReadFromStream |
+
+#### TorpedoSystem (3 renames)
+| Address | Name |
+|---------|------|
+| 0x0057b780 | TorpedoSystem__WriteToStream |
+| 0x0057b7b0 | TorpedoSystem__ReadFromStream |
+| 0x0057b8e0 | TorpedoSystem__ResolveObjectRefs |
+
+#### EnergyWeapon (11 renames)
+| Address | Name |
+|---------|------|
+| 0x0056f8d0 | EnergyWeapon__GetProperty |
+| 0x0056f8e0 | EnergyWeapon__GetRechargeRate |
+| 0x0056f920 | EnergyWeapon__GetFireSoundBase |
+| 0x0056f930 | EnergyWeapon__GetMaxDamage |
+| 0x0056f940 | EnergyWeapon__GetMaxCharge |
+| 0x0056fbd0 | EnergyWeapon__SetPropertyAndInit |
+| 0x0056fd70 | EnergyWeapon__UpdateChargeLevel |
+| 0x0056fdc0 | EnergyWeapon__Update |
+| 0x0056fe30 | EnergyWeapon__WriteToStream |
+| 0x0056feb0 | EnergyWeapon__ReadFromStream |
+| 0x0056ff40 | EnergyWeapon__ResolveObjectRefs |
+| 0x0056ff60 | EnergyWeapon__FixupObjectRefs |
+
+#### PhaserBank (12 renames)
+| Address | Name |
+|---------|------|
+| 0x0056fc10 | PhaserBank__GetFireStartSoundName |
+| 0x0056fcc0 | PhaserBank__GetFireLoopSoundName |
+| 0x005714a0 | PhaserBank__ComputeFiringArcToTarget |
+| 0x00571a00 | PhaserBank__CanFireAtTarget |
+| 0x00571ab0 | PhaserBank__ComputeBeamEndpoint |
+| 0x00571ee0 | PhaserBank__IsAngleInFiringArc |
+| 0x00572b00 | PhaserBank__GetDischargeRateForPowerLevel |
+| 0x00572c50 | PhaserBank__GetArcCenterWorldDir |
+| 0x00572f00 | PhaserBank__ComputeRestPosition |
+| 0x00573040 | PhaserBank__WriteToStream |
+| 0x005730a0 | PhaserBank__ReadFromStream |
+
+#### PhaserSystem (3 renames)
+| Address | Name |
+|---------|------|
+| 0x00574010 | PhaserSystem__StopFiringAtTarget |
+| 0x005741a0 | PhaserSystem__WriteState |
+| 0x005741d0 | PhaserSystem__ReadState |
+
+#### PulseWeapon (2 renames)
+| Address | Name |
+|---------|------|
+| 0x005769a0 | PulseWeapon__WriteToStream |
+| 0x005769f0 | PulseWeapon__ReadFromStream |
+
+#### TractorBeam (10 renames)
+| Address | Name |
+|---------|------|
+| 0x0057fcd0 | TractorBeam__ApplyMode0_Drag |
+| 0x0057ff60 | TractorBeam__ApplyMode1_Push |
+| 0x00580590 | TractorBeam__ApplyMode2_Hold |
+| 0x00580740 | TractorBeam__ApplyMode3_Repel |
+| 0x00580910 | TractorBeam__ApplyMode5_Dock |
+| 0x00580d70 | TractorBeam__InitBeamAndStartFiring |
+| 0x00580e90 | TractorBeam__SetBeamEndpoints |
+| 0x00580f50 | TractorBeam__ComputeDamageForBeam |
+| 0x005814f0 | TractorBeam__WriteToStream |
+| 0x00581550 | TractorBeam__ReadFromStream |
+
+#### WeaponSubsystem (2 renames)
+| Address | Name |
+|---------|------|
+| 0x00583400 | WeaponSubsystem__WriteToStream |
+| 0x00583440 | WeaponSubsystem__ReadFromStream |
+
+#### WeaponSystem (16 renames)
+| Address | Name |
+|---------|------|
+| 0x00584070 | WeaponSystem__GetSingleFireMode |
+| 0x00584390 | WeaponSystem__StartFiringAtTarget |
+| 0x00584560 | WeaponSystem__StopFiringAll |
+| 0x005847d0 | WeaponSystem__Update |
+| 0x00585020 | WeaponSystem__ParseFiringChains |
+| 0x005852a0 | WeaponSystem__GetTargetWorldPosition |
+| 0x00585390 | WeaponSystem__RemoveTarget |
+| 0x005856b0 | WeaponSystem__OnDisabled |
+| 0x005856d0 | WeaponSystem__BuildVisibleTargetList |
+| 0x005859d0 | WeaponSystem__IsTargetVisible |
+| 0x00585a10 | WeaponSystem__WriteState |
+| 0x00585a40 | WeaponSystem__ReadState |
+| 0x00585a70 | WeaponSystem__WriteToStream |
+| 0x00585b80 | WeaponSystem__ReadFromStream |
+| 0x00585f40 | WeaponSystem__GetTargets_Py |
+
+#### WeaponTargetEntry (2 renames)
+| Address | Name |
+|---------|------|
+| 0x00585ec0 | WeaponTargetEntry__WriteToStream |
+| 0x00585f00 | WeaponTargetEntry__ReadFromStream |
+
+#### FiringChain (3 renames)
+| Address | Name |
+|---------|------|
+| 0x00586220 | FiringChain__GetFirstGroupIndex |
+| 0x00586250 | FiringChain__GetNextGroupIndex |
+| 0x00586280 | FiringChain__WriteToStream |
+
+#### Misc (3 renames)
+| Address | Name |
+|---------|------|
+| 0x004068c0 | GetDifficultyDamageScale |
+| 0x005965f0 | ForceVector__Init |
+| 0x00586c50 | TGPoolAllocator__Init |
+
+### Rejected Candidates
+| Address | Candidate | Reason |
+|---------|-----------|--------|
+| 0x0056fdf0 | EnergyWeapon__GetFiringArcRatio | Already correctly named EnergyWeapon__GetChargePercentage |
+| 0x0056f8a0 | EnergyWeapon__DynCast | Dynamic cast to 0x802b - too generic |
+| 0x00574f00 | PulseWeapon__DynCast | Dynamic cast to 0x802d - too generic |
+| 0x0057ea60 | TractorBeam__DynCast | Dynamic cast to 0x802e - too generic |
+| 0x0057ea90 | TractorBeam__GetPropertyPtr | Simple +0x18 getter, too trivial |
+| 0x00570eb0 | PhaserBank__scalar_deleting_dtor | Standard dtor pattern |
+| 0x0057c5c0 | TorpedoTube__scalar_deleting_dtor | Standard dtor pattern |
+| 0x0057b140 | TorpedoSystem__scalar_deleting_dtor | Standard dtor pattern |
+| 0x00584240 | WeaponSystem__scalar_deleting_dtor | Standard dtor pattern |
+| 0x005750e0 | PulseWeapon__scalar_deleting_dtor | Standard dtor pattern |
+| 0x00573100 | PhaserBank__ctor_alternate | Alternate ctor with different vtable 0x893228, uncertain |
+| ~50 FUN_ addresses | Various thunks, static initializers | FUN_00855f23/FUN_008594e4/FUN_00856fd1 thunks, TGInstanceHandlerTable__ctor statics |
+
+### Key Weapon System Insights
+1. **Torpedo homing**: PredictPositionAtTime for lead targeting + clamped angular acceleration = smooth pursuit curves
+2. **Phaser power levels**: 3 levels (0/1/2) each with different discharge rate constants at 0x893170/74/78
+3. **FiringChain bitmask**: 32-bit mask parsed from string "123:456" format, groups weapons into fire sequences
+4. **Tractor 6 modes**: 0=drag, 1=push, 2=hold, 3=repel, 4=push-variant, 5=dock (cut content partially)
+5. **WeaponHitEvent (0x60 bytes)**: Carries position, normal, damage, weapon type (0=phaser, 1=torpedo), firing player
+6. **Difficulty damage scaling**: 3 levels via GetDifficultyDamageScale (0x004068c0)
+7. **Client non-player recharge**: PhaserBank__UpdateCharge recharges at 2x rate for client non-player ships
+
+### Statistics
+- **86 successful renames** in Pass 8J (across 2 sessions)
+- **~12 rejected candidates** (dynamic casts, dtors, thunks, one misidentification)
+- **Total across all passes: ~6,602 functions named (~36.2% of 18,247)**
+
+## Pass 8D (2026-02-24) - UI System Classes - 135 renames
+
+### Classes Touched (20 UI classes)
+TGPane(21), TGUIObject(16), TGRootPane(12), TGWindow(5), STWidget(7), STMenu(13),
+MultiplayerWindow(11), TopWindow(7), MainWindow(6), TGIcon(7), TGTextBlock(4),
+TGParagraph(3), TGDialogWindow(4), STStylizedWindow(4), BridgeWindow(2),
+CinematicWindow(2), NamedReticleWindow(2), ModalDialogWindow(1), STButton(1),
+STToggle(1), PlayWindow(1), TacticalWindow(1), SortedRegionMenuWindow(1),
+TGRect(2), Misc(1)
+
+### TGPane Base (21)
+0x0072de40 TGPane__dtor, 0x0072e000 TGPane__KillChildren, 0x0072e060 TGPane__Render,
+0x0072e0a0 TGPane__Update, 0x0072e5b0 TGPane__RemoveChild, 0x0072e6c0 TGPane__DeleteChild,
+0x0072e7e0 TGPane__SetFocus, 0x0072e920 TGPane__MoveToFront, 0x0072e970 TGPane__MoveToBack,
+0x0072eac0 TGPane__MoveTowardsBack, 0x0072ec60 TGPane__GetFocusLeaf,
+0x0072ec80 TGPane__InvalidateAllChildPolys, 0x0072ecb0 TGPane__SetClipRectOnChildren,
+0x0072ece0 TGPane__BuildPolyList, 0x0072ed80 TGPane__GetNthChild,
+0x0072edd0 TGPane__GetFirstVisibleChild, 0x0072eeb0 TGPane__SetNotVisibleRecursive,
+0x0072ef50 TGPane__SetEnabledRecursive, 0x0072efa0 TGPane__ClearDirtyAndLayoutChildren,
+0x0072f060 TGPane__WriteToStream, 0x0072f0e0 TGPane__ReadFromStream
+
+### TGUIObject Base (16)
+0x0072fd70 TGUIObject__dtor, 0x0072fe00 TGUIObject__ClearCallbackList,
+0x0072fe40 TGUIObject__GetConceptualParent, 0x0072fed0 TGUIObject__SetEnabled,
+0x0072ff10 TGUIObject__SetDisabled, 0x0072ff30 TGUIObject__SetBounds,
+0x0072ff80 TGUIObject__GetScreenOffset, 0x0072ffc0 TGUIObject__GetClipRect,
+0x007300e0 TGUIObject__Move, 0x007302f0 TGUIObject__SetPosition,
+0x007305d0 TGUIObject__AlignTo, 0x00731030 TGUIObject__WriteToStream,
+0x007310a0 TGUIObject__ReadFromStream, 0x00731120 TGUIObject__ResolveIDs,
+0x00730b80 TGUIObject__GetRenderTarget, 0x00730df0 TGUIObject__IsFocused
+
+### TGRootPane (12)
+0x00727620 ctor, 0x00727760 scalar_dtor, 0x00727840 dtor, 0x007278a0 DestroyAll,
+0x00727920 DestroyCursor, 0x00727940 CreateTooltip, 0x00727a10 ReleaseCursor,
+0x00727b30 SetMouseCursor, 0x00727e30 RestorePreviousCursor, 0x00727ee0 PushCursor,
+0x00727fa0 PopCursor, 0x00728720 UnregisterFocus
+
+### MultiplayerWindow (11)
+0x00504360 Cast, 0x00504530 scalar_dtor, 0x00504560 dtor, 0x00505480 HideAllChildren,
+0x00505500 WriteToStream, 0x00505660 ReadFromStream, 0x00505770 ResolveIDs,
+0x00505880 RestoreIDsToPointers, 0x00505d70 ButtonSelectionHandler,
+0x00506910 InitClientUI, 0x00506eb0 SetVisible
+
+### TopWindow (7)
+0x0050e110 IsBridgeVisible, 0x0050e130 IsTacticalVisible, 0x0050e170 SetLastRenderedSet,
+0x0050e190 GetLastRenderedSet, 0x0050e630 WriteToStream, 0x0050e7c0 ReadFromStream,
+0x0050e910 ClearGlobal
+
+### MainWindow (6)
+0x0050ea00 scalar_dtor, 0x0050ea30 ToggleVisibility, 0x0050eab0 IsCurrentWindow,
+0x0050eb00 SetVisibleWithFocus, 0x0050f480 AddToObjectList, 0x0050f590 RemoveFromObjectList
+
+### TGIcon (7), TGTextBlock (4), TGParagraph (3), TGDialogWindow (4)
+See full tables in detailed notes above.
+
+### Rejected Candidates (10)
+1. LAB_0072e3a0/0072e3d0 - code labels, not functions
+2. 17+ TopWindow__RegisterHandlers LABs - same issue
+3. FUN_007322b0, 00732420 - rendering internals
+4. FUN_00739f00, 00739fc0 - generic rect utilities
+5. FUN_00739e20, 007309e0 - no-op stubs
+
+### Key Findings
+- **UI hierarchy**: TGEventHandlerObject -> TGUIObject -> TGPane -> (TGWindow, STWidget, TGIcon...)
+- **MainWindow type IDs**: 0=Bridge, 1=Tactical, 2=Console, 5=Play, 7=StarMap, 8=MP, 9=PlayView, 10=Cinematic
+- **Event types**: 0x800494-498 (input toggles), 0x8000B6-BA (resolution), 0x8000CE-D1 (dialogs)
+- **TGDialogWindow button flags**: bitfield for OK/Cancel/Yes/No/Abort/Retry/Continue/Ignore
+- **TGUIObject flags (+0x28)**: 0x08=visible, 0x80=dirty, 0x100=hidden, 0x200=disabled
+
+### Statistics
+- **135 successful renames** in Pass 8D
+- **2 failed renames** (LAB_ addresses)
+- **10 rejected candidates**
+- **Total across all passes: ~6,737 functions named (~36.9% of 18,247)**
+
+## Pass 8E (2026-02-24) - Subsystem Class Hierarchy Virtual Methods - 45 renames
+
+### Overview
+Deep-dive into the ShipSubsystem class hierarchy, mapping vtable layouts, identifying overrides,
+and fixing several misnamed functions from prior annotation passes. Produced comprehensive vtable
+documentation at `subsystem-vtable-map.md`.
+
+### Class Hierarchy Discovered
+```
+TGEventHandlerObject (vtable 0x00896044, 22 slots)
+  ShipSubsystem (vtable 0x00892fc4, 30 slots)
+    PoweredSubsystem (vtable 0x00892d98, 34 slots)
+      ShieldSubsystem (0x00892f34) | ImpulseEngineSubsystem (0x00892d10) |
+      WarpEngineSubsystem (0x00893040) | SensorSubsystem (0x00892eac) |
+      RepairSubsystem (0x00892e24) | CloakingSubsystem (0x00892c04)
+      WeaponSystem (vtable 0x008938c4, 55 slots)
+        PhaserSystem (0x00893240) | TorpedoSystem (0x00893598) |
+        TractorBeamSystem (0x00893794) | PulseWeaponSystem (0x008933b0)
+      PoweredMaster (0x0088a1f0) [EPS system]
+    PowerSubsystem (0x00892c98) [reactor, NOT PoweredSubsystem]
+    WeaponSubsystem (0x00893834)
+      PhaserSubsystem/EnergyWeapon (0x008930d8)
+        PulseWeapon (0x00893318)
+```
+
+### Critical Naming Corrections (5 misnames fixed)
+| Old Name | New Name | Evidence |
+|----------|----------|----------|
+| ShieldProperty__SetPower | ShipSubsystem__SetParentShip | SWIG SetParentShip at vtable+0x58 |
+| ShieldSubsystem__SetPowerLevel | PoweredSubsystem__SetParentShip | Override of slot 22 |
+| Subsystem__IsActive | ShipSubsystem__IsTargetable | SWIG IsTargetable confirms |
+| ShieldProperty__GetCurrentPower | ShipSubsystem__GetDisabledPercentage | SWIG confirms |
+| ShieldSubsystem__ReadState | ShieldSubsystem__WriteState_B | Decompiled: writes, not reads |
+
+### New Function Names (40 renames)
+**ShipSubsystem base (7):**
+0x0056bb60 ScalarDeletingDtor, 0x0056b920 GetPosition, 0x0056d170 ResolveObjectRefs,
+0x0056d1f0 FixupObjectRefs, ShipSubsystem__SetPropertyAndRestoreHP -> SetProperty,
+Subsystem__GetRadius -> GetRadius, Subsystem__GetChild -> GetChild
+
+**CloakingSubsystem (6):**
+0x0055e2b0 ctor, 0x0055fa30 WriteToStream, 0x0055faa0 ReadFromStream,
+0x0055f970 WriteState_A, 0x0055f9a0 ReadState_A, 0x0055f930 TurnOff, 0x0055e500 Update
+
+**ShieldSubsystem (3):**
+0x0056a160 ScalarDeletingDtor, 0x0056acc0 ResolveObjectRefs, 0x0056ad00 FixupObjectRefs
+
+**WarpEngineSubsystem (3):**
+0x0056ed40 WriteToStream, 0x0056ee20 ReadFromStream, 0x0056dfa0 ScalarDeletingDtor
+
+**ImpulseEngineSubsystem (3):**
+0x005616a0 WriteToStream, 0x00561710 ReadFromStream, 0x00561140 ScalarDeletingDtor
+
+**RepairSubsystem (2):**
+0x00565e80 ReadFromStream, 0x00565190 ScalarDeletingDtor
+
+**SensorSubsystem (1):**
+0x00566e20 ScalarDeletingDtor
+
+**WeaponSubsystem (2):**
+0x005833e0 Update, 0x005833a0 ScalarDeletingDtor
+
+**WeaponSystem (2):**
+0x00584240 ScalarDeletingDtor, 0x00573ea0 PhaserSystem__StartFiringAtTarget
+
+**TractorBeamSystem (3):**
+0x00582710 WriteToStream, 0x00582780 ReadFromStream, 0x00582170 ScalarDeletingDtor
+
+**TorpedoSystem (1):**
+0x0057b140 ScalarDeletingDtor
+
+**PulseWeaponSystem (1):**
+0x00577480 ScalarDeletingDtor
+
+**PulseWeapon (1):**
+0x005750e0 ScalarDeletingDtor
+
+**PhaserSubsystem (1):**
+0x0056fb30 ScalarDeletingDtor
+
+**PoweredSubsystem (1):**
+0x00562330 ScalarDeletingDtor
+
+**PoweredMaster (2):**
+0x004401d0 ScalarDeletingDtor, 0x00563f00 WriteToStream
+
+### Rejected Candidates
+- ~15-20 vtable entries point to undefined code (Ghidra auto-analysis didn't create functions)
+  Examples: 0x00561180 (ImpulseEngine Update), 0x005652a0 (Repair Update), 0x005670b0 (Sensor Update)
+  These need `createFunction` before renaming, which is outside rename scope.
+- PhaserSystem__StopFiringAtTarget already named by prior pass (rename returned "failed" but name was correct)
+
+### Key Vtable Slot Map (ShipSubsystem, 30 slots)
+| Slot | Offset | Method |
+|------|--------|--------|
+| 0 | 0x00 | ScalarDeletingDtor |
+| 4-5 | 0x10-0x14 | WriteToStream / ReadFromStream |
+| 6-7 | 0x18-0x1C | ResolveObjectRefs / FixupObjectRefs |
+| 20 | 0x50 | ProcessEvent |
+| 21 | 0x54 | GetPosition |
+| 22 | 0x58 | SetParentShip |
+| 24 | 0x60 | SetProperty |
+| 25 | 0x64 | Update |
+| 26-29 | 0x68-0x74 | WriteState_A / ReadState_A / WriteState_B / ReadState_B |
+
+PoweredSubsystem adds slots 30-33: GetNormalPowerWanted(0x78), TurnOn(0x7C), TurnOff(0x80), unk(0x84)
+WeaponSystem adds slots 34-54 (weapon virtuals, StartFiringAtTarget=34, StopFiringAll=36)
+
+### Statistics
+- **45 successful renames** in Pass 8E (5 corrections + 40 new)
+- **3 decompiler comments** added to vtable data addresses
+- **~15-20 undefined vtable entries** noted but not renameable
+- **Full documentation**: subsystem-vtable-map.md
+- **Total across all passes: ~6,782 functions named (~37.2% of 18,247)**
+
+## Pass 8B (2026-02-24) - Ship Vtable Mining - 23 renames
+
+### Strategy
+Mine the Ship class vtable (0x00894340, 92 slots) by tracing full TG inheritance chain,
+reading all 92 vtable entries, cross-referencing parent vtables, and decompiling identifiable functions.
+
+### Key Discovery
+TG hierarchy uses DIFFERENT vtable layout from NiObject: slot 0 = scalar_deleting_dtor (NOT GetRTTI).
+Ship does NOT inherit from NiObject. Chain: TGObject -> TGStreamedObject -> TGStreamedObjectEx ->
+TGEventHandlerObject -> TGSceneObject -> ObjectClass -> PhysicsObjectClass -> DamageableObject -> Ship.
+DamageableObject: 90 slots; Ship adds 2 (90-91).
+
+### Renames (23 across 8 classes)
+
+**TGObject (2):** InvokePythonHandler(0x006f15c0, slot 8), DebugPrint(0x006f1650, slot 3)
+**TGStreamedObject (2):** WriteToStreamChain(0x006f2750, slot 12), AddEventHandler(0x006f3400, slot 14)
+**TGStreamedObjectEx (1):** PostDeserialize(0x006f2810, slot 7)
+**TGEventHandlerObject (2):** HandleEvent(0x006d9240, slot 20), RegisterConditionHandler(0x006da4e0)
+**TGSceneObject (3):** Update(0x00430cf0, slot 21), SetScene(0x00430e20, slot 22), ResolveObjectRefs(0x00431e20, slot 6)
+**ObjectClass (1):** CreateCollisionProxy(0x004356a0)
+**PhysicsObjectClass (4):** SerializeToBuffer(0x005a1cf0, slot 67), DeserializeFromNetwork(0x005a2060), SetTargetObject(0x005a15a0), WriteNetworkState(0x005a1dc0, slot 68, renamed from WriteToStream)
+**DamageableObject (6):** RayIntersect(0x00594310), CollisionTest_A(0x00594440), CollisionTest_B(0x005945b0), RegisterEventHandlers(0x00590980), UnregisterEventHandlers(0x005909b0), ctor_stream(0x00590ec0)
+**Ship (2 renames):** Ship__AreAllSubsystemObjectsValid -> ResolveObjectRefs(0x005b1500, slot 6), Ship__RebuildSubsystemSerializationList -> PostDeserialize(0x005b1550, slot 7)
+
+### ~40 Unresolvable Vtable Entries
+Many entries point to addresses not recognized as functions in Ghidra (small stubs/thunks).
+
+### Documentation
+- [docs/engine/tg-hierarchy-vtables.md](../../docs/engine/tg-hierarchy-vtables.md) - Complete Ship vtable map + TG hierarchy layout
+- ghidra_annotate_globals.py: Ship section 44->56 entries, all duplicates resolved (2302 unique)
+
+### Statistics
+- **23 successful renames** across 8 classes
+- **Total across all passes: ~6,805 functions named (~37.3% of 18,247)**
+
+## Pass 8F (2026-02-24) - NetImmerse 3.1 Scene Graph Deep-Dive - 81 renames
+
+Focus: NiStream/NiNode/NiAVObject/NiTimeController/NiTArray/NiBound.
+Cross-referenced with Gamebryo 1.2 source (NiTimeController.h/cpp, NiNode.h, NiAVObject.h).
+
+### Summary by Class
+- NiObject: 2 (ctor, dtor)
+- NiObjectNET: 6 (GetName, GetExtraData, PrependController, RemoveController, dtor, ProcessClone)
+- NiAVObject: 9 (SetParent, GetProperty, RemoveProperty, AttachProperty, UpdateEffects, CullAgainstPlanes, TestBoundIntersection x2, GetObjectByName)
+- NiNode: 25 (full vtable: ctor/dtor/AttachChild/DetachChild/DetachChildAt/SetAt, traversal, stream I/O, cloning)
+- NiDynamicEffect: 2 (AttachAffectedNode, DetachAffectedNode)
+- NiTimeController: 8 (dtor, Start, Stop, SetTarget, StartAnimations, StopAnimations, ProcessClone, ItemsInList)
+- NiStream: 8 (ctor, dtor, ReadHeader, LoadFromBuffer, PostLinkObjects, HashIndex, CleanupHashTable, GetObjectFromLinkID)
+- NiFile/NiMemStream/NiAssetLoader: 5
+- NiTArray/NiSmartPtr/NiTList: 18 template instantiations
+- NiBound: 8, NiPropertyState/NiDynamicEffectState: 5, NiPoint3/NiMatrix3: 7, Utility: 3
+
+### Key Findings
+- **Vtable slot 22 (+0x58) = GetObjectByName** (NOT UpdateWorldData as previously documented)
+- **NiObject ctor** was mislabeled NiColorData_ctor; many NiNode methods were NiBezierMesh_* or NiFltAnimationNode_*
+- **NiTimeController member layout**: flags+0x08, freq+0x0C, phase+0x10, loKey+0x14, hiKey+0x18, startTime+0x1C, lastTime+0x20, target+0x28, m_spNext+0x2C
+
+### Statistics
+- **81 successful renames**, 0 failures, 13 rejected
+- **Total across all passes: ~6,886 functions named (~37.7% of 18,247)**
