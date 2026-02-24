@@ -315,12 +315,12 @@ KEY_FUNCTIONS = {
 
     # --- AsteroidField (3) ---
     0x004196d0: ("AsteroidField__HandleShipEnterSet", "AsteroidField method: HandleShipEnterSet"),
-    0x00419b30: ("AsteroidField__HandleEnterSet", "AsteroidField method: HandleEnterSet"),
-    0x00419ba0: ("AsteroidField__HandleExitSet", "AsteroidField method: HandleExitSet"),
+    0x00419b30: ("AsteroidField__RegisterHandlerNames", "AsteroidField: registers EnterSet/ExitSet/ShipEnter/ShipExit/Proximity name strings"),
+    0x00419ba0: ("AsteroidField__RegisterHandlers", "AsteroidField: registers EnterSet/ExitSet event handlers"),
 
     # --- AsteroidTile (2) ---
-    0x0041c280: ("AsteroidTile__HandleEnterSet", "AsteroidTile method: HandleEnterSet"),
-    0x0041c2b0: ("AsteroidTile__HandleExitSet", "AsteroidTile method: HandleExitSet"),
+    0x0041c280: ("AsteroidTile__RegisterHandlerNames", "AsteroidTile: registers EnterSet/ExitSet name strings"),
+    0x0041c2b0: ("AsteroidTile__RegisterHandlers", "AsteroidTile: registers EnterSet/ExitSet event handlers"),
 
     # --- LightManager (2) ---
     0x0041ce00: ("LightManager__SaveToStream", "LightManager method: SaveToStream"),
@@ -330,7 +330,7 @@ KEY_FUNCTIONS = {
     0x0041eee0: ("CameraMode__TrackObject", "CameraMode method: TrackObject"),
     0x0041f020: ("CameraMode__SetAttrIDObject", "CameraMode method: SetAttrIDObject"),
     0x0041f040: ("CameraMode__GetAttrIDObject", "CameraMode method: GetAttrIDObject"),
-    0x0041f0b0: ("CameraMode__ObjectChangedToHulk", "CameraMode method: ObjectChangedToHulk"),
+    0x0041f0b0: ("CameraMode__RegisterHandlerNames", "CameraMode: registers ObjectChangedToHulk name string, calls TorpCameraMode__RegisterHandlerNames"),
     0x00421290: ("CameraMode__GetAttrPoint", "CameraMode method: GetAttrPoint"),
 
     # --- TGObject (28) ---
@@ -363,9 +363,10 @@ KEY_FUNCTIONS = {
     0x006f26b0: ("TGObject__ReadFromStream", "TGObject method: ReadFromStream"),
     0x006f27f0: ("TGObject__ResolveObjectRefs", "TGObject method: ResolveObjectRefs"),
 
-    # --- TorpCameraMode (2) ---
+    # --- TorpCameraMode (3) ---
     0x00426c80: ("TorpCameraMode__Constructor", "TorpCameraMode method: Constructor"),
-    0x00427180: ("TorpCameraMode__TorpFired", "TorpCameraMode method: TorpFired"),
+    0x00427180: ("TorpCameraMode__RegisterHandlerNames", "TorpCameraMode: registers TorpFired name string"),
+    0x004271a0: ("TorpCameraMode__RegisterHandlers", "TorpCameraMode: stub RegisterHandlers"),
 
     # --- CameraObjectClass (8) ---
     0x0042a0b0: ("CameraObjectClass__Create", "CameraObjectClass method: Create"),
@@ -374,8 +375,8 @@ KEY_FUNCTIONS = {
     0x0042ad70: ("CameraObjectClass__GetCurrentCameraMode", "CameraObjectClass method: GetCurrentCameraMode"),
     0x0042b070: ("CameraObjectClass__GetNamedCameraMode", "CameraObjectClass method: GetNamedCameraMode"),
     0x0042bcb0: ("CameraObjectClass__LookToward", "CameraObjectClass method: LookToward"),
-    0x0042c380: ("CameraObjectClass__AnimationDoneHandler", "CameraObjectClass method: AnimationDoneHandler"),
-    0x0042c3a0: ("CameraObjectClass__RegisterAnimationDoneHandler", "Register animation completion callback"),
+    0x0042c380: ("CameraObjectClass__RegisterHandlerNames", "CameraObjectClass: registers AnimationDone name string, calls CameraMode chain"),
+    0x0042c3a0: ("CameraObjectClass__RegisterHandlers", "CameraObjectClass: registers AnimationDone event handler, calls TorpCameraMode stub"),
 
     # --- TGSceneObject (6) ---
     0x00430830: ("TGSceneObject__InitSceneNode", "TGSceneObject method: InitSceneNode"),
@@ -403,6 +404,8 @@ KEY_FUNCTIONS = {
     0x00435090: ("ObjectClass__InitDefaults", "ObjectClass method: InitDefaults"),
     0x004350e0: ("ObjectClass__dtor", "ObjectClass method: dtor"),
     0x00435190: ("ObjectClass__AllocAndConstruct", "ObjectClass method: AllocAndConstruct"),
+    0x004351c0: ("ObjectClass__RegisterHandlerNames", "ObjectClass: registers EnteredSet name string"),
+    0x004351e0: ("ObjectClass__RegisterHandlers_Stub", "ObjectClass: stub RegisterHandlers"),
     0x00435220: ("ObjectClass__PlaceObjectByName", "ObjectClass method: PlaceObjectByName"),
     0x00435ec0: ("ObjectClass__LineCollides", "ObjectClass method: LineCollides"),
     0x00435f90: ("ObjectClass__ReplaceTexture", "ObjectClass method: ReplaceTexture"),
@@ -429,7 +432,8 @@ KEY_FUNCTIONS = {
 
     # --- ObjectGroup (8) ---
     0x0043ef70: ("ObjectGroup__ctor", "ObjectGroup method: ctor"),
-    0x0059c7b0: ("ObjectGroup__RegisterHandlers", "ObjectGroup method: RegisterHandlers"),
+    0x0059c7b0: ("ObjectGroup__RegisterHandlerNames", "ObjectGroup: registers EnteredSet/ExitedSet/ObjectDestroyed/ObjectDeleted name strings"),
+    0x0059d130: ("ObjectGroup__RegisterHandlers_Stub", "ObjectGroup: stub RegisterHandlers"),
     0x0059c890: ("ObjectGroup__dtor", "ObjectGroup method: dtor"),
     0x0059c900: ("ObjectGroup__ExitedSet", "ObjectGroup method: ExitedSet"),
     0x0059c990: ("ObjectGroup__AddName", "ObjectGroup method: AddName"),
@@ -489,8 +493,8 @@ KEY_FUNCTIONS = {
     0x00448e80: ("SetFloatVarEvent__SetName", "SetFloatVarEvent method: SetName"),
 
     # --- VarManagerClass (6) ---
-    0x0044b2d0: ("VarManagerClass__SetFloatVarHandler_A", "VarManagerClass method: SetFloatVarHandler_A"),
-    0x0044b2f0: ("VarManagerClass__SetFloatVarHandler_B", "VarManagerClass method: SetFloatVarHandler_B"),
+    0x0044b2d0: ("VarManagerClass__RegisterHandlerNames", "VarManagerClass: registers SetFloatVar handler name string"),
+    0x0044b2f0: ("VarManagerClass__RegisterHandlers", "VarManagerClass: registers SetFloatVar event handler"),
     0x0044b310: ("VarManagerClass__SetFloatVariable", "VarManagerClass method: SetFloatVariable"),
     0x0044b490: ("VarManagerClass__GetFloatVariable", "VarManagerClass method: GetFloatVariable"),
     0x0044b500: ("VarManagerClass__SetStringVariable", "VarManagerClass method: SetStringVariable"),
@@ -531,9 +535,11 @@ KEY_FUNCTIONS = {
     0x0045f810: ("TGStringToStringMap__GetDest", "TGStringToStringMap method: GetDest"),
     0x0045f8b0: ("TGStringToStringMap__DeleteMappings", "TGStringToStringMap method: DeleteMappings"),
 
-    # --- ChatObjectClass (2) ---
+    # --- ChatObjectClass (4) ---
     0x00461220: ("ChatObjectClass__ReceiveMessageHandler", "ChatObjectClass method: ReceiveMessageHandler"),
-    0x00461500: ("ChatObjectClass__ConnectHandler", "ChatObjectClass method: ConnectHandler"),
+    0x004617c0: ("ChatObjectClass__DisconnectHandler", "ChatObjectClass: handle disconnect event"),
+    0x00461500: ("ChatObjectClass__RegisterHandlerNames", "ChatObjectClass: registers Connect/Disconnect/ReceiveMessage name strings"),
+    0x00461560: ("ChatObjectClass__RegisterHandlers", "ChatObjectClass: registers Connect/Disconnect/ReceiveMessage event handlers"),
 
     # --- FrameBudgetScheduler (1) ---
     0x0046f420: ("FrameBudgetScheduler__Update", "FrameBudgetScheduler method: Update"),
@@ -703,21 +709,26 @@ KEY_FUNCTIONS = {
 
     # --- BackgroundEditor (3) ---
     0x004954f0: ("BackgroundEditor__SaveDialogHandler", "BackgroundEditor method: SaveDialogHandler"),
-    0x004956b0: ("BackgroundEditor__CreateDialogHandler", "BackgroundEditor method: CreateDialogHandler"),
-    0x004956f0: ("BackgroundEditor__MenuHandler", "BackgroundEditor method: MenuHandler"),
+    0x004956b0: ("BackgroundEditor__RegisterHandlerNames", "BackgroundEditor: registers CreateDialog/Menu handler name strings"),
+    0x004956f0: ("BackgroundEditor__RegisterHandlers", "BackgroundEditor: registers dialog/menu event handlers"),
+    0x00495890: ("BackgroundEditor__SaveDialogHandler_B", "BackgroundEditor: handle save dialog event"),
 
     # --- Editor (3) ---
-    0x00496da0: ("Editor__RegisterHandlers", "Editor method: RegisterHandlers"),
-    0x00496e00: ("Editor__RegisterHandlers_B", "Editor method: RegisterHandlers_B"),
+    0x00496da0: ("Editor__RegisterHandlerNames", "Editor: registers keyboard/dialog handler name strings"),
+    0x00496e00: ("Editor__RegisterHandlers", "Editor: registers keyboard/dialog event handlers"),
+    0x00496f90: ("Editor__KeyboardHandler", "Editor: handle keyboard event"),
     0x00497bc0: ("Editor__ErrorDialogHandler", "Editor method: ErrorDialogHandler"),
 
-    # --- PlacementEditor (6) ---
+    # --- PlacementEditor (8) ---
     0x0049b310: ("PlacementEditor__EditNameDialogHandler", "PlacementEditor method: EditNameDialogHandler"),
-    0x0049b760: ("PlacementEditor__RegisterHandlers", "PlacementEditor method: RegisterHandlers"),
-    0x0049b810: ("PlacementEditor__RegisterHandlers_B", "PlacementEditor method: RegisterHandlers_B"),
+    0x0049b760: ("PlacementEditor__RegisterHandlerNames", "PlacementEditor: registers handler name strings"),
+    0x0049b810: ("PlacementEditor__RegisterHandlers", "PlacementEditor: registers event handlers"),
+    0x0049bd50: ("PlacementEditor__SaveDialogHandler", "PlacementEditor: handle save dialog event"),
+    0x0049bef0: ("PlacementEditor__EditNameDialogHandler_B", "PlacementEditor: handle edit name dialog event"),
+    0x0049bf60: ("PlacementEditor__DeleteDialogHandler", "PlacementEditor: handle delete dialog event"),
     0x0049cb10: ("PlacementEditor__SwitchSetsDialogHandler", "PlacementEditor method: SwitchSetsDialogHandler"),
-    0x0049cef0: ("PlacementEditor__DeleteDialogHandler", "PlacementEditor method: DeleteDialogHandler"),
-    0x0049d020: ("PlacementEditor__SaveDialogHandler", "PlacementEditor method: SaveDialogHandler"),
+    0x0049e8f0: ("PlacementEditor__HandleAsteroidFieldConfig", "PlacementEditor: handle asteroid field config"),
+    0x0049d020: ("PlacementEditor__SaveDialogHandler_B", "PlacementEditor: handle save game dialog event"),
 
     # --- PlacementObject (8) ---
     0x004a1050: ("PlacementObject__Cast", "PlacementObject method: Cast"),
@@ -736,8 +747,8 @@ KEY_FUNCTIONS = {
     # --- Waypoint (4) ---
     0x004a4240: ("Waypoint__Cast", "Waypoint method: Cast"),
     0x004a43c0: ("Waypoint__InsertAfterObj", "Waypoint method: InsertAfterObj"),
-    0x004a4870: ("Waypoint__HandleSetSpeed_A", "Waypoint method: HandleSetSpeed_A"),
-    0x004a4890: ("Waypoint__HandleSetSpeed_B", "Waypoint method: HandleSetSpeed_B"),
+    0x004a4870: ("Waypoint__RegisterHandlerNames", "Waypoint: registers HandleSetSpeed name string"),
+    0x004a4890: ("Waypoint__RegisterHandlers", "Waypoint: registers HandleSetSpeed event handler"),
 
     # --- DamageHandler (1) ---
     0x004b1ff0: ("DamageHandler__Process", "Per-handler: shield zone check + hull AABB overlap"),
@@ -776,8 +787,8 @@ KEY_FUNCTIONS = {
     0x004fb8e0: ("MapWindow__RegisterHandlers_Inner", "MapWindow method: RegisterHandlers_Inner"),
     0x004fda10: ("MapWindow__RegisterHandlers_TargetChanged", "MapWindow method: RegisterHandlers_TargetChanged"),
     0x004fe560: ("MapWindow__AddShipHandler", "MapWindow method: AddShipHandler"),
-    0x004febc0: ("MapWindow__GroupChangeHandler", "MapWindow method: GroupChangeHandler"),
-    0x004fec30: ("MapWindow__PeriodicUpdateHandler", "MapWindow method: PeriodicUpdateHandler"),
+    0x004febc0: ("MapWindow__RegisterHandlerNames", "MapWindow: registers GroupChange/PeriodicUpdate handler name strings"),
+    0x004fec30: ("MapWindow__RegisterHandlers", "MapWindow: registers event handlers"),
     0x004fef50: ("MapWindow__UpdatePlayerOrientationGraphics", "MapWindow method: UpdatePlayerOrientationGraphics"),
     0x004ff020: ("MapWindow__RemovePlayerOrientationGraphics", "MapWindow method: RemovePlayerOrientationGraphics"),
 
@@ -785,8 +796,8 @@ KEY_FUNCTIONS = {
     0x004fb8f0: ("BridgeHandlers__RegisterInputHandlers", "BridgeHandlers method: RegisterInputHandlers"),
 
     # --- CDCheckWindow (2) ---
-    0x004fc820: ("CDCheckWindow__ShowRetryHandler", "CDCheckWindow method: ShowRetryHandler"),
-    0x004fc860: ("CDCheckWindow__RetryCDHandler", "CDCheckWindow method: RetryCDHandler"),
+    0x004fc820: ("CDCheckWindow__RegisterHandlerNames", "CDCheckWindow: registers ShowRetry/RetryCD handler name strings"),
+    0x004fc860: ("CDCheckWindow__RegisterHandlers", "CDCheckWindow: registers retry event handlers"),
 
     # --- CinematicInterfaceHandlers (1) ---
     0x004fda20: ("CinematicInterfaceHandlers__RegisterInputHandlers", "CinematicInterfaceHandlers method: RegisterInputHandlers"),
@@ -795,8 +806,8 @@ KEY_FUNCTIONS = {
     0x005023c0: ("CinematicWindow__ctor", "CinematicWindow method: ctor"),
 
     # --- ModalDialogWindow (8) ---
-    0x00502fa0: ("ModalDialogWindow__KeyboardHandler", "ModalDialogWindow method: KeyboardHandler"),
-    0x00503030: ("ModalDialogWindow__RestoreGraphicsModeHandler", "ModalDialogWindow method: RestoreGraphicsModeHandler"),
+    0x00502fa0: ("ModalDialogWindow__RegisterHandlerNames", "ModalDialogWindow: registers Keyboard/RestoreGraphics/Okay/Cancel/Exit name strings"),
+    0x00503030: ("ModalDialogWindow__RegisterHandlers", "ModalDialogWindow: registers keyboard/graphics event handlers"),
     0x00503150: ("ModalDialogWindow__OkayHandler", "ModalDialogWindow method: OkayHandler"),
     0x005031b0: ("ModalDialogWindow__CancelHandler", "ModalDialogWindow method: CancelHandler"),
     0x00503220: ("ModalDialogWindow__ExitGameHandler", "ModalDialogWindow method: ExitGameHandler"),
@@ -806,21 +817,22 @@ KEY_FUNCTIONS = {
 
     # --- MultiplayerWindow (5) ---
     0x00504390: ("MultiplayerWindow__ctor", "MultiplayerWindow method: ctor"),
-    0x00504770: ("MultiplayerWindow__RegisterHandlers", "MultiplayerWindow method: RegisterHandlers"),
+    0x005046b0: ("MultiplayerWindow__RegisterHandlerNames", "MultiplayerWindow: registers all MP message handler name strings"),
+    0x00504770: ("MultiplayerWindow__RegisterHandlers", "MultiplayerWindow: registers MP message event handlers"),
     0x00504d30: ("MultiplayerWindow__SettingsHandler_0x00", "MultiplayerWindow method: SettingsHandler_0x00"),
     0x005054b0: ("MultiplayerWindow__UpdateStatusPaneText", "MultiplayerWindow method: UpdateStatusPaneText"),
     0x00506f10: ("MultiplayerWindow__ShowInNotification", "MultiplayerWindow method: ShowInNotification"),
 
     # --- TacticalControlWindow (4) ---
     0x00509750: ("TacticalControlWindow__ctor", "TacticalControlWindow method: ctor"),
-    0x00509b20: ("TacticalControlWindow__HandleRadarToggle_B", "TacticalControlWindow method: HandleRadarToggle_B"),
-    0x00509b40: ("TacticalControlWindow__HandleRadarToggle_A", "TacticalControlWindow method: HandleRadarToggle_A"),
+    0x00509b20: ("TacticalControlWindow__RegisterHandlerNames", "TacticalControlWindow: registers HandleRadarToggle name string"),
+    0x00509b40: ("TacticalControlWindow__RegisterHandlers", "TacticalControlWindow: registers radar toggle event handler"),
     0x0050a2f0: ("TacticalControlWindow__FindMenu", "TacticalControlWindow method: FindMenu"),
 
     # --- TopWindow (28) ---
     0x0050b3f0: ("TopWindow__RegisterHandlers_Inner", "TopWindow method: RegisterHandlers_Inner"),
     0x0050c430: ("TopWindow__ctor", "TopWindow method: ctor"),
-    0x0050c8b0: ("TopWindow__RegisterHandlers", "TopWindow method: RegisterHandlers"),
+    0x0050c8b0: ("TopWindow__RegisterHandlerNames", "TopWindow: registers all game handler name strings"),
     0x0050ceb0: ("TopWindow__ResolutionChangeBackHandler", "TopWindow method: ResolutionChangeBackHandler"),
     0x0050d150: ("TopWindow__KeyboardHandler", "TopWindow method: KeyboardHandler"),
     0x0050d2e0: ("TopWindow__ToggleConsoleHandler", "TopWindow method: ToggleConsoleHandler"),
@@ -863,18 +875,27 @@ KEY_FUNCTIONS = {
     # --- ConsoleWindow (1) ---
     0x0050ebc0: ("ConsoleWindow__ctor", "ConsoleWindow method: ctor"),
 
-    # --- NamedReticleWindow (3) ---
+    # --- NamedReticleWindow (5) ---
     0x0050fea0: ("NamedReticleWindow__Constructor", "Writes vtable 0x0088f1e8, registers 3 event handlers"),
-    0x00510310: ("NamedReticleWindow__HandleNameChange", "NamedReticleWindow method: HandleNameChange"),
+    0x00510310: ("NamedReticleWindow__RegisterHandlerNames", "NamedReticleWindow: registers handler name strings (HandleNameChange/ObjectGroupChanged/ShipIdentified)"),
     0x00510870: ("NamedReticleWindow__HandleShipIdentified", "NamedReticleWindow method: HandleShipIdentified"),
+    # --- PlayerReticleWindow (2) ---
+    0x00511d80: ("PlayerReticleWindow__RegisterHandlerNames", "PlayerReticleWindow: stub RegisterHandlerNames"),
+    0x00511d90: ("PlayerReticleWindow__RegisterHandlers", "PlayerReticleWindow: stub RegisterHandlers"),
 
-    # --- ReticleManagerWindow (2) ---
+    # --- ReticleManagerWindow (4) ---
     0x00513e20: ("ReticleManagerWindow__ShipDestroyedHandler", "ReticleManagerWindow method: ShipDestroyedHandler"),
-    0x00513f00: ("ReticleManagerWindow__ShipDestroyedHandler_B", "ReticleManagerWindow method: ShipDestroyedHandler_B"),
+    0x00513f00: ("ReticleManagerWindow__RegisterHandlerNames", "ReticleManagerWindow: registers ShipDestroyedHandler name string"),
+    0x00513f20: ("ReticleManagerWindow__RegisterHandlers", "ReticleManagerWindow: stub RegisterHandlers"),
 
-    # --- SortedRegionMenu (2) ---
-    0x00517df0: ("SortedRegionMenu__SetPlayerHandler", "SortedRegionMenu method: SetPlayerHandler"),
+    # --- ReticleWindow (2) ---
+    0x00515280: ("ReticleWindow__RegisterHandlerNames", "ReticleWindow: stub RegisterHandlerNames"),
+    0x00515290: ("ReticleWindow__RegisterHandlers", "ReticleWindow: stub RegisterHandlers"),
+
+    # --- SortedRegionMenu (3) ---
+    0x00517df0: ("SortedRegionMenu__RegisterHandlerNames", "SortedRegionMenu: registers SetPlayer/PlayerShipMoved handler name strings"),
     0x00517e20: ("SortedRegionMenu__PlayerShipMovedHandler", "SortedRegionMenu method: PlayerShipMovedHandler"),
+    0x00517f90: ("SortedRegionMenu__PlayerShipMovedHandler_B", "SortedRegionMenu: handle player ship position changed"),
 
     # --- STButton (10) ---
     0x00518bb0: ("STButton__Cast", "STButton method: Cast"),
@@ -891,19 +912,22 @@ KEY_FUNCTIONS = {
     # --- STCharacterMenu (4) ---
     0x0051b4a0: ("STCharacterMenu__ctor", "STCharacterMenu method: ctor"),
     0x0051b5c0: ("STCharacterMenu__ctorW", "STCharacterMenu method: ctorW"),
-    0x0051b5f0: ("STCharacterMenu__ButtonClickedHandler_A", "STCharacterMenu method: ButtonClickedHandler_A"),
-    0x0051b610: ("STCharacterMenu__ButtonClickedHandler_B", "STCharacterMenu method: ButtonClickedHandler_B"),
+    0x0051b5f0: ("STCharacterMenu__RegisterHandlerNames", "STCharacterMenu: registers ButtonClickedHandler name string"),
+    0x0051b610: ("STCharacterMenu__RegisterHandlers", "STCharacterMenu: registers ButtonClicked event handler"),
 
     # --- STMarker (1) ---
     0x0051c060: ("STMarker__Cast", "STMarker method: Cast"),
 
-    # --- STFileMenu (2) ---
-    0x005210c0: ("STFileMenu__HandleKeyboard_A", "STFileMenu method: HandleKeyboard_A"),
-    0x005210e0: ("STFileMenu__HandleKeyboard_B", "STFileMenu method: HandleKeyboard_B"),
+    # --- STFileMenu (3) ---
+    0x005210c0: ("STFileMenu__RegisterHandlerNames", "STFileMenu: registers HandleKeyboard name string"),
+    0x005210e0: ("STFileMenu__RegisterHandlers", "STFileMenu: registers keyboard event handler"),
+    # --- STFileListWindow (2) ---
+    0x0051f720: ("STFileListWindow__RegisterHandlerNames", "STFileListWindow: stub RegisterHandlerNames"),
+    0x0051f730: ("STFileListWindow__RegisterHandlers", "STFileListWindow: stub RegisterHandlers"),
 
     # --- STLoadDialog (5) ---
-    0x00523f70: ("STLoadDialog__RegisterHandlers", "STLoadDialog method: RegisterHandlers"),
-    0x00523fd0: ("STLoadDialog__RegisterHandlers_B", "STLoadDialog method: RegisterHandlers_B"),
+    0x00523f70: ("STLoadDialog__RegisterHandlerNames", "STLoadDialog: registers handler name strings"),
+    0x00523fd0: ("STLoadDialog__RegisterHandlers", "STLoadDialog: registers event handlers"),
     0x005243f0: ("STLoadDialog__HandleFileSelection", "STLoadDialog method: HandleFileSelection"),
     0x005244c0: ("STLoadDialog__HandleLoadButton", "STLoadDialog method: HandleLoadButton"),
     0x00524b00: ("STLoadDialog__KeyboardHandler", "STLoadDialog method: KeyboardHandler"),
@@ -912,28 +936,29 @@ KEY_FUNCTIONS = {
     0x00525560: ("STMenu__Cast", "STMenu method: Cast"),
     0x005255b0: ("STMenu__ctorW", "STMenu method: ctorW"),
     0x00525750: ("STMenu__ctor", "STMenu method: ctor"),
-    0x00525b50: ("STMenu__RegisterHandlers", "STMenu method: RegisterHandlers"),
-    0x00525b90: ("STMenu__RegisterHandlers_B", "STMenu method: RegisterHandlers_B"),
+    0x00525b50: ("STMenu__RegisterHandlerNames", "STMenu: registers HandleSelectOption/TacticalMenu name strings"),
+    0x00525b90: ("STMenu__RegisterHandlers", "STMenu: registers select-option event handler"),
     0x00525c00: ("STMenu__GetContainingWindow", "STMenu method: GetContainingWindow"),
     0x00525ce0: ("STMenu__ForceUpdate", "STMenu method: ForceUpdate"),
     0x00526f80: ("STMenu__SetChosen", "STMenu method: SetChosen"),
 
     # --- STMissionLog (2) ---
-    0x00528e10: ("STMissionLog__RegisterHandlers", "STMissionLog method: RegisterHandlers"),
-    0x00528e50: ("STMissionLog__RegisterHandlers_B", "STMissionLog method: RegisterHandlers_B"),
+    0x00528e10: ("STMissionLog__RegisterHandlerNames", "STMissionLog: registers handler name strings"),
+    0x00528e50: ("STMissionLog__RegisterHandlers", "STMissionLog: registers event handlers"),
 
     # --- STNumericBar (2) ---
-    0x0052a730: ("STNumericBar__RegisterHandlers", "STNumericBar method: RegisterHandlers"),
-    0x0052a790: ("STNumericBar__RegisterHandlers_B", "STNumericBar method: RegisterHandlers_B"),
+    0x0052a730: ("STNumericBar__RegisterHandlerNames", "STNumericBar: registers handler name strings"),
+    0x0052a790: ("STNumericBar__RegisterHandlers", "STNumericBar: registers event handlers"),
 
-    # --- STRepairButton (2) ---
-    0x0052c9c0: ("STRepairButton__HandleSubsystemStateChanged_A", "STRepairButton method: HandleSubsystemStateChanged_A"),
-    0x0052c9f0: ("STRepairButton__HandleSubsystemStateChanged_B", "STRepairButton method: HandleSubsystemStateChanged_B"),
+    # --- STRepairButton (3) ---
+    0x0052c9c0: ("STRepairButton__RegisterHandlerNames", "STRepairButton: registers HandleSubsystemStateChanged name string"),
+    0x0052c9e0: ("STRepairButton__RegisterHandlers", "STRepairButton: stub RegisterHandlers"),
+    0x0052c9f0: ("STRepairButton__HandleSubsystemStateChanged", "STRepairButton: handle subsystem state change event"),
 
     # --- STSaveDialog (3) ---
-    0x0052f760: ("STSaveDialog__RegisterHandlers", "STSaveDialog method: RegisterHandlers"),
-    0x0052f7c0: ("STSaveDialog__RegisterHandlers_B", "STSaveDialog method: RegisterHandlers_B"),
-    0x0052f800: ("STSaveDialog__RegisterHandlerNames", "STSaveDialog method: RegisterHandlerNames"),
+    0x0052f760: ("STSaveDialog__RegisterHandlerNames_Simple", "STSaveDialog: registers handler name strings (simple variant)"),
+    0x0052f7c0: ("STSaveDialog__RegisterHandlers", "STSaveDialog: registers event handlers"),
+    0x0052f800: ("STSaveDialog__RegisterHandlerNames", "STSaveDialog: registers extended handler name strings"),
 
     # --- TGWindow (2) ---
     0x00530d50: ("TGWindow__Cast", "TGWindow method: Cast"),
@@ -950,16 +975,16 @@ KEY_FUNCTIONS = {
     0x00531a10: ("STStylizedWindow__SetMaximumSize", "STStylizedWindow method: SetMaximumSize"),
     0x00531de0: ("STStylizedWindow__PeriodicScrollUp", "STStylizedWindow method: PeriodicScrollUp"),
     0x00531e20: ("STStylizedWindow__PeriodicScrollDown", "STStylizedWindow method: PeriodicScrollDown"),
-    0x00531fa0: ("STStylizedWindow__RegisterHandlers", "STStylizedWindow method: RegisterHandlers"),
-    0x00532000: ("STStylizedWindow__RegisterHandlers_B", "STStylizedWindow method: RegisterHandlers_B"),
+    0x00531fa0: ("STStylizedWindow__RegisterHandlerNames", "STStylizedWindow: registers handler name strings"),
+    0x00532000: ("STStylizedWindow__RegisterHandlers", "STStylizedWindow: registers event handlers"),
     0x0072ed70: ("STStylizedWindow__GetExteriorPane", "STStylizedWindow method: GetExteriorPane"),
 
     # --- STRadioGroup (1) ---
     0x00532f20: ("STRadioGroup__Cast", "STRadioGroup method: Cast"),
 
     # --- STSubPane (2) ---
-    0x005331e0: ("STSubPane__RegisterHandlers", "STSubPane method: RegisterHandlers"),
-    0x00533210: ("STSubPane__RegisterHandlers_B", "STSubPane method: RegisterHandlers_B"),
+    0x005331e0: ("STSubPane__RegisterHandlerNames", "STSubPane: registers handler name strings"),
+    0x00533210: ("STSubPane__RegisterHandlers", "STSubPane: registers event handlers"),
 
     # --- STToggle (10) ---
     0x00533a00: ("STToggle__GetPrimaryCaption", "STToggle method: GetPrimaryCaption"),
@@ -968,92 +993,103 @@ KEY_FUNCTIONS = {
     0x0053b840: ("STToggle__ctorW", "STToggle method: ctorW"),
     0x0053b9a0: ("STToggle__ctorUnsizedW", "STToggle method: ctorUnsizedW"),
     0x0053be20: ("STToggle__SetState", "STToggle method: SetState"),
-    0x0053bfe0: ("STToggle__KeyboardHandler_A", "STToggle method: KeyboardHandler_A"),
-    0x0053c000: ("STToggle__KeyboardHandler_B", "STToggle method: KeyboardHandler_B"),
+    0x0053bfe0: ("STToggle__RegisterHandlerNames", "STToggle: registers keyboard handler name string"),
+    0x0053c000: ("STToggle__RegisterHandlers", "STToggle: registers keyboard event handler"),
     0x0054a080: ("STToggle__SetStateValue", "STToggle method: SetStateValue"),
     0x0062bc20: ("STToggle__SetPrimaryCaptionW", "STToggle method: SetPrimaryCaptionW"),
 
     # --- STSubsystemMenu (3) ---
-    0x00535170: ("STSubsystemMenu__RegisterHandlers", "STSubsystemMenu method: RegisterHandlers"),
-    0x00535760: ("STSubsystemMenu__RegisterHandlers_B", "STSubsystemMenu method: RegisterHandlers_B"),
-    0x005357d0: ("STSubsystemMenu__TargetButtonClicked", "STSubsystemMenu method: TargetButtonClicked"),
+    0x00535170: ("STSubsystemMenu__ctor", "STSubsystemMenu: constructor (was misnamed RegisterHandlers)"),
+    0x00535760: ("STSubsystemMenu__RegisterHandlerNames", "STSubsystemMenu: registers handler name strings"),
+    0x005357d0: ("STSubsystemMenu__RegisterHandlers", "STSubsystemMenu: registers TargetButtonClicked/KeyboardHandler event handlers"),
 
     # --- STComponentMenu (2) ---
-    0x00536960: ("STComponentMenu__RegisterHandlers", "STComponentMenu method: RegisterHandlers"),
-    0x00536990: ("STComponentMenu__RegisterHandlers_B", "STComponentMenu method: RegisterHandlers_B"),
+    0x00536960: ("STComponentMenu__RegisterHandlerNames", "STComponentMenu: registers handler name strings"),
+    0x00536990: ("STComponentMenu__RegisterHandlers", "STComponentMenu: registers event handlers"),
 
     # --- STTargetMenu (9) ---
-    0x00537be0: ("STTargetMenu__RegisterHandlers_B", "STTargetMenu method: RegisterHandlers_B"),
-    0x00538170: ("STTargetMenu__RegisterHandlers", "STTargetMenu method: RegisterHandlers"),
+    0x00537be0: ("STTargetMenu__ctor", "STTargetMenu: constructor (was misnamed RegisterHandlers_B)"),
+    0x00538170: ("STTargetMenu__RegisterHandlerNames", "STTargetMenu: registers handler name strings"),
     0x00538240: ("STTargetMenu__TargetButtonClicked", "STTargetMenu method: TargetButtonClicked"),
     0x00538280: ("STTargetMenu__ObjectEnteredSet", "STTargetMenu method: ObjectEnteredSet"),
     0x005382d0: ("STTargetMenu__ObjectExitedSet", "STTargetMenu method: ObjectExitedSet"),
     0x005383c0: ("STTargetMenu__ObjectChangedGroup", "STTargetMenu method: ObjectChangedGroup"),
     0x00538560: ("STTargetMenu__TargetedSubsystemChanged", "STTargetMenu method: TargetedSubsystemChanged"),
-    0x00538590: ("STTargetMenu__TargetButtonClickedHandler", "STTargetMenu method: TargetButtonClickedHandler"),
+    0x00538590: ("STTargetMenu__RegisterHandlers", "STTargetMenu: registers event handlers (TargetButtonClicked)"),
     0x00538690: ("STTargetMenu__TargetChanged", "STTargetMenu method: TargetChanged"),
 
     # --- STTopLevelMenu (2) ---
-    0x0053d610: ("STTopLevelMenu__RegisterHandlers", "STTopLevelMenu method: RegisterHandlers"),
-    0x0053d650: ("STTopLevelMenu__RegisterHandlers_B", "STTopLevelMenu method: RegisterHandlers_B"),
+    0x0053d610: ("STTopLevelMenu__RegisterHandlerNames", "STTopLevelMenu: registers handler name strings"),
+    0x0053d650: ("STTopLevelMenu__RegisterHandlers", "STTopLevelMenu: registers event handlers"),
 
     # --- STWarpButton (2) ---
-    0x0053efa0: ("STWarpButton__HandleWarpEvent", "STWarpButton method: HandleWarpEvent"),
-    0x0053efd0: ("STWarpButton__ExitedWarpHandler", "STWarpButton method: ExitedWarpHandler"),
+    0x0053efa0: ("STWarpButton__RegisterHandlerNames", "STWarpButton: registers HandleWarpEvent/ExitedWarp name strings"),
+    0x0053efd0: ("STWarpButton__RegisterHandlers", "STWarpButton: registers warp event handlers"),
 
-    # --- DamageIcon (3) ---
-    0x005407a0: ("DamageIcon__HandleExpire", "DamageIcon method: HandleExpire"),
-    0x005407d0: ("DamageIcon__HandleBlink", "DamageIcon method: HandleBlink"),
+    # --- DamageIcon (4) ---
+    0x005407a0: ("DamageIcon__RegisterHandlerNames", "DamageIcon: registers HandleExpire/Blink name strings"),
+    0x005407d0: ("DamageIcon__HandleExpire", "DamageIcon method: HandleExpire (periodic expire timer)"),
     0x005408b0: ("DamageIcon__ResetPosition", "DamageIcon method: ResetPosition"),
+    0x00540870: ("DamageIcon__HandleBlinkEvent", "DamageIcon: handle blink timer event"),
+    0x005408c0: ("DamageIcon__RegisterHandlers", "DamageIcon: registers HandleBlink event handler"),
 
-    # --- DamageDisplay (7) ---
+    # --- DamageDisplay (8) ---
     0x00540e90: ("DamageDisplay__ctor", "DamageDisplay method: ctor"),
     0x00541090: ("DamageDisplay__GetShip", "DamageDisplay method: GetShip"),
     0x005410b0: ("DamageDisplay__HandleSubsystemEvents", "DamageDisplay method: HandleSubsystemEvents"),
     0x005411e0: ("DamageDisplay__HandleSubsystemEvents_B", "DamageDisplay method: HandleSubsystemEvents_B"),
     0x005412d0: ("DamageDisplay__RepositionUI", "DamageDisplay method: RepositionUI"),
-    0x00541310: ("DamageDisplay__HandleDamageDisplayRefresh", "DamageDisplay method: HandleDamageDisplayRefresh"),
-    0x00541340: ("DamageDisplay__HandleDamageDisplayRefresh_B", "DamageDisplay method: HandleDamageDisplayRefresh_B"),
+    0x00541310: ("DamageDisplay__RegisterHandlerNames", "DamageDisplay: registers HandleDamageDisplayRefresh name string"),
+    0x005413f0: ("DamageDisplay__HandleDamageDisplayRefreshEvent", "DamageDisplay: handle refresh event"),
+    0x00541340: ("DamageDisplay__RegisterHandlers", "DamageDisplay: registers refresh event handler"),
 
     # --- RadarDisplay (4) ---
     0x00542310: ("RadarDisplay__ctor", "RadarDisplay method: ctor"),
-    0x005424c0: ("RadarDisplay__MouseHandler_A", "RadarDisplay method: MouseHandler_A"),
-    0x00542500: ("RadarDisplay__MouseHandler_B", "RadarDisplay method: MouseHandler_B"),
+    0x005424c0: ("RadarDisplay__RegisterHandlerNames", "RadarDisplay: registers MouseHandler name string"),
+    0x00542500: ("RadarDisplay__RegisterHandlers", "RadarDisplay: registers mouse event handler"),
     0x00542650: ("RadarDisplay__SetColorBasedOnFlags", "RadarDisplay method: SetColorBasedOnFlags"),
 
     # --- RadarScope (4) ---
     0x00543670: ("RadarScope__SetObjectUpdate", "RadarScope method: SetObjectUpdate"),
-    0x00543a30: ("RadarScope__SetPlayerHandler", "RadarScope method: SetPlayerHandler"),
-    0x00543aa0: ("RadarScope__BracketExpireHandler", "RadarScope method: BracketExpireHandler"),
+    0x00543a30: ("RadarScope__RegisterHandlerNames", "RadarScope: registers SetPlayer/BracketExpire handler name strings"),
+    0x00543aa0: ("RadarScope__RegisterHandlers", "RadarScope: registers event handlers"),
     0x00543dc0: ("RadarScope__PlayerDamagedHandler", "RadarScope method: PlayerDamagedHandler"),
 
-    # --- ShieldsDisplay (3) ---
+    # --- ShieldsDisplay (4) ---
     0x005457e0: ("ShieldsDisplay__ctor", "ShieldsDisplay method: ctor"),
     0x00545970: ("ShieldsDisplay__Update", "ShieldsDisplay method: Update"),
-    0x00545be0: ("ShieldsDisplay__Update_B", "ShieldsDisplay method: Update_B"),
+    0x00545be0: ("ShieldsDisplay__RegisterHandlerNames", "ShieldsDisplay: registers Update/HandleSetPlayer name strings"),
+    0x00545c10: ("ShieldsDisplay__RegisterHandlers", "ShieldsDisplay: stub RegisterHandlers"),
 
-    # --- ShipDisplay (4) ---
+    # --- ShipDisplay (5) ---
     0x00546a50: ("ShipDisplay__ctor", "ShipDisplay method: ctor"),
     0x00546cd0: ("ShipDisplay__HandleShipDestroyed", "ShipDisplay method: HandleShipDestroyed"),
     0x00546dc0: ("ShipDisplay__HandleChangeTarget", "ShipDisplay method: HandleChangeTarget"),
-    0x00546df0: ("ShipDisplay__HandleShipDestroyed_B", "ShipDisplay method: HandleShipDestroyed_B"),
+    0x00546df0: ("ShipDisplay__RegisterHandlerNames", "ShipDisplay: registers HandleShipDestroyed/ChangeTarget/HandleSetPlayer name strings"),
+    0x00546e30: ("ShipDisplay__RegisterHandlers", "ShipDisplay: stub RegisterHandlers"),
 
-    # --- TacWeaponsCtrl (4) ---
-    0x00547b10: ("TacWeaponsCtrl__RegisterHandlers_B", "TacWeaponsCtrl method: RegisterHandlers_B"),
-    0x00547e50: ("TacWeaponsCtrl__RegisterHandlers", "TacWeaponsCtrl method: RegisterHandlers"),
-    0x00549520: ("TacWeaponsCtrl__HandleSubsystemOperational", "TacWeaponsCtrl method: HandleSubsystemOperational"),
-    0x00549640: ("TacWeaponsCtrl__RegisterHandlerNames", "TacWeaponsCtrl method: RegisterHandlerNames"),
+    # --- TacWeaponsCtrl (9) ---
+    0x00547b10: ("TacWeaponsCtrl__ctor", "TacWeaponsCtrl: constructor (was misnamed RegisterHandlers_B)"),
+    0x00547e50: ("TacWeaponsCtrl__BuildUI", "TacWeaponsCtrl: builds weapon UI layout (was misnamed RegisterHandlers)"),
+    0x00549520: ("TacWeaponsCtrl__RegisterHandlerNames", "TacWeaponsCtrl: registers handler name strings"),
+    0x00549640: ("TacWeaponsCtrl__RegisterHandlers", "TacWeaponsCtrl: registers PhaserSetting/TorpType/CloakToggle event handlers"),
+    0x00549830: ("TacWeaponsCtrl__TorpedoTypeToggle", "TacWeaponsCtrl: toggle torpedo type"),
+    0x0054a1a0: ("TacWeaponsCtrl__HandleSubsystemDisabled", "TacWeaponsCtrl: handle subsystem disabled event"),
+    0x0054a260: ("TacWeaponsCtrl__HandleSubsystemOperational", "TacWeaponsCtrl: handle subsystem operational event"),
+    0x00549a30: ("TacWeaponsCtrl__HandleCloakToggleRefresh", "TacWeaponsCtrl: handle cloak toggle refresh event"),
+    0x0054a320: ("TacWeaponsCtrl__HandleTractorBeamToggle", "TacWeaponsCtrl: handle tractor beam toggle event"),
 
-    # --- WeaponsDisplay (5) ---
+    # --- WeaponsDisplay (7) ---
     0x0054aea0: ("WeaponsDisplay__ctor", "WeaponsDisplay method: ctor"),
-    0x0054b120: ("WeaponsDisplay__Update", "WeaponsDisplay method: Update"),
-    0x0054b160: ("WeaponsDisplay__PeriodicUpdate", "WeaponsDisplay method: PeriodicUpdate"),
+    0x0054b120: ("WeaponsDisplay__RegisterHandlerNames", "WeaponsDisplay: registers Update/HandleFiringChain/HandleSetPlayer name strings"),
+    0x0054b160: ("WeaponsDisplay__RegisterHandlers", "WeaponsDisplay: registers event handlers"),
+    0x0054ba30: ("WeaponsDisplay__UpdateHandler", "WeaponsDisplay: handle periodic update event"),
     0x0054b2f0: ("WeaponsDisplay__Update_Impl", "WeaponsDisplay method: Update_Impl"),
     0x0054b6e0: ("WeaponsDisplay__Update_Impl_B", "WeaponsDisplay method: Update_Impl_B"),
 
     # --- EngPowerCtrl (6) ---
-    0x0054d340: ("EngPowerCtrl__RegisterHandlers", "EngPowerCtrl method: RegisterHandlers"),
-    0x0054d3b0: ("EngPowerCtrl__RegisterHandlers_B", "EngPowerCtrl method: RegisterHandlers_B"),
+    0x0054d340: ("EngPowerCtrl__RegisterHandlerNames", "EngPowerCtrl: registers handler name strings"),
+    0x0054d3b0: ("EngPowerCtrl__RegisterHandlers", "EngPowerCtrl: registers event handlers"),
     0x0054dde0: ("EngPowerCtrl__HandlePowerChange", "UI power slider handler (local only)"),
     0x0054e1f0: ("EngPowerCtrl__HandlePeriodicRefresh", "EngPowerCtrl method: HandlePeriodicRefresh"),
     0x0054e2b0: ("EngPowerCtrl__HandleKeyboard", "EngPowerCtrl method: HandleKeyboard"),
@@ -1062,15 +1098,19 @@ KEY_FUNCTIONS = {
     # --- InterfaceModule (6) ---
     0x0054d940: ("InterfaceModule__CreateOverridePane", "Create UI override pane for handler routing"),
     0x005559c0: ("InterfaceModule__RegisterUIHandlers", "InterfaceModule method: RegisterUIHandlers"),
-    0x00559130: ("InterfaceModule__OverrideHandler", "InterfaceModule method: OverrideHandler"),
-    0x00559270: ("InterfaceModule__STStylizedWindowMinimizeHandler", "InterfaceModule method: STStylizedWindowMinimizeHandler"),
+    0x00559130: ("InterfaceModule__RegisterHandlerNames", "InterfaceModule: master RegisterHandlerNames dispatcher for all UI classes"),
+    0x00559270: ("InterfaceModule__RegisterHandlers", "InterfaceModule: master RegisterHandlers dispatcher for all UI classes"),
     0x00559360: ("InterfaceModule__SaveToStream", "InterfaceModule method: SaveToStream"),
     0x00559380: ("InterfaceModule__LoadFromStream", "InterfaceModule method: LoadFromStream"),
 
+    # --- STSpacer (2) ---
+    0x00539c20: ("STSpacer__RegisterHandlerNames", "STSpacer: stub RegisterHandlerNames"),
+    0x00539c30: ("STSpacer__RegisterHandlers", "STSpacer: stub RegisterHandlers"),
+
     # --- EngRepairPane (11) ---
     0x00550770: ("EngRepairPane__Constructor", "Writes vtable 0x008927f4, loads 'Bridge Menus.tgl'"),
-    0x00550e60: ("EngRepairPane__RegisterHandlers", "EngRepairPane method: RegisterHandlers"),
-    0x00550ea0: ("EngRepairPane__RegisterHandlers_B", "EngRepairPane method: RegisterHandlers_B"),
+    0x00550e60: ("EngRepairPane__RegisterHandlerNames", "EngRepairPane: registers handler name strings"),
+    0x00550ea0: ("EngRepairPane__RegisterHandlers", "EngRepairPane: registers event handlers"),
     0x00550ef0: ("EngRepairPane__SetRepairSubsystem", "EngRepairPane method: SetRepairSubsystem"),
     0x00551230: ("EngRepairPane__ClearAll", "EngRepairPane method: ClearAll"),
     0x005512e0: ("EngRepairPane__Update", "EngRepairPane method: Update"),
@@ -1080,16 +1120,20 @@ KEY_FUNCTIONS = {
     0x00551e00: ("EngRepairPane__HandleKeyboard", "EngRepairPane method: HandleKeyboard"),
     0x00551ff0: ("EngRepairPane__HandleSetPlayer", "EngRepairPane method: HandleSetPlayer"),
 
-    # --- GraphicsMenu (2) ---
-    0x00553a00: ("GraphicsMenu__DeviceChangeHandler", "GraphicsMenu method: DeviceChangeHandler"),
-    0x00553a40: ("GraphicsMenu__ResolutionChangePreHandler", "GraphicsMenu method: ResolutionChangePreHandler"),
+    # --- GraphicsMenu (4) ---
+    0x00553a00: ("GraphicsMenu__RegisterHandlerNames", "GraphicsMenu: registers DeviceChange/ResolutionChange/RefreshRate name strings"),
+    0x00553a40: ("GraphicsMenu__RegisterHandlers", "GraphicsMenu: registers device change event handler"),
+    0x00553c70: ("GraphicsMenu__DeviceChangeHandler", "GraphicsMenu: handle device change event"),
+    # PowerDisplay (2)
+    0x0054fb10: ("PowerDisplay__RegisterHandlerNames", "PowerDisplay: stub RegisterHandlerNames"),
+    0x0054fb20: ("PowerDisplay__RegisterHandlers", "PowerDisplay: stub RegisterHandlers"),
 
     # --- CloakingSubsystem (10) ---
     0x0055e220: ("CloakingSubsystem__GetProperty", "CloakingSubsystem method: GetProperty"),
     0x0055e280: ("CloakingSubsystem__Cast", "CloakingSubsystem method: Cast"),
     0x0055e430: ("CloakingSubsystem__dtor", "CloakingSubsystem method: dtor"),
-    0x0055e4a0: ("CloakingSubsystem__StartCloakingHandler", "CloakingSubsystem method: StartCloakingHandler"),
-    0x0055e4d0: ("CloakingSubsystem__StopCloakingHandler", "CloakingSubsystem method: StopCloakingHandler"),
+    0x0055e4a0: ("CloakingSubsystem__RegisterHandlerNames", "CloakingSubsystem: registers StartCloaking/StopCloaking name strings"),
+    0x0055e4d0: ("CloakingSubsystem__RegisterHandlers", "CloakingSubsystem: registers start/stop cloak event handlers"),
     0x0055f110: ("CloakingSubsystem__CloakShieldHandler", "CloakingSubsystem method: CloakShieldHandler"),
     0x0055f360: ("CloakingSubsystem__StartCloaking", "Begin cloak sequence (sets cloakObj+0xAD=1)"),
     0x0055f380: ("CloakingSubsystem__StopCloaking", "CloakingSubsystem method: StopCloaking"),
@@ -1133,13 +1177,13 @@ KEY_FUNCTIONS = {
     0x005623d0: ("PoweredSubsystem__GetNormalPowerWanted", "PoweredSubsystem method: GetNormalPowerWanted"),
     0x00562430: ("PoweredSubsystem__SetPowerPercentageWanted", "Set power allocation (0.0-1.25)"),
     0x00562470: ("PoweredSubsystem__Update", "Per-consumer power draw (every frame)"),
-    0x00562710: ("PoweredSubsystem__StateChangedHandler_A", "PoweredSubsystem method: StateChangedHandler_A"),
-    0x00562730: ("PoweredSubsystem__StateChangedHandler_B", "PoweredSubsystem method: StateChangedHandler_B"),
+    0x00562710: ("PoweredSubsystem__RegisterHandlerNames", "PoweredSubsystem: registers StateChangedHandler name string"),
+    0x00562730: ("PoweredSubsystem__RegisterHandlers", "PoweredSubsystem: registers StateChanged event handler"),
     0x00562960: ("PoweredSubsystem__WriteState", "Powered subsystem: condition + power pct"),
     0x005629d0: ("PoweredSubsystem__ReadState", "Powered subsystem: deserialize condition + power"),
     0x005822d0: ("PoweredSubsystem__GetEfficiency", "Returns received/wanted power ratio, clamped"),
 
-    # --- RepairSubsystem (11) ---
+    # --- RepairSubsystem (12) ---
     0x00564fe0: ("RepairSubsystem__GetProperty", "Returns repair subsystem property pointer"),
     0x00565060: ("RepairSubsystem__Cast", "RepairSubsystem method: Cast"),
     0x00565090: ("RepairSubsystem__Constructor", "Repair system constructor (vtable 0x00892e24)"),
@@ -1150,12 +1194,14 @@ KEY_FUNCTIONS = {
     0x00565980: ("RepairSubsystem__HandleRepairCompleted", "RepairSubsystem method: HandleRepairCompleted"),
     0x00565a10: ("RepairSubsystem__HandleSubsystemRebuilt", "RepairSubsystem method: HandleSubsystemRebuilt"),
     0x00565d30: ("RepairSubsystem__UpdateRepairPane", "RepairSubsystem method: UpdateRepairPane"),
-    0x00565dd0: ("RepairSubsystem__RegisterHandlers", "RepairSubsystem method: RegisterHandlers"),
+    0x00565d40: ("RepairSubsystem__RegisterHandlerNames", "RepairSubsystem: registers SetPlayer/AddToRepairList/IncreasePriority name strings"),
+    0x00565dd0: ("RepairSubsystem__RegisterHandlers", "RepairSubsystem: registers repair event handlers"),
 
     # --- SensorSubsystem (12) ---
     0x00566c90: ("SensorSubsystem__Cast", "SensorSubsystem method: Cast"),
     0x00566e50: ("SensorSubsystem__dtor", "SensorSubsystem method: dtor"),
-    0x00566fd0: ("SensorSubsystem__HandlePeriodicScanEvent", "SensorSubsystem method: HandlePeriodicScanEvent"),
+    0x00566f50: ("SensorSubsystem__RegisterHandlerNames", "SensorSubsystem: registers SetPlayer/EnterSet/ExitSet/ObjectExploding/ObjectTargeted/PeriodicScan name strings"),
+    0x00566fd0: ("SensorSubsystem__RegisterHandlers", "SensorSubsystem: registers SetPlayer/PeriodicScan event handlers"),
     0x00567190: ("SensorSubsystem__GetSensorRange", "SWIG target: computes effective range from efficiency"),
     0x005671d0: ("SensorSubsystem__IsObjectVisible", "SensorSubsystem method: IsObjectVisible"),
     0x00567440: ("SensorSubsystem__IsObjectNear", "SensorSubsystem method: IsObjectNear"),
@@ -1164,20 +1210,20 @@ KEY_FUNCTIONS = {
     0x00567880: ("SensorSubsystem__IdentifyObject", "SWIG target: force-identify target object"),
     0x005678b0: ("SensorSubsystem__ForceObjectIdentified", "SensorSubsystem method: ForceObjectIdentified"),
     0x00569140: ("SensorSubsystem__LoadSensorData", "SensorSubsystem method: LoadSensorData"),
-    0x0056a210: ("SensorSubsystem__RegisterHandlers", "SensorSubsystem method: RegisterHandlers"),
 
     # --- SubsystemPropertyManager (2) ---
     0x00568320: ("SubsystemPropertyManager__SaveToStream", "SubsystemPropertyManager method: SaveToStream"),
     0x00568340: ("SubsystemPropertyManager__LoadFromStream", "SubsystemPropertyManager method: LoadFromStream"),
 
-    # --- ShieldClass (2) ---
+    # --- ShieldClass (3) ---
     0x00569fd0: ("ShieldClass__Cast", "ShieldClass method: Cast"),
     0x005af3b0: ("ShieldClass__GetShieldGlowColor", "ShieldClass method: GetShieldGlowColor"),
+    0x0056a210: ("ShieldClass__RegisterHandlers", "ShieldClass: registers HandleSetShieldState event handler"),
 
-    # --- ShieldSubsystem (14) ---
+    # --- ShieldSubsystem (12) ---
     0x0056a000: ("ShieldSubsystem__Constructor", "ShieldSubsystem method: Constructor"),
     0x0056a190: ("ShieldSubsystem__Destructor", "ShieldSubsystem method: Destructor"),
-    0x0056a1f0: ("ShieldSubsystem__RegisterEvents", "ShieldSubsystem method: RegisterEvents"),
+    0x0056a1f0: ("ShieldSubsystem__RegisterHandlerNames", "ShieldSubsystem: registers HandleSetShieldState name string"),
     0x0056a420: ("ShieldSubsystem__BoostShield", "Per-facing shield recharge"),
     0x0056a540: ("ShieldSubsystem__GetShieldPercentage", "ShieldSubsystem method: GetShieldPercentage"),
     0x0056a5c0: ("ShieldSubsystem__SetCurShields", "Set current shield HP for a facing"),
@@ -1187,8 +1233,6 @@ KEY_FUNCTIONS = {
     0x0056a8d0: ("ShieldSubsystem__NormalToFacing", "Determines which of 6 shield facings a point hits"),
     0x0056ae10: ("ShieldSubsystem__ReadStream", "ShieldSubsystem method: ReadStream"),
     0x0056bde0: ("ShieldSubsystem__ScheduleShieldEvents", "ShieldSubsystem method: ScheduleShieldEvents"),
-    0x0057b180: ("ShieldSubsystem__RegisterHandlerNames", "ShieldSubsystem method: RegisterHandlerNames"),
-    0x0057b1a0: ("ShieldSubsystem__RegisterHandlers", "ShieldSubsystem method: RegisterHandlers"),
 
     # --- ShieldProperty (6) ---
     0x0056b960: ("ShieldProperty__GetCurrentPower", "ShieldProperty method: GetCurrentPower"),
@@ -1217,8 +1261,8 @@ KEY_FUNCTIONS = {
     0x0056de70: ("WarpEngineSubsystem__ctor", "WarpEngineSubsystem method: ctor"),
     0x0056dfd0: ("WarpEngineSubsystem__dtor", "WarpEngineSubsystem method: dtor"),
     0x0056e7d0: ("WarpEngineSubsystem__TransitionToState", "WarpEngineSubsystem method: TransitionToState"),
-    0x0056ecd0: ("WarpEngineSubsystem__SetWarpSequence_A", "WarpEngineSubsystem method: SetWarpSequence_A"),
-    0x0056ecf0: ("WarpEngineSubsystem__SetWarpSequence_B", "WarpEngineSubsystem method: SetWarpSequence_B"),
+    0x0056ecd0: ("WarpEngineSubsystem__RegisterHandlerNames", "WarpEngineSubsystem: registers SetWarpSequence name string"),
+    0x0056ecf0: ("WarpEngineSubsystem__RegisterHandlers", "WarpEngineSubsystem: registers SetWarpSequence event handler"),
 
     # --- EnergyWeapon (12) ---
     0x0056f8d0: ("EnergyWeapon__GetProperty", "EnergyWeapon: returns +0x18 (property pointer)"),
@@ -1346,18 +1390,19 @@ KEY_FUNCTIONS = {
     0x0057a280: ("Torpedo__WriteToStream", "Torpedo method: WriteToStream"),
     0x0057a400: ("Torpedo__ReadFromStream", "Torpedo method: ReadFromStream"),
 
-    # --- TorpedoSystem (11) ---
+    # --- TorpedoSystem (12) ---
     0x0057aff0: ("TorpedoSystem__Cast", "TorpedoSystem method: Cast"),
     0x0057b020: ("TorpedoSystem__ctor", "Torpedo weapon system constructor"),
     0x0057b170: ("TorpedoSystem__dtor", "TorpedoSystem method: dtor"),
+    0x0057b180: ("TorpedoSystem__RegisterHandlerNames", "TorpedoSystem: registers TorpedoTypeChangedHandler name string (chains to stub)"),
+    0x0057b1a0: ("TorpedoSystem__RegisterHandlers", "TorpedoSystem: registers TorpedoTypeChanged event handler (chains to stub)"),
     0x0057b1c0: ("TorpedoSystem__SetSkewFire", "TorpedoSystem method: SetSkewFire"),
     0x0057b230: ("TorpedoSystem__SetAmmoType", "SWIG target: sets ammo type with reload flag"),
     0x0057b740: ("TorpedoSystem__GetNumAvailableTorpsToType", "TorpedoSystem method: GetNumAvailableTorpsToType"),
     0x0057b780: ("TorpedoSystem__WriteToStream", "TorpedoSystem: serialize to stream (parent + ammo type)"),
     0x0057b7b0: ("TorpedoSystem__ReadFromStream", "TorpedoSystem: deserialize from stream (parent + ammo type)"),
     0x0057b8e0: ("TorpedoSystem__ResolveObjectRefs", "TorpedoSystem: resolve parent + child object refs"),
-    0x0057d890: ("TorpedoSystem__RegisterHandlerNames_Stub", "TorpedoSystem method: RegisterHandlerNames_Stub"),
-    0x00584380: ("TorpedoSystem__RegisterHandlers", "TorpedoSystem method: RegisterHandlers"),
+    0x0057d890: ("TorpedoSystem__RegisterHandlerNames_Stub", "TorpedoSystem: stub RegisterHandlerNames (empty, called by TorpedoSystem__RegisterHandlerNames chain)"),
 
     # --- TorpedoTubeProperty (3) ---
     0x0057c370: ("TorpedoTubeProperty__GetDirection", "TorpedoTubeProperty method: GetDirection"),
@@ -1411,13 +1456,14 @@ KEY_FUNCTIONS = {
     0x00583400: ("WeaponSubsystem__WriteToStream", "WeaponSubsystem: serialize (parent + target)"),
     0x00583440: ("WeaponSubsystem__ReadFromStream", "WeaponSubsystem: deserialize (parent + target)"),
 
-    # --- WeaponSystem (28) ---
+    # --- WeaponSystem (29) ---
     0x00584070: ("WeaponSystem__GetSingleFireMode", "WeaponSystem: get single-fire flag from property+0x51"),
     0x00584080: ("WeaponSystem__FindTargetByObjectID", "Extracts obj+4 ID, delegates to FindTargetEntry"),
     0x00584090: ("WeaponSystem__RemoveFromTargetList", "WeaponSystem method: RemoveFromTargetList"),
     0x005840a0: ("WeaponSystem__Constructor", "WeaponSystem method: Constructor"),
     0x00584270: ("WeaponSystem__dtor", "WeaponSystem method: dtor"),
-    0x00584360: ("WeaponSystem__RegisterHandlerNames", "WeaponSystem method: RegisterHandlerNames"),
+    0x00584360: ("WeaponSystem__RegisterHandlerNames", "WeaponSystem: registers ObjectExitedSet name string, chains to PhaserSystem+TractorBeamSystem"),
+    0x00584380: ("WeaponSystem__RegisterHandlers", "WeaponSystem: registers event handlers, chains to PhaserSystem+TractorBeamSystem"),
     0x00584390: ("WeaponSystem__StartFiringAtTarget", "WeaponSystem: add target to list, start firing"),
     0x00584560: ("WeaponSystem__StopFiringAll", "WeaponSystem: clear targets, stop all children"),
     0x005845a0: ("WeaponSystem__StopFiringAtTarget", "WeaponSystem method: StopFiringAtTarget"),
@@ -1453,8 +1499,8 @@ KEY_FUNCTIONS = {
     # --- DamageableObject (17) ---
     0x00590a50: ("DamageableObject__FindByObjectID", "DamageableObject method: FindByObjectID"),
     0x00590b20: ("DamageableObject__Cast", "DamageableObject method: Cast"),
-    0x00590b50: ("DamageableObject__ObjectDestroyedHandler_A", "DamageableObject method: ObjectDestroyedHandler_A"),
-    0x00590bb0: ("DamageableObject__ObjectDestroyedHandler_B", "DamageableObject method: ObjectDestroyedHandler_B"),
+    0x00590b50: ("DamageableObject__RegisterHandlerNames", "DamageableObject: registers ObjectDestroyed/DeleteMe handler name strings"),
+    0x00590bb0: ("DamageableObject__RegisterHandlers", "DamageableObject: registers ObjectDestroyed/DeleteMe event handlers"),
     0x00590cb0: ("DamageableObject__InitFields", "DamageableObject method: InitFields"),
     0x00591410: ("DamageableObject__ctor", "DamageableObject method: ctor"),
     0x00591620: ("DamageableObject__dtor", "DamageableObject method: dtor"),
@@ -1493,8 +1539,8 @@ KEY_FUNCTIONS = {
     0x005a1430: ("PhysicsObjectClass__SetAngularAcceleration", "PhysicsObjectClass method: SetAngularAcceleration"),
     0x005a1480: ("PhysicsObjectClass__SetAngularAccelerationLinear", "PhysicsObjectClass method: SetAngularAccelerationLinear"),
     0x005a14d0: ("PhysicsObjectClass__SetAngularDirectionType", "PhysicsObjectClass method: SetAngularDirectionType"),
-    0x005a1740: ("PhysicsObjectClass__ObjectDestroyedHandler_A", "PhysicsObjectClass method: ObjectDestroyedHandler_A"),
-    0x005a1780: ("PhysicsObjectClass__ObjectDestroyedHandler_B", "PhysicsObjectClass method: ObjectDestroyedHandler_B"),
+    0x005a1740: ("PhysicsObjectClass__RegisterHandlerNames", "PhysicsObjectClass: registers ObjectDestroyed/CollisionDestroyed handler name strings"),
+    0x005a1780: ("PhysicsObjectClass__RegisterHandlers", "PhysicsObjectClass: registers ObjectDestroyed event handlers"),
     0x005a17c0: ("PhysicsObjectClass__DeleteMeStage1", "PhysicsObjectClass method: DeleteMeStage1"),
     0x005a17e0: ("PhysicsObjectClass__ObjectDestroyedHandler", "PhysicsObjectClass method: ObjectDestroyedHandler"),
     0x005a18f0: ("PhysicsObjectClass__WriteToStream", "PhysicsObjectClass method: WriteToStream"),
@@ -1538,8 +1584,8 @@ KEY_FUNCTIONS = {
     # --- ShipClass (20) ---
     0x005ab5a0: ("ShipClass__GetObjectByID", "ShipClass method: GetObjectByID"),
     0x005ab610: ("ShipClass__GetObject", "ShipClass method: GetObject"),
-    0x005ab6a0: ("ShipClass__Destroyed", "Register all ship event handlers"),
-    0x005ab7c0: ("ShipClass__Destroyed_B", "ShipClass method: Destroyed_B"),
+    0x005ab6a0: ("Ship__RegisterHandlerNames", "Ship: registers all ship handler name strings (12 handlers + subsystem chain)"),
+    0x005ab7c0: ("Ship__RegisterHandlers", "Ship: registers all ship event handlers + subsystem chain"),
     0x005ac170: ("ShipClass__SetScript", "ShipClass method: SetScript"),
     0x005ac1e0: ("ShipClass__SetDeathScript", "ShipClass method: SetDeathScript"),
     0x005ae090: ("ShipClass__SetInvincible", "ShipClass method: SetInvincible"),
@@ -1569,8 +1615,9 @@ KEY_FUNCTIONS = {
     0x00731fc0: ("TGParagraph__SetReadOnly", "TGParagraph method: SetReadOnly"),
     0x00732070: ("TGParagraph__SetString", "TGParagraph method: SetString"),
     0x00732100: ("TGParagraph__SetIgnoreString", "TGParagraph method: SetIgnoreString"),
-    0x00733160: ("TGParagraph__RegisterHandlers", "TGParagraph method: RegisterHandlers"),
-    0x007331a0: ("TGParagraph__RegisterHandlerNames", "TGParagraph method: RegisterHandlerNames"),
+    0x00733160: ("TGParagraph__RegisterHandlerNames", "TGParagraph: registers Mouse/Keyboard/CursorBlink name strings"),
+    0x007331a0: ("TGParagraph__RegisterHandlers", "TGParagraph: registers Mouse/Keyboard/CursorBlink event handlers"),
+    0x00733330: ("TGParagraph__KeyboardHandler", "TGParagraph: handle keyboard event"),
     0x00733850: ("TGParagraph__SetColor", "TGParagraph method: SetColor"),
     0x00733af0: ("TGParagraph__SetFontGroup", "TGParagraph method: SetFontGroup"),
 
@@ -1618,9 +1665,11 @@ KEY_FUNCTIONS = {
 
     # --- BridgeObjectClass (8) ---
     0x00661220: ("BridgeObjectClass__Cast", "BridgeObjectClass method: Cast"),
-    0x00661250: ("BridgeObjectClass__RegisterHandlers", "BridgeObjectClass method: RegisterHandlers"),
+    0x00661250: ("BridgeObjectClass__RegisterHandlerNames_Chain", "BridgeObjectClass: registers handler name strings (CreateEffect/AlertLevel/PlayerChanged)"),
+    0x006612b0: ("BridgeObjectClass__RegisterHandlers_Stub", "BridgeObjectClass: stub RegisterHandlers (via vtable)"),
     0x00661460: ("BridgeObjectClass__Constructor", "BridgeObjectClass method: Constructor"),
-    0x00661de0: ("BridgeObjectClass__RegisterHandlerNames", "BridgeObjectClass method: RegisterHandlerNames"),
+    0x00661de0: ("BridgeObjectClass__RegisterHandlers", "BridgeObjectClass: registers CreateEffect/AlertLevel handlers via TGEventManager"),
+    0x006648a0: ("BridgeObjectClass__CreateEffectHandler", "BridgeObjectClass: handle CreateEffect event (WeaponHit)"),
     0x006641c0: ("BridgeObjectClass__CreateEffect", "BridgeObjectClass method: CreateEffect"),
     0x00664840: ("BridgeObjectClass__GoToGreenAlert", "BridgeObjectClass method: GoToGreenAlert"),
     0x00664860: ("BridgeObjectClass__GoToYellowAlert", "BridgeObjectClass method: GoToYellowAlert"),
@@ -1714,9 +1763,9 @@ KEY_FUNCTIONS = {
 
     # --- GameSpy (13) ---
     0x0069bfa0: ("GameSpy__ProcessQueryHandler", "GameSpy method: ProcessQueryHandler"),
-    0x0069c4e0: ("GameSpy__SetGameModeHandler", "GameSpy method: SetGameModeHandler"),
+    0x0069c4e0: ("GameSpy__RegisterHandlerNames", "GameSpy: registers SetGameMode/ProcessQuery name strings"),
     0x0069c580: ("GameSpy__BuildBasicResponse", "Build hostname/map/numplayers/maxplayers/gamemode response"),
-    0x0069cc40: ("GameSpy__SetGameModeHandler", "GameSpy method: SetGameModeHandler"),
+    0x0069cc40: ("GameSpy__SetGameModeHandler", "GameSpy: handle game mode change event (copies mode string)"),
     0x0069ccd0: ("GameSpy__ConnectFailed", "GameSpy method: ConnectFailed"),
     0x0069d720: ("GameSpy__ProcessQueryHandler", "GameSpy method: ProcessQueryHandler"),
     0x006a9930: ("GameSpy__qr_parse_query", "GameSpy method: qr_parse_query"),
@@ -2186,7 +2235,8 @@ KEY_FUNCTIONS = {
     0x006fe500: ("TGAction__Cast", "TGAction method: Cast"),
     0x006fe760: ("TGAction__AddCompletedEvent", "TGAction method: AddCompletedEvent"),
 
-    # --- TGActionManager (1) ---
+    # --- TGActionManager (2) ---
+    0x006ff1f0: ("TGActionManager__RegisterHandlerNames", "TGActionManager: registers ActionCompleted/ActionSkip/PlaySequence name strings"),
     0x006ff470: ("TGActionManager__SaveToStream", "TGActionManager method: SaveToStream"),
 
     # --- TGScriptAction (2) ---
@@ -2270,8 +2320,8 @@ KEY_FUNCTIONS = {
     0x00727a40: ("FPSCounter__Update", "FPSCounter method: Update"),
 
     # --- TGRootPane (2) ---
-    0x00727fe0: ("TGRootPane__RegisterHandlers", "TGRootPane method: RegisterHandlers"),
-    0x00728020: ("TGRootPane__RegisterHandlerNames", "TGRootPane method: RegisterHandlerNames"),
+    0x00727fe0: ("TGRootPane__RegisterHandlerNames", "TGRootPane: registers Mouse/Keyboard/Gamepad name strings"),
+    0x00728020: ("TGRootPane__RegisterHandlers", "TGRootPane: registers Mouse/Keyboard/Gamepad event handlers"),
 
     # --- TGIconManager (7) ---
     0x00729dc0: ("TGIconManager__SetDisplayInfo", "TGIconManager method: SetDisplayInfo"),
@@ -2290,14 +2340,15 @@ KEY_FUNCTIONS = {
     # --- TGPane (6) ---
     0x0072dc90: ("TGPane__Cast", "TGPane method: Cast"),
     0x0072dcc0: ("TGPane__ctor", "TGPane method: ctor"),
-    0x0072e120: ("TGPane__RegisterHandlers", "TGPane method: RegisterHandlers"),
-    0x0072e180: ("TGPane__RegisterHandlerNames", "TGPane method: RegisterHandlerNames"),
+    0x0072e120: ("TGPane__RegisterHandlerNames", "TGPane: registers Mouse/Keyboard/Gamepad/Control name strings"),
+    0x0072e180: ("TGPane__RegisterHandlers", "TGPane: registers Mouse/Keyboard/Gamepad/Control event handlers"),
     0x0072e1e0: ("TGPane__MouseHandler", "TGPane method: MouseHandler"),
     0x0072e350: ("TGPane__KeyboardHandler", "TGPane method: KeyboardHandler"),
 
     # --- TGUIObject (2) ---
-    0x00730e70: ("TGUIObject__RegisterHandlers", "TGUIObject method: RegisterHandlers"),
-    0x00730ea0: ("TGUIObject__RegisterHandlerNames", "TGUIObject method: RegisterHandlerNames"),
+    0x00730e70: ("TGUIObject__RegisterHandlerNames", "TGUIObject: registers Mouse/Keyboard name strings"),
+    0x00730ea0: ("TGUIObject__RegisterHandlers", "TGUIObject: registers Mouse/Keyboard event handlers"),
+    0x00730ed0: ("TGUIObject__MouseHandler", "TGUIObject: handle mouse event"),
 
     # --- TGCursorManager (3) ---
     0x00733ce0: ("TGCursorManager__SaveReference", "TGCursorManager method: SaveReference"),
@@ -2315,13 +2366,15 @@ KEY_FUNCTIONS = {
     0x00736900: ("TGConsole__RegisterHandlerNames", "TGConsole method: RegisterHandlerNames"),
     0x00736930: ("TGConsole__RegisterHandlers", "TGConsole method: RegisterHandlers"),
 
-    # --- TGDialogWindow (3) ---
-    0x00737e40: ("TGDialogWindow__RegisterHandlerNames", "TGDialogWindow method: RegisterHandlerNames"),
-    0x00738c80: ("TGDialogWindow__RegisterHandlers_B", "TGDialogWindow method: RegisterHandlers_B"),
-    0x00738cb0: ("TGDialogWindow__RegisterHandlers", "TGDialogWindow method: RegisterHandlers"),
+    # --- TGStringDialog (4) ---
+    0x00737e40: ("TGStringDialog__RegisterHandlers", "TGStringDialog: registers Mouse/DialogEvent event handlers"),
+    0x00737e70: ("TGStringDialog__RegisterHandlerNames", "TGStringDialog: registers DialogEventHandler name string"),
+    0x00737e90: ("TGStringDialog__DialogEventHandler", "TGStringDialog: handle string input dialog event"),
 
-    # --- TGStringDialog (1) ---
-    0x00737e70: ("TGStringDialog__RegisterHandlerNames", "TGStringDialog method: RegisterHandlerNames"),
+    # --- TGDialogWindow (4) ---
+    0x00738c80: ("TGDialogWindow__RegisterHandlerNames", "TGDialogWindow: registers Mouse/DialogEvent name strings"),
+    0x00738cb0: ("TGDialogWindow__RegisterHandlers", "TGDialogWindow: registers Mouse/DialogEvent event handlers"),
+    0x00739220: ("TGDialogWindow__DialogEventHandler", "TGDialogWindow: handle dialog event"),
 
     # --- TGIcon (2) ---
     0x0073d2f0: ("TGIcon__ctor", "TGIcon method: ctor"),
@@ -3257,9 +3310,12 @@ KEY_FUNCTIONS = {
     0x005b6330: ("WeaponSystem__ComputeIntegrityHash", "WeaponSystem: ComputeIntegrityHash"),
     # --- WeaponsDisplay (1) ---
     0x00549940: ("WeaponsDisplay__SetFiringChainMode", "WeaponsDisplay: SetFiringChainMode"),
-    # --- _Global (2) ---
+    # --- _Global (4) ---
     0x00407620: ("ClearTopWindowAndMPGame", "ClearTopWindowAndMPGame"),
     0x005a0b50: ("PredictPositionAtTime", "PredictPositionAtTime"),
+    # --- Phase 9C: RegisterHandlers Master Dispatchers ---
+    0x00442fb0: ("RegisterAllHandlerNames", "Master dispatcher: calls RegisterHandlerNames for all game classes (~22 classes)"),
+    0x00443020: ("RegisterAllHandlers", "Master dispatcher: calls RegisterHandlers for all game classes (~18 classes)"),
 
 }
 

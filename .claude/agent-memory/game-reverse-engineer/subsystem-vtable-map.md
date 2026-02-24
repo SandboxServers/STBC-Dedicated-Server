@@ -14,7 +14,7 @@ TGObject
             SensorSubsystem (vtable 0x00892eac)
             RepairSubsystem (vtable 0x00892e24)
             CloakingSubsystem (vtable 0x00892c04)
-            WeaponSystem (vtable 0x008938c4, 55 slots)
+            WeaponSystem (vtable 0x008938c4, 38 slots — CORRECTED from 55)
               PhaserSystem (vtable 0x00893240)
               TorpedoSystem (vtable 0x00893598)
               TractorBeamSystem (vtable 0x00893794)
@@ -65,16 +65,23 @@ WeaponSystem inherits from PoweredSubsystem (weapon SYSTEM is powered; weapon SU
 | 32 | 0x80 | **TurnOff (PostDisabledEvent)** | SWIG: vtable+0x80 |
 | 33 | 0x84 | unknown (0x00562a40) | Not yet defined in Ghidra |
 
-## WeaponSystem New Slots (slots 34-54)
+## WeaponSystem New Slots (slots 34-37, total 38 slots)
+
+NOTE: WeaponSystem vtable has only 38 slots (0-37), NOT 55. It ends at 0x00893958.
+CollisionEvent vtable starts at 0x0089395C immediately after.
 
 | Slot | Offset | Method | Evidence |
 |------|--------|--------|----------|
-| 34 | 0x88 | **StartFiringAtTarget** | Named, decompiled |
-| 35 | 0x8C | unknown | |
+| 34 | 0x88 | **StartFiringAtTarget** | Named, decompiled. TractorBeamSystem override at 0x00582490 |
+| 35 | 0x8C | unknown (0x00573cc0 base) | PhaserSystem/TorpedoSystem/PulseWeaponSystem share same addr |
 | 36 | 0x90 | **StopFiringAll** | Named, decompiled |
-| 37 | 0x94 | unknown (overridden by TorpedoSystem) | |
-| 38 | 0x98 | (small helper dtor) | |
-| 39-54 | 0x9C-0xD8 | weapon-specific virtuals | Need further analysis |
+| 37 | 0x94 | unknown (0x00573ce0 base) | Called in UpdateWeapons with firing chain group index param |
+
+## WeaponSubsystem New Slots (after ShipSubsystem's 30)
+
+| Slot | Offset | Method | Evidence |
+|------|--------|--------|----------|
+| 30 | 0x78 | **ClearTarget** | Decompiled: clears +0x8C target field |
 
 ## Override Map (which subclasses override which slots)
 

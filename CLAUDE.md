@@ -258,6 +258,8 @@ Then opcode 0x01 (single byte).
 - [docs/engine/gamebryo-cross-reference.md](docs/engine/gamebryo-cross-reference.md) - 129 NI classes cross-referenced: Gb 1.2, MWSE, nif.xml
 - [docs/engine/nirtti-factory-catalog.md](docs/engine/nirtti-factory-catalog.md) - 117 NiRTTI factory registrations with addresses
 - [docs/engine/netimmerse-vtables.md](docs/engine/netimmerse-vtables.md) - Vtable maps for 6 core NI classes
+- [docs/engine/event-system-architecture.md](docs/engine/event-system-architecture.md) - TGEventManager dispatch, handler tables, TGCallback/TGConditionHandler internals
+- [docs/engine/ui-class-hierarchy.md](docs/engine/ui-class-hierarchy.md) - UI inheritance tree, MainWindow type IDs, event constants, TGDialogWindow buttons
 - [docs/engine/function-map.md](docs/engine/function-map.md) - 18K-function organized map
 - [docs/engine/function-mapping-report.md](docs/engine/function-mapping-report.md) - ~7,500 functions named (41%), annotation script docs
 - [docs/engine/decompiled-functions.md](docs/engine/decompiled-functions.md) - Key function analysis

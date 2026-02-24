@@ -1391,3 +1391,165 @@ Cross-referenced with Gamebryo 1.2 source (NiTimeController.h/cpp, NiNode.h, NiA
 ### Statistics
 - **81 successful renames**, 0 failures, 13 rejected
 - **Total across all passes: ~6,886 functions named (~37.7% of 18,247)**
+
+## Phase 9C (2026-02-24) - RegisterHandlers Systematic Sweep - ~80 renames
+
+### Strategy
+Systematic identification and correction of `RegisterHandlerNames` / `RegisterHandlers` virtual method pairs
+across all `TGEventHandlerObject` subclasses in stbc.exe.
+
+**Definitive identification rule:**
+- Function calls `TGObject__RegisterHandlerWithName` (0x006da130) → it is `RegisterHandlerNames`
+- Function calls `TGObject__RegisterEventHandler` (0x006d92b0) → it is `RegisterHandlers`
+
+The `ghidra_annotate_globals.py` script (and Ghidra itself) had many of these swapped from Pass 8's
+`discover_strings` annotations which incorrectly used first debug-string-match to name functions.
+
+### Master Dispatcher Functions
+| Address | Name | Description |
+|---------|------|-------------|
+| 0x00442fb0 | RegisterAllHandlerNames | Master dispatcher: calls RegisterHandlerNames for all game classes (~22 classes) |
+| 0x00443020 | RegisterAllHandlers | Master dispatcher: calls RegisterHandlers for all game classes (~18 classes) |
+| 0x00559130 | InterfaceModule__RegisterHandlerNames | UI dispatcher: calls RegisterHandlerNames for all UI classes (~38 classes) |
+| 0x00559270 | InterfaceModule__RegisterHandlers | UI dispatcher: calls RegisterHandlers for all UI classes (~35 classes) |
+
+### Classes Fixed (swapped or misnamed)
+- **TGPane** (0x0072e120/0x0072e180): `RegisterHandlerNames` calls RegisterHandlerWithName, `RegisterHandlers` calls RegisterEventHandler
+- **TGRootPane** (0x00727fe0/0x00728020): same fix
+- **TGUIObject** (0x00730e70/0x00730ea0): same fix
+- **TGParagraph** (0x00733160/0x007331a0): same fix
+- **TGActionManager** (0x006ff1f0): was `TGActionManager_ActionCompletedHandler` → `TGActionManager__RegisterHandlerNames`
+- **NamedReticleWindow** (0x00510310): was `NamedReticleWindow__HandleNameChange` → `NamedReticleWindow__RegisterHandlerNames`
+
+### New Classes Identified (empty stubs from InterfaceModule dispatch chain)
+- **STSpacer** (0x00539c20/30): both stub — constructor at 0x00539c10 sets vtable 0x008914e4
+- **STFileListWindow** (0x0051f720/30): both stub — constructor calls TGPane__ctor
+- **PowerDisplay** (0x0054fb10/20): both stub — constructor calls PowerDisplay__Create
+- **ReticleWindow** (0x00515280/90): both stub — identified via dtor + vtable xref
+- **PlayerReticleWindow** (0x00511d80/90): both stub — constructor calls NamedReticleWindow__ctor
+- **ShieldsDisplay__RegisterHandlers** (0x00545c10): stub
+- **ShipDisplay__RegisterHandlers** (0x00546e30): stub
+
+### Constructor Mis-identifications Fixed
+- **STSubsystemMenu** (0x00535170): was `RegisterHandlers_B` → actual constructor calling `TGScrollablePane__ctor`
+- **STTargetMenu** (0x00537be0): was `RegisterHandlers_B` → actual constructor
+- **TacWeaponsCtrl** (0x00547b10): was `RegisterHandlers_B` → actual constructor; (0x00547e50) was `RegisterHandlers` → `BuildUI`
+- **TacWeaponsCtrl__RegisterHandlers** (0x00549640): now correctly named, registers PhaserSetting/TorpType/CloakToggle handlers
+- **TacWeaponsCtrl__RegisterHandlerNames** (0x00549520): additional handler names: HandleSubsystemDisabled, HandleSubsystemOperational, HandleCloakToggleRefresh, HandleTractorBeamToggle
+
+### Script-Only Corrections (Ghidra was already correct)
+These were incorrectly named only in the annotation script, not Ghidra:
+
+| Old Script Name | Address | Correct Name |
+|-----------------|---------|--------------|
+| PoweredSubsystem__StateChangedHandler_A | 0x00562710 | PoweredSubsystem__RegisterHandlerNames |
+| PoweredSubsystem__StateChangedHandler_B | 0x00562730 | PoweredSubsystem__RegisterHandlers |
+| SensorSubsystem__HandlePeriodicScanEvent | 0x00566fd0 | SensorSubsystem__RegisterHandlers |
+| ShieldSubsystem__RegisterEvents | 0x0056a1f0 | ShieldSubsystem__RegisterHandlerNames |
+| SensorSubsystem__RegisterHandlers | 0x0056a210 | ShieldClass__RegisterHandlers |
+| WarpEngineSubsystem__SetWarpSequence_A | 0x0056ecd0 | WarpEngineSubsystem__RegisterHandlerNames |
+| WarpEngineSubsystem__SetWarpSequence_B | 0x0056ecf0 | WarpEngineSubsystem__RegisterHandlers |
+| ShieldSubsystem__RegisterHandlerNames | 0x0057b180 | TorpedoSystem__RegisterHandlerNames |
+| ShieldSubsystem__RegisterHandlers | 0x0057b1a0 | TorpedoSystem__RegisterHandlers |
+| TorpedoSystem__RegisterHandlers | 0x00584380 | WeaponSystem__RegisterHandlers |
+
+### New Entries Added to Script
+| Address | Name |
+|---------|------|
+| 0x00565d40 | RepairSubsystem__RegisterHandlerNames |
+| 0x00566f50 | SensorSubsystem__RegisterHandlerNames |
+| 0x00584380 | WeaponSystem__RegisterHandlers (moved from TorpedoSystem section) |
+| 0x0057b180 | TorpedoSystem__RegisterHandlerNames |
+| 0x0057b1a0 | TorpedoSystem__RegisterHandlers |
+
+### Ghidra Renames (3)
+| Old Name | Address | New Name |
+|----------|---------|----------|
+| ShieldSubsystem__RegisterHandlerNames | 0x0057b180 | TorpedoSystem__RegisterHandlerNames |
+| ShieldSubsystem__RegisterHandlers | 0x0057b1a0 | TorpedoSystem__RegisterHandlers |
+| TorpedoSystem__RegisterHandlers | 0x00584380 | WeaponSystem__RegisterHandlers |
+
+### Statistics
+- **~80 annotation corrections**, 3 Ghidra renames, 0 failures
+- **KEY_FUNCTIONS entries: 2,397** (up from ~2,318 at end of Pass 8 series)
+- **Total across all passes: ~6,970 functions named (~38.2% of 18,247)**
+- **No remaining `_A`, `_B`, or `_Alt` suffixed RegisterHandler/RegisterHandlerNames functions in Ghidra or script**
+
+## Phase 9D (2026-02-25) - Vtable Completeness Audit - 3 renames + major doc corrections
+
+### Strategy
+Systematic audit of major class vtables (Ship, DamageableObject, PhysicsObjectClass, TGObject,
+TGEventHandlerObject, WeaponSystem/Subsystem) to identify unknown slots. Focus on high-confidence
+renames only.
+
+### Ghidra Renames (3)
+| Address | Old Name | New Name | Evidence |
+|---------|----------|----------|----------|
+| 0x005a2030 | Ship__ReadSpeciesFromStream | DamageableObject__InitObject | In DO vtable slot 70 + called from Ship__InitObject as super; reads species byte |
+| 0x00518ab0 | FUN_00518ab0 | TGObject__IsTypeID | TGObject vtable slot 2; checks param==2 (TGObject type ID) |
+| 0x005833f0 | FUN_005833f0 | WeaponSubsystem__ClearTarget | (from previous session carry-over) vtable slot 30, clears +0x8C |
+
+### Major Documentation Corrections (tg-hierarchy-vtables.md)
+
+**DamageableObject slot count**: Was "90 slots (0-89)" → CORRECTED to "92 slots (0-91)". Slots 90-91
+are destructor variants that were missing from the table. Ship also has 92 slots (NOT "adds 2 extra").
+
+**DamageableObject slot numbering error**: Previous doc had slot 82 = "RayIntersect / CollisionTest_A"
+(combining two separate addresses). Ground truth from vtable binary read:
+- Slot 80 (+0x140) = DamageableObject__RayIntersect (0x00594310) base; Ship: 0x005ae730
+- Slot 81 (+0x144) = 0x00594430 (unnamed tiny stub); Ship: 0x005aed90
+- Slot 82 (+0x148) = DamageableObject__CollisionTest_A (0x00594440); Ship: 0x005af7d0
+- Slot 85 (+0x154) = DamageableObject__ApplyCollisionDamage (0x00593650) — renamed from "CollisionDamageWrapper"
+
+**TGObject vtable address**: Was 0x008963BC → CORRECTED to 0x00896278.
+0x008963BC is an UNRELATED class (TGHashTable or similar).
+
+**TGObject slot semantics** (universal pattern across ALL TG classes):
+- Slot 1 = GetTypeID() — returns class-specific type ID integer
+- Slot 2 = IsTypeID(int) — checks if param matches class type ID
+- Slot 9 = GetClassName() — returns ptr to "ClassName" string (e.g., "TGObject")
+- Slot 10 = GetSwigTypeName() — returns ptr to "_p_ClassName" SWIG type
+- Slot 11 = GetObjectPtrTypeName() — returns ptr to "ClassNamePtr" string
+Each class overrides these with its own type info (e.g., TGEHO slot 1 returns 0x102).
+
+**PhysicsObjectClass slots**: Added complete slot map for slots 67-81:
+- Slot 68 (+0x110) = WriteNetworkHeader (writes type ID + object ID)
+- Slot 69 (+0x114) = WriteNetworkState (writes pos/rot/vel/name) — was unknown
+- Slot 70 (+0x118) = DamageableObject__InitObject (0x005a2030) — was misnamed
+- Slot 71 (+0x11C) = DeserializeFromNetwork (0x005a2060)
+- Slot 74 (+0x128) = DamageableObject__SetModel (0x00591b60)
+- Slot 77 (+0x134) = SetTargetObject (0x005a15a0)
+
+**Ship slot names**:
+- Slot 69: Ship__WriteNetworkState (0x005b0d80) — calls PhysicsObjectClass__WriteNetworkState
+- Slot 71: Ship__DeserializeFromNetwork (0x005b0dc0) — calls PhysicsObjectClass__DeserializeFromNetwork
+- Slot 74: Ship__SetModel (0x005abda0) — calls parent + ComputeBoundsFromGeometry
+- Slot 80: Ship__RayIntersect (0x005ae730)
+- Slot 82-84: Ship__CollisionTest_A/B, Ship__CheckCollision (confirmed)
+- Slot 85: Ship__CollisionDamageWrapper (0x005b0060) — renamed from "ApplyCollisionDamage"
+
+### WeaponSubsystem Slots (confirmed from WeaponSystem__Update analysis)
+- Slot 30 (+0x78) = ClearTarget (0x005833f0) — RENAMED ✓
+- Slot 31 (+0x7C) = Fire (0x0056f9f0) — called with (time, mode=1) for targeted fire
+- Slot 32 (+0x80) = FireDumbFire (0x0056fa00) — called for untargeted/dumb fire
+- Slot 33 (+0x84) = IsFiring (0x0056fa10) — returns bool; drives anyChildFiring flag
+
+### TGObject Type ID System (universal)
+| Class | Type ID | GetClassName |
+|-------|---------|--------------|
+| TGObject | 2 | "TGObject" |
+| TGEventHandlerObject | 0x102 | "TGEventHandlerObject" |
+
+### Key Unresolved (Ghidra doesn't recognize as function starts)
+- TGObject slot 1 (0x006f0b60): GetTypeID returns 2
+- TGObject slots 9-11 (0x006f1540/50/60): GetClassName/GetSwigTypeName/GetObjectPtrTypeName
+- Ship slot 19 (0x005abf10): MOV EAX, 0x0098E7A8; RET — returns physics data table ptr
+- Ship slot 69 (0x005b0d80): Ship__WriteNetworkState wrapper
+- Ship slot 71 (0x005b0dc0): Ship__DeserializeFromNetwork wrapper
+- Ship slot 74 (0x005abda0): Ship__SetModel thunk
+- DamageableObject slot 81 (0x00594430): tiny stub — zeros struct field, returns 1
+
+### Statistics
+- **3 Ghidra renames**
+- **5 major doc corrections** in tg-hierarchy-vtables.md
+- **Total across all passes: ~6,973 functions named (~38.2% of 18,247)**

@@ -14,7 +14,7 @@
 - [complete-opcode-table.md](complete-opcode-table.md) - FULL verified opcode table (41 + Python)
 - [main-loop-timing.md](main-loop-timing.md) - Main loop architecture, NiApp vtable, clock sources
 - [hardpoint-property-system.md](hardpoint-property-system.md) - COMPLETE: AddToSet, SetupProperties, CT_ type IDs
-- [ghidra-naming-passes.md](ghidra-naming-passes.md) - Function naming passes 5-8B+8E (774 renames total, ~6805 named, ~37.3%)
+- [ghidra-naming-passes.md](ghidra-naming-passes.md) - Function naming passes 5-9D (Phase 9D: vtable audit, 3 renames + major doc fixes, ~6973 named, ~38.2%)
 - [subsystem-vtable-map.md](subsystem-vtable-map.md) - Phase 8E: subsystem class hierarchy, 19 vtable addresses, 30-slot map
 - [weapon-class-hierarchy.md](weapon-class-hierarchy.md) - Phase 8J: weapon/projectile class hierarchy (86 renames)
 - [ui-class-hierarchy.md](ui-class-hierarchy.md) - Phase 8D: UI system classes (135 renames)
@@ -48,14 +48,16 @@
 - Slot 0 = GetRTTI (NOT dtor); slot 10 = dtor (+0x28)
 - NiObject:12 | NiObjectNET:12 | NiAVObject:39 | NiNode:43 | NiGeometry:64 | NiTriShape:68
 
-## TG Hierarchy Vtable Layout (Phase 8B, 2026-02-24)
+## TG Hierarchy Vtable Layout (Phase 8B, updated Phase 9D)
 - See [docs/engine/tg-hierarchy-vtables.md](../../docs/engine/tg-hierarchy-vtables.md)
 - **DIFFERENT from NiObject**: TG slot 0 = scalar_deleting_dtor (NOT GetRTTI)
 - Ship does NOT inherit from NiObject; chain: TGObject->TGStreamedObject->TGStreamedObjectEx->TGEventHandlerObject->TGSceneObject->ObjectClass->PhysicsObjectClass->DamageableObject->Ship
+- **TGObject vtable at 0x00896278** (NOT 0x008963BC which was wrong — that's TGHashTable or similar)
 - Ship vtable at 0x00894340, 92 slots (0x170 bytes), object size 0x328
-- DamageableObject has 90 slots; Ship adds 2 (slots 90-91)
-- Key slots: 4/5=Write/ReadFromStream, 20=HandleEvent, 21=Update, 70=InitObject, 72/73=Write/ReadStateUpdate, 85=CollisionDamageWrapper, 88/89=SetupProperties/LinkSubsystems
-- 23 functions renamed across 8 TG hierarchy classes in Phase 8B
+- **CORRECTED**: DamageableObject ALSO has 92 slots; Ship does NOT add extra slots (both 92)
+- TG universal slot pattern: slot 1=GetTypeID(), slot 2=IsTypeID(int), slot 9=GetClassName(), slot 10=GetSwigTypeName(), slot 11=GetObjectPtrTypeName()
+- Key slots: 4/5=Write/ReadFromStream, 20=HandleEvent, 21=Update, 70=InitObject (DamageableObject__InitObject=0x005a2030), 72/73=Write/ReadStateUpdate, 80=RayIntersect, 82=CollisionTest_A, 84=CheckCollision, 85=ApplyCollisionDamage(DO)/CollisionDamageWrapper(Ship), 88/89=SetupProperties/LinkSubsystems, 90-91=dtors
+- 23 functions renamed across 8 TG hierarchy classes in Phase 8B; major slot corrections in Phase 9D
 
 ## CRITICAL FLAGS
 - 0x0097FA88=IsClient(0=host), 0x0097FA89=IsHost(1=host), 0x0097FA8A=IsMultiplayer
