@@ -8,9 +8,14 @@ handler functions.
 
 **Key Finding**: The stock BC dedicated server runs a FULL game simulation. It is NOT
 a thin relay. Every subsystem (power, shields, repair, physics, weapons, collision)
-ticks on the server. The server is the AUTHORITY for subsystem health, position, and
-game state. Clients independently simulate some systems (power draw, shield recharge)
-but are corrected by server StateUpdates.
+ticks on the server. Authority is mixed by path: owner-clients author upstream motion
+and weapon-state input, while downstream subsystem/repair/death/score replication is
+server-broadcast and client-accepted.
+
+**2026-02-26 Trace Errata**: See
+[stateupdate-authority-boundary-20260226.md](stateupdate-authority-boundary-20260226.md)
+for updated `0x1C` authority boundaries, downstream `0x20/0x3x` shaping behavior, and
+cadence/distribution metrics from stock + battle traces.
 
 ---
 
@@ -559,8 +564,8 @@ but does not independently detect collisions for collision damage purposes.
 |--------|-----------------|----------------|-----------|
 | **Collision Damage** | YES (validates + recomputes through damage pipeline) | YES (opcode 0x15 relay implicit) | SERVER validates, recomputes damage distribution |
 | **Weapon Damage** | NO (each peer computes independently) | YES (fire/stop events relayed via "Forward" group) | EACH PEER independently |
-| **StateUpdate** | YES (reads live state from server's ship objects) | YES (host -> all clients) | SERVER is authoritative |
-| **Power System** | YES (battery recharge, power distribution run on host) | Via StateUpdate | SERVER (battery levels in PowerSubsystem WriteState) |
+| **StateUpdate** | YES (host integrates owner input + server sim state) | YES (host -> all clients) | HYBRID: owner-authored upstream input, server-shaped downstream broadcast |
+| **Power System** | YES (host sim + replication), but client slider input is upstream-authored | Via StateUpdate + event relay paths | HYBRID: client-authored slider intent, server-broadcast downstream state |
 | **Repair System** | YES (all peers run repair tick) | Via StateUpdate + PythonEvent 0x06 | SERVER (authoritative health + repair events) |
 | **Shield Recharge** | YES (all peers run shield recharge) | Via StateUpdate (overall health only) | DUAL (server: overall; each peer: per-facing) |
 | **PythonEvent Generation** | YES (repair events, death events from server sim) | YES (opcode 0x06 to "NoMe") | SERVER generates |
